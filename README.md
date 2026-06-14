@@ -1,5 +1,372 @@
-# Vue 3 + TypeScript + Vite
+# mulmoterminal
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+A browser-based terminal for running [Claude Code](https://claude.com/claude-code)
+sessions, with a sidebar that lists the current project's chat sessions and shows
+live, hook-driven activity for each one.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+Each session runs as a real PTY on the server (`claude` in a pseudo-terminal) and
+is streamed to an [xterm.js](https://xtermjs.org/) terminal in the browser over a
+WebSocket. A sidebar lists every Claude session for the project and reflects, in
+real time, which sessions are **working** (Claude is thinking) and which **need
+attention** (waiting for input, or finished with output you haven't seen).
+
+---
+
+## Contents
+
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [Configuration](#configuration)
+- [Running](#running)
+- [Server API specification](#server-api-specification)
+  - [HTTP: `GET /api/sessions`](#http-get-apisessions)
+  - [HTTP: `POST /api/hook`](#http-post-apihook)
+  - [WebSocket: `/ws` (terminal)](#websocket-ws-terminal)
+  - [Socket.IO: `/ws/pubsub` (activity pub/sub)](#socketio-wspubsub-activity-pubsub)
+- [Session model](#session-model)
+- [Session lifecycle](#session-lifecycle)
+- [Claude hook injection](#claude-hook-injection)
+- [Session discovery & titles](#session-discovery--titles)
+- [Project structure](#project-structure)
+- [Testing](#testing)
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────┐         ┌─────────────────────────────────────────────┐
+│ Browser (Vue 3 + xterm.js)            │         │ Server (Express + Node)                       │
+│                                       │         │                                               │
+│  Sidebar.vue ──subscribe("sessions")──┼──SIO───►│  socket.io  /ws/pubsub   ── publish ──┐       │
+│      ▲  refetch on any push           │         │                                       │       │
+│      └──── GET /api/sessions ─────────┼──HTTP──►│  Express   /api/sessions              │       │
+│                                       │         │            /api/hook  ◄──curl── hooks │       │
+│  Terminal.vue ── ws JSON msgs ────────┼──WS────►│  ws        /ws  ──► node-pty ─► `claude`──hooks┘
+│      (input / resize / output)        │         │                     (one PTY per session)     │
+└──────────────────────────────────────┘         └─────────────────────────────────────────────┘
+```
+
+- **Terminal I/O** flows over a raw WebSocket (`/ws`), one PTY per session.
+- **Session list** is fetched over HTTP (`/api/sessions`).
+- **Live activity** is pushed over a Socket.IO pub/sub channel (`/ws/pubsub`);
+  the server learns of activity from **Claude hooks** that POST to `/api/hook`.
+- The Vite dev server proxies `/ws`, `/ws/pubsub`, and `/api` to the backend;
+  in production the backend serves the built client from `dist/`.
+
+---
+
+## Tech stack
+
+| Layer    | Technology |
+| -------- | ---------- |
+| Frontend | Vue 3 (`<script setup>` + TypeScript), Vite, xterm.js (`@xterm/*`), socket.io-client |
+| Backend  | Node (ESM), Express 5, `ws` (terminal WebSocket), `node-pty`, socket.io |
+| Tests    | Vitest + @vue/test-utils + jsdom |
+
+Requires **Node ≥ 20.6** (uses `node --env-file`) and the `claude` CLI on `PATH`.
+
+---
+
+## Configuration
+
+The server is configured entirely through environment variables, loaded from a
+`.env` file via `node --env-file=.env` (wired into the npm scripts).
+
+| Variable     | Default        | Description |
+| ------------ | -------------- | ----------- |
+| `PORT`       | `3456`         | HTTP/WebSocket port. |
+| `CLAUDE_BIN` | `claude`       | The Claude Code binary to spawn. |
+| `CLAUDE_CWD` | `$HOME`        | Working directory each `claude` PTY runs in. Determines which project's sessions the sidebar lists. **Must be an absolute path** — `~` is not expanded for values read from `.env`. |
+
+Example `.env` (gitignored):
+
+```
+CLAUDE_CWD=/Users/you/my-project
+```
+
+---
+
+## Running
+
+```bash
+yarn install            # postinstall fixes node-pty prebuilt binary perms
+
+yarn dev                # server (:3456) + Vite dev server, concurrently
+# or individually:
+yarn dev:server         # backend only  (node --env-file=.env server/index.js)
+yarn dev:client         # Vite dev server only
+
+yarn build              # type-check (vue-tsc) + vite build -> dist/
+yarn server             # run backend; serves dist/ + the APIs on :3456
+yarn test               # vitest run
+```
+
+In dev, open the Vite URL; its proxy forwards `/ws`, `/ws/pubsub`, and `/api` to
+`:3456`. In production, run `yarn build` then `yarn server` and open
+`http://localhost:3456`.
+
+---
+
+## Server API specification
+
+Base URL: `http://localhost:$PORT` (default `http://localhost:3456`).
+
+### HTTP: `GET /api/sessions`
+
+Lists every chat session for the current project (`CLAUDE_CWD`), newest first,
+including freshly-created sessions that aren't yet written to disk.
+
+**Response `200 application/json`**
+
+```jsonc
+{
+  "cwd": "/Users/you/my-project",
+  "sessions": [
+    {
+      "id": "d16f43f3-ef63-4a5e-b273-debaccb3522a", // session UUID (= .jsonl basename)
+      "title": "Review available skills list",        // see "Session discovery & titles"
+      "mtime": 1781471064511.22,                       // last-modified, ms epoch (sort key)
+      "working": false,                                // Claude is mid-turn (blue dot)
+      "waiting": false                                 // needs attention (bold)
+    }
+    // ...
+  ]
+}
+```
+
+- Sessions are read from `~/.claude/projects/<encoded CLAUDE_CWD>/*.jsonl` and
+  merged with in-memory sessions started this run but not yet persisted (those
+  have `title: "New session"` and `mtime` = creation time).
+- Sorted by `mtime` descending.
+- `500 { "error": string }` on an unexpected filesystem error. A missing project
+  directory is **not** an error — it yields an empty `sessions` array.
+
+### HTTP: `POST /api/hook`
+
+**Internal endpoint.** Claude hooks (injected per session — see
+[Claude hook injection](#claude-hook-injection)) POST their event payload here.
+You normally don't call this yourself.
+
+**Request `application/json`** — the Claude hook payload; only these fields are used:
+
+```jsonc
+{
+  "session_id": "d16f43f3-...",        // the session the event is for
+  "hook_event_name": "UserPromptSubmit" // "UserPromptSubmit" | "Stop" | "Notification"
+}
+```
+
+Effect (see [Session model](#session-model)):
+
+| `hook_event_name`  | Effect |
+| ------------------ | ------ |
+| `UserPromptSubmit` | `working = true` for the session. |
+| `Stop`             | `working = false`; if the session is **backgrounded**, also `waiting = true`. |
+| `Notification`     | If the session is **backgrounded**, `waiting = true`. |
+
+Any resulting state change is published on the `sessions` pub/sub channel.
+
+**Response `200 application/json`**: `{ "ok": true }` (always, even for unknown events).
+
+### WebSocket: `/ws` (terminal)
+
+A raw WebSocket carrying the terminal stream for one session. One PTY per
+connection (or reattach to an existing background PTY).
+
+**Connect**
+
+- `ws://host/ws` — start a **new** session (server generates a UUID and spawns
+  `claude --session-id <uuid> --settings <hooks>`).
+- `ws://host/ws?session=<id>` — **resume/reattach** a session. If a live
+  background PTY exists for `<id>`, the socket reattaches to it (and its recent
+  output buffer is replayed); otherwise the server spawns
+  `claude --resume <id> --settings <hooks>`.
+
+**Server → client** (JSON text frames):
+
+| Message | Meaning |
+| ------- | ------- |
+| `{ "type": "session", "id": string }` | Sent immediately on connect — the session id this socket is bound to (lets the client learn a new session's generated id). |
+| `{ "type": "output", "data": string }` | PTY output to write to the terminal. On reattach, the first `output` frame is the replayed tail buffer (≤ 64 KB). |
+| `{ "type": "exit", "exitCode": number, "signal": number }` | The `claude` process exited; the socket then closes. |
+
+**Client → server** (JSON text frames):
+
+| Message | Meaning |
+| ------- | ------- |
+| `{ "type": "input", "data": string }` | Keystrokes / bytes to write to the PTY. |
+| `{ "type": "resize", "cols": number, "rows": number }` | Resize the PTY. |
+
+A non-JSON frame is written to the PTY verbatim (fallback).
+
+**Disconnect** — when the socket closes, if Claude is still `working` the PTY is
+**kept alive** in the background; otherwise it's killed. See
+[Session lifecycle](#session-lifecycle).
+
+### Socket.IO: `/ws/pubsub` (activity pub/sub)
+
+A minimal Socket.IO pub/sub for live session-activity updates. Channel names are
+Socket.IO rooms.
+
+- **Path**: `/ws/pubsub`, transport: `websocket`.
+- **Client → server events**:
+  - `subscribe` with a channel name (string) → join the room.
+  - `unsubscribe` with a channel name (string) → leave the room.
+- **Server → client event**: `data` with `{ channel: string, data: <payload> }`.
+
+**Channel `"sessions"`** — payloads describe a single session change:
+
+```jsonc
+// activity change (working/waiting flipped)
+{ "id": "d16f43f3-...", "working": false, "waiting": true, "event": "Stop" }
+
+// a brand-new session was created
+{ "id": "…", "working": false, "event": "created" }
+
+// a session's PTY was closed/reaped
+{ "id": "…", "working": false, "event": "closed" }
+```
+
+`event` is the originating hook (`UserPromptSubmit` | `Stop` | `Notification`) or
+a lifecycle marker (`created` | `closed` | `null`). The client treats **any**
+`sessions` message as a signal to refetch `GET /api/sessions` (the server is the
+single source of truth for the list), so payload details are advisory.
+
+---
+
+## Session model
+
+Per-session state lives on the server (`activity` map) and is surfaced as two
+booleans on every session record:
+
+| Flag      | Set when | Cleared when | UI |
+| --------- | -------- | ------------ | -- |
+| `working` | `UserPromptSubmit` hook fires (Claude started a turn) | `Stop` hook fires (turn finished) | **Blue dot** next to the title |
+| `waiting` | A **background** session fires `Notification` (waiting for input — permission / question / idle) **or** `Stop` (finished, output unseen, ready for another message) | The session is brought to the **foreground** (a WebSocket attaches to it) | **Bold** title |
+
+"Foreground" = a session that currently has an attached terminal WebSocket (the
+one you're viewing). `waiting` is only ever set for **background** sessions,
+because a foreground session is already on screen.
+
+---
+
+## Session lifecycle
+
+```
+        new ws /ws                         ws /ws?session=<id>
+            │                                      │
+            ▼                                      ▼
+   generate UUID, spawn               live bg PTY?  ──yes──►  reattach + replay buffer
+   claude --session-id <uuid>              │ no
+   register "New session",                 ▼
+   publish "created"               spawn claude --resume <id>
+            │                                      │
+            └───────────────┬──────────────────────┘
+                            ▼
+                   attached (foreground)  ── setWaiting(false) ──► not bold
+                            │
+              ws close (switch away / disconnect)
+                            │
+            ┌───────── working? ──────────┐
+           yes                            no
+            │                             │
+   keep PTY alive (background)        kill PTY (reap), publish "closed"
+            │
+   Stop hook in background:
+   waiting=true (bold), working=false, reap PTY
+   (flag persists via on-disk record → stays listed & bold until viewed)
+```
+
+Key rules:
+
+- **Switching away never interrupts Claude mid-turn** — a `working` session's PTY
+  survives in the background.
+- A background session that goes **idle** (`Stop`) is **reaped** (killed). If it
+  finished with unseen output, its `waiting` flag persists via the on-disk
+  session record, so it stays listed and **bold** until you open it.
+- **Reattach over respawn**: selecting a session that still has a live background
+  PTY reattaches to it (replaying a ≤ 64 KB output tail) instead of spawning a
+  duplicate `claude`.
+- Brand-new sessions appear in the sidebar **immediately** (before their `.jsonl`
+  exists) via the in-memory `knownSessions` registry + a `created` push; an
+  unused one disappears when its PTY is reaped.
+
+---
+
+## Claude hook injection
+
+Activity is detected via Claude Code hooks injected **per spawn**, without
+touching the user's `~/.claude/settings.json` or project settings. The server
+passes `claude --settings '<json>'` where the JSON registers a command hook for
+`UserPromptSubmit`, `Stop`, and `Notification`, each of which pipes the hook
+payload to the server:
+
+```jsonc
+{
+  "hooks": {
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "curl -s -X POST http://localhost:$PORT/api/hook -H 'content-type: application/json' -d @-" }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "curl … -d @-" }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "curl … -d @-" }] }]
+  }
+}
+```
+
+Because the server spawns each new session with `--session-id <uuid>`, it always
+knows the live session's id — even before the session's `.jsonl` file exists.
+
+---
+
+## Session discovery & titles
+
+Claude stores each project's sessions as JSONL files under
+`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, where the absolute `cwd`
+has its `/` and `.` characters replaced with `-` (e.g.
+`/Users/you/proj` → `-Users-you-proj`).
+
+A session's display **title** is derived by scanning its JSONL for, in order of
+preference:
+
+1. the latest `ai-title` record's `aiTitle`,
+2. else the latest `last-prompt` record's `lastPrompt`,
+3. else the first real user message (slash/local-command wrappers like
+   `<local-command-…>` are skipped),
+4. else `"(untitled session)"`.
+
+In-memory sessions not yet persisted show as `"New session"` until their file
+appears, at which point the on-disk title takes over.
+
+---
+
+## Project structure
+
+```
+server/
+  index.js        Express app, /api routes, terminal WebSocket, PTY lifecycle,
+                  session state, hook injection, session discovery
+  pubsub.js       createPubSub(server) — socket.io pub/sub at /ws/pubsub
+  fix-pty-perms.js  postinstall: fixes node-pty prebuilt binary permissions
+src/
+  App.vue         Layout (sidebar + terminal); owns the active session id
+  components/
+    Sidebar.vue       Session list; working dot + waiting bold; pub/sub driven
+    Sidebar.spec.ts   Vitest component tests
+    Terminal.vue      xterm.js terminal; /ws connection, reconnect on switch
+  composables/
+    usePubSub.ts      socket.io-client pub/sub composable (subscribe/unsubscribe)
+vite.config.ts    Dev proxy for /ws, /ws/pubsub, /api
+vitest.config.ts  jsdom test environment
+```
+
+---
+
+## Testing
+
+```bash
+yarn test
+```
+
+`src/components/Sidebar.spec.ts` covers the sidebar: rendering the server's
+session list, the working dot, the `waiting` bold state, refetching on a pub/sub
+push, and emitting `select` on click. The pub/sub composable and `fetch` are
+mocked so the tests run without a server.
