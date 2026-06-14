@@ -10,6 +10,7 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "server": "node --env-file=.env server/index.js",
+    "test": "vitest run",
     "postinstall": "node server/fix-pty-perms.js"
   },
   "dependencies": {
@@ -29,10 +30,13 @@
     "@types/node": "^24.12.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^6.0.6",
+    "@vue/test-utils": "^2.4.11",
     "@vue/tsconfig": "^0.9.1",
     "concurrently": "^10.0.3",
+    "jsdom": "^29.1.1",
     "typescript": "~6.0.2",
     "vite": "^8.0.12",
+    "vitest": "^4.1.8",
     "vue-tsc": "^3.2.8"
   }
 }
