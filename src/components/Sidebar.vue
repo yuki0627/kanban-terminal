@@ -28,7 +28,12 @@ async function load() {
     sessions.value = data.sessions ?? [];
     error.value = null;
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    // load() runs on every pub/sub push; a transient refetch failure must not
+    // replace an already-populated list with an error banner. Only surface the
+    // error when we have nothing to show yet.
+    if (sessions.value.length === 0) {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
   } finally {
     // Only the first load shows the "Loading…" state; later refreshes are
     // silent so the list doesn't flicker.

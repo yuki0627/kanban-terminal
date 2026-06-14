@@ -41,13 +41,20 @@ const OUTPUT_BUFFER_LIMIT = 64 * 1024;
 // Assigned once the HTTP server exists (createPubSub needs it).
 let pubsub = null;
 
-function killPty(id) {
+// Tear down a session's PTY and bookkeeping, then notify subscribers. The
+// `activity` entry is dropped too — UNLESS it still carries `waiting`, which is
+// what keeps a finished/needs-attention background session bold (via its
+// on-disk record) until the user opens it. This keeps `activity` from growing
+// unbounded while preserving the bold-until-viewed behavior.
+function reap(id) {
   const entry = ptys.get(id);
-  if (!entry) return;
+  if (!entry) return; // already reaped
   ptys.delete(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
+  const a = activity.get(id);
+  if (!a || (!a.working && !a.waiting)) activity.delete(id);
   try {
     entry.term.kill();
   } catch {
@@ -80,7 +87,7 @@ function setWorking(id, working, event) {
     const entry = ptys.get(id);
     if (entry && !entry.ws) {
       console.log(`[pty] reaping idle background session ${id}`);
-      killPty(id);
+      reap(id);
     }
   }
 }
@@ -301,12 +308,16 @@ wss.on("connection", (ws, req) => {
 
     term.onExit(({ exitCode, signal }) => {
       console.log(`[pty] exited code=${exitCode} signal=${signal}`);
-      ptys.delete(sessionId);
-      setWorking(sessionId, false);
       if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
         entry.ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
         entry.ws.close();
       }
+      // Clear the dot if it died mid-turn, then tear down everything (deletes
+      // ptys/knownSessions/activity and publishes "closed") so a process that
+      // exits on its own — e.g. a brand-new session that never persisted —
+      // doesn't linger in the sidebar.
+      setWorking(sessionId, false);
+      reap(sessionId);
     });
   }
 
@@ -339,7 +350,7 @@ wss.on("connection", (ws, req) => {
       console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
     } else {
       console.log(`[ws] disconnected; killing idle session ${sessionId}`);
-      killPty(sessionId);
+      reap(sessionId);
     }
   });
 });
