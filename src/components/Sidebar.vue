@@ -9,14 +9,6 @@ interface Session {
   working: boolean;
 }
 
-// Pushed on the "sessions" channel whenever a session's working state changes
-// (UserPromptSubmit => working, Stop => done).
-interface ActivityChange {
-  id: string;
-  working: boolean;
-  event: string | null;
-}
-
 const props = defineProps<{ activeId: string | null }>();
 const emit = defineEmits<{
   (e: "select", id: string): void;
@@ -28,16 +20,17 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 
 async function load() {
-  loading.value = true;
-  error.value = null;
   try {
     const res = await fetch("/api/sessions");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     sessions.value = data.sessions ?? [];
+    error.value = null;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
+    // Only the first load shows the "Loading…" state; later refreshes are
+    // silent so the list doesn't flicker.
     loading.value = false;
   }
 }
@@ -54,20 +47,15 @@ function relativeTime(ms: number): string {
 
 defineExpose({ load });
 
-// Subscribe to hook-driven working-state changes (no polling). A change for a
-// session we don't know yet (e.g. a brand-new one) triggers a one-off reload
-// to pick up its title; otherwise we just flip the working flag in place.
+// The server publishes on the "sessions" channel whenever anything about the
+// session list changes (created, working/idle, closed). We just refetch the
+// server's authoritative list — no client-side bookkeeping about what changed.
 const { subscribe } = usePubSub();
 let unsubscribe: (() => void) | undefined;
 
 onMounted(() => {
   load();
-  unsubscribe = subscribe("sessions", (data) => {
-    const change = data as ActivityChange;
-    const session = sessions.value.find((s) => s.id === change.id);
-    if (session) session.working = change.working;
-    else if (change.working) load();
-  });
+  unsubscribe = subscribe("sessions", () => load());
 });
 onUnmounted(() => unsubscribe?.());
 </script>

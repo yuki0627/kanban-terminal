@@ -28,6 +28,12 @@ const activity = new Map(); // id -> { working, event, at }
 // is null while the session runs in the background.
 const ptys = new Map(); // id -> { term, ws, buffer }
 
+// New sessions started in this process that have no .jsonl on disk yet (Claude
+// only writes the file on the first prompt). Merged into /api/sessions so a
+// freshly created session shows in the sidebar immediately. An entry is dropped
+// once the file exists (the on-disk record takes over) or the pty is reaped.
+const knownSessions = new Map(); // id -> { createdAt, title }
+
 // Bytes of recent output kept per pty and replayed when a client reattaches to
 // a background session, so the user sees context instead of a blank screen.
 const OUTPUT_BUFFER_LIMIT = 64 * 1024;
@@ -39,18 +45,22 @@ function killPty(id) {
   const entry = ptys.get(id);
   if (!entry) return;
   ptys.delete(id);
+  // An unpersisted new session vanishes with its pty; a persisted one stays
+  // visible via its on-disk record.
+  knownSessions.delete(id);
   try {
     entry.term.kill();
   } catch {
     // already gone
   }
+  pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
 }
 
 // Update a session's working state and publish the change to subscribers.
 // No-op (and no publish) when the state is unchanged.
 function setWorking(id, working, event) {
   const prev = activity.get(id) || {};
-  if (prev.working === working) return;
+  if ((prev.working ?? false) === working) return;
   activity.set(id, { working, event: event ?? prev.event ?? null, at: Date.now() });
   pubsub?.publish(SESSIONS_CHANNEL, { id, working, event: event ?? null });
 
@@ -144,19 +154,37 @@ app.post("/api/hook", (req, res) => {
   res.json({ ok: true });
 });
 
-// List the chat sessions for the current project (CLAUDE_CWD).
+// List the chat sessions for the current project (CLAUDE_CWD), including
+// newly-created sessions that aren't persisted to disk yet.
 app.get("/api/sessions", async (_req, res) => {
   try {
     const dir = projectSessionsDir(CLAUDE_CWD);
-    let files;
+    let files = [];
     try {
       files = (await fs.readdir(dir)).filter((f) => f.endsWith(".jsonl"));
     } catch (err) {
-      if (err.code === "ENOENT") return res.json({ cwd: CLAUDE_CWD, sessions: [] });
-      throw err;
+      if (err.code !== "ENOENT") throw err;
     }
-    const sessions = (await Promise.all(files.map((f) => readSessionMeta(dir, f))))
-      .sort((a, b) => b.mtime - a.mtime);
+    const fsSessions = await Promise.all(files.map((f) => readSessionMeta(dir, f)));
+    const onDisk = new Set(fsSessions.map((s) => s.id));
+
+    // In-memory sessions not yet written to disk. Prune any that have since
+    // been persisted — the on-disk record (with its real title) wins.
+    const pending = [];
+    for (const [id, meta] of knownSessions) {
+      if (onDisk.has(id)) {
+        knownSessions.delete(id);
+        continue;
+      }
+      pending.push({
+        id,
+        title: meta.title,
+        mtime: meta.createdAt,
+        working: activity.get(id)?.working ?? false,
+      });
+    }
+
+    const sessions = [...fsSessions, ...pending].sort((a, b) => b.mtime - a.mtime);
     res.json({ cwd: CLAUDE_CWD, sessions });
   } catch (err) {
     console.error("[api] /api/sessions failed:", err);
@@ -217,6 +245,12 @@ wss.on("connection", (ws, req) => {
 
     entry = { term, ws, buffer: "" };
     ptys.set(sessionId, entry);
+
+    if (!resume) {
+      // Brand-new session: surface it in the sidebar before it's persisted.
+      knownSessions.set(sessionId, { createdAt: Date.now(), title: "New session" });
+      pubsub?.publish(SESSIONS_CHANNEL, { id: sessionId, working: false, event: "created" });
+    }
 
     // PTY -> browser (buffering a bounded tail for reattach).
     term.onData((data) => {
