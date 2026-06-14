@@ -22,8 +22,29 @@ const SESSIONS_CHANNEL = "sessions";
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
 const activity = new Map(); // id -> { working, event, at }
 
+// Live ptys keyed by session id. A pty outlives its WebSocket while the session
+// is still "working", so switching away doesn't interrupt Claude mid-turn; it
+// is reaped once the session goes idle (Stop hook) or the process exits. `ws`
+// is null while the session runs in the background.
+const ptys = new Map(); // id -> { term, ws, buffer }
+
+// Bytes of recent output kept per pty and replayed when a client reattaches to
+// a background session, so the user sees context instead of a blank screen.
+const OUTPUT_BUFFER_LIMIT = 64 * 1024;
+
 // Assigned once the HTTP server exists (createPubSub needs it).
 let pubsub = null;
+
+function killPty(id) {
+  const entry = ptys.get(id);
+  if (!entry) return;
+  ptys.delete(id);
+  try {
+    entry.term.kill();
+  } catch {
+    // already gone
+  }
+}
 
 // Update a session's working state and publish the change to subscribers.
 // No-op (and no publish) when the state is unchanged.
@@ -32,6 +53,15 @@ function setWorking(id, working, event) {
   if (prev.working === working) return;
   activity.set(id, { working, event: event ?? prev.event ?? null, at: Date.now() });
   pubsub?.publish(SESSIONS_CHANNEL, { id, working, event: event ?? null });
+
+  // A background session (no attached client) that just went idle is reaped.
+  if (!working) {
+    const entry = ptys.get(id);
+    if (entry && !entry.ws) {
+      console.log(`[pty] reaping idle background session ${id}`);
+      killPty(id);
+    }
+  }
 }
 
 // Hook config injected via `claude --settings <json>`. UserPromptSubmit and
@@ -155,58 +185,85 @@ wss.on("connection", (ws, req) => {
   // always knows the current session's id, even before any file exists.
   const resume = new URL(req.url, "http://localhost").searchParams.get("session");
   const sessionId = resume || randomUUID();
-  const settings = hookSettingsJson();
-  const args = resume
-    ? ["--resume", resume, "--settings", settings]
-    : ["--session-id", sessionId, "--settings", settings];
-
-  console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
 
   // Tell the browser which session this is (it learns the id of new sessions).
   ws.send(JSON.stringify({ type: "session", id: sessionId }));
 
-  const term = pty.spawn(CLAUDE_BIN, args, {
-    name: "xterm-256color",
-    cols: 120,
-    rows: 30,
-    cwd: CLAUDE_CWD,
-    env: process.env,
-  });
-
-  console.log(`[pty] spawned claude (pid=${term.pid})`);
-
-  // PTY -> browser
-  term.onData((data) => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify({ type: "output", data }));
+  let entry = ptys.get(sessionId);
+  if (entry) {
+    // A background pty for this session is still alive — reattach instead of
+    // spawning a duplicate claude. Replay recent output for context.
+    console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
+    entry.ws = ws;
+    if (entry.buffer && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: "output", data: entry.buffer }));
     }
-  });
+  } else {
+    const settings = hookSettingsJson();
+    const args = resume
+      ? ["--resume", resume, "--settings", settings]
+      : ["--session-id", sessionId, "--settings", settings];
 
-  term.onExit(({ exitCode, signal }) => {
-    console.log(`[pty] exited code=${exitCode} signal=${signal}`);
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
-      ws.close();
-    }
-  });
+    console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
+
+    const term = pty.spawn(CLAUDE_BIN, args, {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 30,
+      cwd: CLAUDE_CWD,
+      env: process.env,
+    });
+    console.log(`[pty] spawned claude (pid=${term.pid})`);
+
+    entry = { term, ws, buffer: "" };
+    ptys.set(sessionId, entry);
+
+    // PTY -> browser (buffering a bounded tail for reattach).
+    term.onData((data) => {
+      entry.buffer = (entry.buffer + data).slice(-OUTPUT_BUFFER_LIMIT);
+      if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
+        entry.ws.send(JSON.stringify({ type: "output", data }));
+      }
+    });
+
+    term.onExit(({ exitCode, signal }) => {
+      console.log(`[pty] exited code=${exitCode} signal=${signal}`);
+      ptys.delete(sessionId);
+      setWorking(sessionId, false);
+      if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
+        entry.ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
+        entry.ws.close();
+      }
+    });
+  }
 
   // browser -> PTY
   ws.on("message", (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === "input") {
-        term.write(msg.data);
+        entry.term.write(msg.data);
       } else if (msg.type === "resize") {
-        term.resize(msg.cols, msg.rows);
+        entry.term.resize(msg.cols, msg.rows);
       }
     } catch {
-      term.write(raw.toString());
+      entry.term.write(raw.toString());
     }
   });
 
   ws.on("close", () => {
-    console.log("[ws] client disconnected, killing pty");
-    term.kill();
+    // Ignore if a newer client already reattached to this session.
+    if (entry.ws !== ws) return;
+    entry.ws = null;
+
+    // Keep the pty running if Claude is still working — it will be reaped when
+    // the Stop hook fires (see setWorking). Otherwise kill it now.
+    if (activity.get(sessionId)?.working) {
+      console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
+    } else {
+      console.log(`[ws] disconnected; killing idle session ${sessionId}`);
+      killPty(sessionId);
+    }
   });
 });
 
