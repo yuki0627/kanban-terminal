@@ -50,14 +50,24 @@ onMounted(load);
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="heading">Sessions</span>
-      <button class="icon-btn" title="Refresh" @click="load">⟳</button>
+      <button class="icon-btn" title="Refresh" @click="load">
+        ⟳
+      </button>
     </div>
 
-    <button class="new-btn" @click="emit('new')">+ New session</button>
+    <button class="new-btn" @click="emit('new')">
+      + New session
+    </button>
 
-    <div v-if="loading" class="state">Loading…</div>
-    <div v-else-if="error" class="state error">{{ error }}</div>
-    <div v-else-if="sessions.length === 0" class="state">No sessions yet</div>
+    <div v-if="loading" class="state">
+      Loading…
+    </div>
+    <div v-else-if="error" class="state error">
+      {{ error }}
+    </div>
+    <div v-else-if="sessions.length === 0" class="state">
+      No sessions yet
+    </div>
 
     <ul v-else class="list">
       <li

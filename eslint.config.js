@@ -18,6 +18,8 @@ export default [
         WebSocket: "readonly",
         ResizeObserver: "readonly",
         location: "readonly",
+        setTimeout: "readonly",
+        fetch: "readonly",
       },
     },
     rules: {
@@ -31,6 +33,7 @@ export default [
       globals: {
         console: "readonly",
         process: "readonly",
+        URL: "readonly",
       },
     },
   },
