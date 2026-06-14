@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -n server,vite -c blue,green \"node server/index.js\" \"vite\"",
     "dev:server": "node server/index.js",
+    "dev:client": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
@@ -27,6 +28,7 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^6.0.6",
     "@vue/tsconfig": "^0.9.1",
+    "concurrently": "^10.0.3",
     "typescript": "~6.0.2",
     "vite": "^8.0.12",
     "vue-tsc": "^3.2.8"
