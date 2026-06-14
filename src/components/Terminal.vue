@@ -9,6 +9,7 @@ import "@xterm/xterm/css/xterm.css";
 // `connectKey` increments on every user action so re-selecting the same
 // session (or starting another fresh one) still forces a reconnect.
 const props = defineProps<{ sessionId: string | null; connectKey: number }>();
+const emit = defineEmits<{ (e: "session", id: string): void }>();
 
 const terminalRef = ref<HTMLDivElement>();
 const status = ref<"connecting" | "connected" | "disconnected">("connecting");
@@ -43,6 +44,9 @@ function connect() {
     const msg = JSON.parse(event.data);
     if (msg.type === "output") {
       term.write(msg.data);
+    } else if (msg.type === "session") {
+      // Server reports the live session id (esp. for brand-new sessions).
+      emit("session", msg.id);
     } else if (msg.type === "exit") {
       term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
       status.value = "disconnected";

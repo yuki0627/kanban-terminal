@@ -15,8 +15,13 @@ function selectSession(id: string) {
 function newSession() {
   activeId.value = null;
   connectKey.value++;
-  // A fresh session will appear in the list shortly; refresh after it spins up.
-  setTimeout(() => sidebar.value?.load(), 1500);
+}
+
+// The server reports the live session id (a generated id for new sessions).
+// Adopt it as the active id so it highlights and stops showing as unread.
+function onSession(id: string) {
+  activeId.value = id;
+  sidebar.value?.load();
 }
 </script>
 
@@ -28,7 +33,11 @@ function newSession() {
       @select="selectSession"
       @new="newSession"
     />
-    <TerminalView :session-id="activeId" :connect-key="connectKey" />
+    <TerminalView
+      :session-id="activeId"
+      :connect-key="connectKey"
+      @session="onSession"
+    />
   </div>
 </template>
 

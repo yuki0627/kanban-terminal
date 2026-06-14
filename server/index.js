@@ -5,13 +5,45 @@ import pty from "node-pty";
 import path from "path";
 import os from "os";
 import fs from "fs/promises";
+import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
+import { createPubSub } from "./pubsub.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 3456;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const CLAUDE_CWD = process.env.CLAUDE_CWD || process.env.HOME;
+
+// Pub/sub channel the sidebar subscribes to for live session-activity changes.
+const SESSIONS_CHANNEL = "sessions";
+
+// Per-session "working" state, driven by Claude hooks (see /api/hook):
+// UserPromptSubmit => Claude started thinking; Stop => it finished.
+const activity = new Map(); // id -> { working, event, at }
+
+// Assigned once the HTTP server exists (createPubSub needs it).
+let pubsub = null;
+
+// Update a session's working state and publish the change to subscribers.
+// No-op (and no publish) when the state is unchanged.
+function setWorking(id, working, event) {
+  const prev = activity.get(id) || {};
+  if (prev.working === working) return;
+  activity.set(id, { working, event: event ?? prev.event ?? null, at: Date.now() });
+  pubsub?.publish(SESSIONS_CHANNEL, { id, working, event: event ?? null });
+}
+
+// Hook config injected via `claude --settings <json>`. UserPromptSubmit and
+// Stop both POST the hook payload (which includes session_id and
+// hook_event_name) to /api/hook, which flips the session's working state.
+function hookSettingsJson() {
+  const cmd =
+    `curl -s -X POST http://localhost:${PORT}/api/hook ` +
+    `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
+  const entry = [{ hooks: [{ type: "command", command: cmd }] }];
+  return JSON.stringify({ hooks: { UserPromptSubmit: entry, Stop: entry } });
+}
 
 // Claude stores each project's sessions under ~/.claude/projects/<encoded-cwd>/,
 // where the absolute cwd has its "/" and "." characters replaced by "-".
@@ -55,17 +87,32 @@ async function readSessionMeta(dir, file) {
   }
 
   const title = aiTitle || lastPrompt || firstUserMsg || "(untitled session)";
+  const id = path.basename(file, ".jsonl");
   return {
-    id: path.basename(file, ".jsonl"),
+    id,
     title,
     mtime: stat.mtimeMs,
+    working: activity.get(id)?.working ?? false,
   };
 }
 
 const app = express();
+app.use(express.json());
 
 // Serve Vite build output
 app.use(express.static(path.join(__dirname, "../dist")));
+
+// Claude hooks (Stop / Notification) POST their payload here so we can flag
+// which background sessions have new activity.
+app.post("/api/hook", (req, res) => {
+  const { session_id, hook_event_name } = req.body || {};
+  if (session_id) {
+    if (hook_event_name === "UserPromptSubmit") setWorking(session_id, true, hook_event_name);
+    else if (hook_event_name === "Stop") setWorking(session_id, false, hook_event_name);
+    console.log(`[hook] ${hook_event_name} for ${session_id}`);
+  }
+  res.json({ ok: true });
+});
 
 // List the chat sessions for the current project (CLAUDE_CWD).
 app.get("/api/sessions", async (_req, res) => {
@@ -88,14 +135,35 @@ app.get("/api/sessions", async (_req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+pubsub = createPubSub(server);
+
+// Terminal WebSocket. Uses noServer + manual upgrade routing so it shares the
+// HTTP server with socket.io (the pub/sub at /ws/pubsub) without the two
+// libraries fighting over the "upgrade" event.
+const wss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  const { pathname } = new URL(req.url, "http://localhost");
+  if (pathname === "/ws") {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  }
+  // Other paths (e.g. /ws/pubsub) are left to socket.io's own upgrade handler.
+});
 
 wss.on("connection", (ws, req) => {
   // ?session=<id> resumes an existing conversation; absent => fresh session.
-  const session = new URL(req.url, "http://localhost").searchParams.get("session");
-  const args = session ? ["--resume", session] : [];
+  // For new sessions we generate the id ourselves (--session-id) so the server
+  // always knows the current session's id, even before any file exists.
+  const resume = new URL(req.url, "http://localhost").searchParams.get("session");
+  const sessionId = resume || randomUUID();
+  const settings = hookSettingsJson();
+  const args = resume
+    ? ["--resume", resume, "--settings", settings]
+    : ["--session-id", sessionId, "--settings", settings];
 
-  console.log(`[ws] client connected${session ? ` (resume ${session})` : ""}`);
+  console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
+
+  // Tell the browser which session this is (it learns the id of new sessions).
+  ws.send(JSON.stringify({ type: "session", id: sessionId }));
 
   const term = pty.spawn(CLAUDE_BIN, args, {
     name: "xterm-256color",

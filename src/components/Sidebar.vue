@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
+import { usePubSub } from "../composables/usePubSub";
 
 interface Session {
   id: string;
   title: string;
   mtime: number;
+  working: boolean;
+}
+
+// Pushed on the "sessions" channel whenever a session's working state changes
+// (UserPromptSubmit => working, Stop => done).
+interface ActivityChange {
+  id: string;
+  working: boolean;
+  event: string | null;
 }
 
 const props = defineProps<{ activeId: string | null }>();
@@ -43,7 +53,23 @@ function relativeTime(ms: number): string {
 }
 
 defineExpose({ load });
-onMounted(load);
+
+// Subscribe to hook-driven working-state changes (no polling). A change for a
+// session we don't know yet (e.g. a brand-new one) triggers a one-off reload
+// to pick up its title; otherwise we just flip the working flag in place.
+const { subscribe } = usePubSub();
+let unsubscribe: (() => void) | undefined;
+
+onMounted(() => {
+  load();
+  unsubscribe = subscribe("sessions", (data) => {
+    const change = data as ActivityChange;
+    const session = sessions.value.find((s) => s.id === change.id);
+    if (session) session.working = change.working;
+    else if (change.working) load();
+  });
+});
+onUnmounted(() => unsubscribe?.());
 </script>
 
 <template>
@@ -67,7 +93,10 @@ onMounted(load);
         :title="s.title"
         @click="emit('select', s.id)"
       >
-        <span class="item-title">{{ s.title }}</span>
+        <span class="item-title">
+          <span v-if="s.working" class="dot" title="Claude is working" />
+          {{ s.title }}
+        </span>
         <span class="item-time">{{ relativeTime(s.mtime) }}</span>
       </li>
     </ul>
@@ -166,6 +195,17 @@ onMounted(load);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Shown while Claude is working in a session (UserPromptSubmit → Stop). */
+.dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #4a8cff;
+  vertical-align: middle;
 }
 
 .item-time {
