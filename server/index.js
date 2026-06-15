@@ -333,6 +333,11 @@ wss.on("connection", (ws, req) => {
     // A background pty for this session is still alive — reattach instead of
     // spawning a duplicate claude. Replay recent output for context.
     console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
+    // Drop any socket still attached (e.g. the same session open in another
+    // tab) so it can't keep writing to this PTY.
+    if (entry.ws && entry.ws !== ws && entry.ws.readyState === entry.ws.OPEN) {
+      entry.ws.close();
+    }
     entry.ws = ws;
     if (entry.buffer && ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "output", data: entry.buffer }));
@@ -390,17 +395,34 @@ wss.on("connection", (ws, req) => {
   // "waiting for input" flag so it stops showing as bold.
   setWaiting(sessionId, false);
 
-  // browser -> PTY
+  // browser -> PTY. The protocol is client-controlled, so validate every frame
+  // before touching node-pty (bad cols/rows or non-string input can throw).
   ws.on("message", (raw) => {
+    // Ignore frames from a socket that a newer client has already superseded.
+    if (entry.ws !== ws) return;
+    let msg;
     try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === "input") {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return; // not JSON — never write arbitrary payloads to the PTY
+    }
+    try {
+      if (msg.type === "input" && typeof msg.data === "string") {
         entry.term.write(msg.data);
-      } else if (msg.type === "resize") {
+      } else if (
+        msg.type === "resize" &&
+        Number.isInteger(msg.cols) &&
+        Number.isInteger(msg.rows) &&
+        msg.cols >= 2 &&
+        msg.cols <= 500 &&
+        msg.rows >= 1 &&
+        msg.rows <= 200
+      ) {
         entry.term.resize(msg.cols, msg.rows);
       }
-    } catch {
-      entry.term.write(raw.toString());
+    } catch (err) {
+      // e.g. a write/resize that races the PTY exiting — drop it, never crash.
+      console.warn(`[ws] dropped message for ${sessionId}: ${err.message}`);
     }
   });
 
