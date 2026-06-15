@@ -1,12 +1,12 @@
 # GUI Chat Protocol Spike (mulmoterminal)
 
 A throwaway spike inside **mulmoterminal** to learn what it takes to support
-MulmoClaude's **GUI chat protocol** (`presentMarkdown`, `presentForm`, …) on top
+MulmoClaude's **GUI chat protocol** (`presentDocument`, `presentForm`, …) on top
 of the **interactive PTY** architecture. The lessons feed the larger MulmoClaude
 migration — see [Background](#background).
 
 > Status: Phase I + II **validated against a real interactive `claude`**
-> (`presentMarkdown` one-way and `presentForm` round-trip both work). Permissions
+> (`presentDocument` one-way and `presentForm` round-trip both work). Permissions
 > are **decided, not probed** — terminal-native (see
 > [Decision](#decision-permissions-are-terminal-native)).
 
@@ -31,7 +31,7 @@ MulmoClaude.
 
 ```
  interactive claude (PTY)
-        │  calls MCP tool  presentMarkdown({ markdown })
+        │  calls MCP tool  presentDocument({ markdown })
         ▼
  stdio MCP server  ──HTTP POST /api/gui {sessionId,type,data}──►  mulmoterminal server
         ▲                                                              │ publish on "gui"
@@ -47,17 +47,17 @@ MulmoClaude.
 
 ---
 
-## Phase I — `presentMarkdown` (one-way)
+## Phase I — `presentDocument` (one-way)
 
 **Goal:** prove the full **MCP tool → `data` → GUI panel** pipe with the
-simplest possible plugin. `presentMarkdown` is one-directional (LLM emits
+simplest possible plugin. `presentDocument` is one-directional (LLM emits
 markdown, panel renders it), so it isolates the data pipe with no round-trip.
 
 ### Steps
 
 1. **MCP server** — a small stdio server (`server/mcp/present-markdown.js`)
-   exposing one tool `presentMarkdown({ markdown })`. On call, it `POST`s
-   `{ sessionId, type: "presentMarkdown", data: { markdown } }` to
+   exposing one tool `presentDocument({ markdown })`. On call, it `POST`s
+   `{ sessionId, type: "presentDocument", data: { markdown } }` to
    `http://localhost:<PORT>/api/gui`, then returns a short ack string to claude.
    - `sessionId` + `PORT` reach the MCP process via **env** (set when we build
      its mcp-config), mirroring MulmoClaude's `MULMOCLAUDE_CHAT_SESSION_ID`.
@@ -78,7 +78,7 @@ markdown, panel renders it), so it isolates the data pipe with no round-trip.
 
 ### Acceptance
 
-- Tell claude "use presentMarkdown to show me a table of …"; the **terminal**
+- Tell claude "use presentDocument to show me a table of …"; the **terminal**
   shows the tool call and the **right panel** renders the markdown.
 - Switching sessions in the sidebar replays the correct session's GUI.
 
@@ -92,7 +92,7 @@ interactive `claude` is the remaining manual check.
   `claude` accepts `--mcp-config <configs...>` as **JSON strings** (not only file
   paths), so `server/index.js` builds the config inline per session
   (`mcpConfigJson(sessionId)`) and appends `--mcp-config <json>
-  --strict-mcp-config --allowedTools mcp__mulmoterminal-gui__presentMarkdown` to
+  --strict-mcp-config --allowedTools mcp__mulmoterminal-gui__presentDocument` to
   the existing `--settings`/`--session-id`/`--resume` args. No temp file to
   manage. `--strict-mcp-config` keeps the user's own MCP servers out of the
   spike; `--allowedTools` auto-runs the tool (no permission prompt — permissions
@@ -107,7 +107,7 @@ interactive `claude` is the remaining manual check.
   keyed by `sessionId` and `pubsub.publish("gui", { sessionId, type, data })`.
   The panel filters the `gui` channel by the foreground `sessionId` and replays
   history from `GET /api/gui/:sessionId`. `type` is the discriminator
-  (`presentMarkdown` now; `presentForm` next) and `data` is the opaque
+  (`presentDocument` now; `presentForm` next) and `data` is the opaque
   tool-specific payload — exactly MulmoClaude's "MCP server posts a toolResult
   to an internal route" pattern, transport-agnostic over the PTY.
 - **Surprises / blockers:** none blocking. Notes: used the official

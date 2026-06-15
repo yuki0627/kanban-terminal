@@ -37,20 +37,20 @@ function isAllowedOrigin(origin) {
 // Pub/sub channel the sidebar subscribes to for live session-activity changes.
 const SESSIONS_CHANNEL = "sessions";
 
-// Pub/sub channel the GUI panel subscribes to. The presentMarkdown MCP tool
+// Pub/sub channel the GUI panel subscribes to. The presentDocument MCP tool
 // POSTs to /api/gui, which stores the payload and publishes it here keyed by
 // session id (see docs/gui-protocol-spike.md).
 const GUI_CHANNEL = "gui";
 
 // Stdio MCP server wired into each spawned claude (--mcp-config). It exposes the
-// GUI-protocol tools (presentMarkdown, presentForm) that drive the GUI panel.
+// GUI-protocol tools (presentDocument, presentForm) that drive the GUI panel.
 const MCP_SERVER_PATH = path.join(__dirname, "mcp", "present-markdown.js");
 
 // MCP tool names claude uses, in the mcp__<server>__<tool> form. Auto-allowed via
 // --allowedTools so the spike doesn't trip the permission prompt (a deferred
 // probe — see the doc). Comma-joined into a single --allowedTools value.
 const GUI_MCP_TOOLS = [
-  "mcp__mulmoterminal-gui__presentMarkdown",
+  "mcp__mulmoterminal-gui__presentDocument",
   "mcp__mulmoterminal-gui__presentForm",
 ].join(",");
 
@@ -177,7 +177,7 @@ function hookSettingsJson() {
 }
 
 // MCP config injected via `claude --mcp-config <json>`. Registers the stdio
-// presentMarkdown server and passes this session's id + the server port to it
+// presentDocument server and passes this session's id + the server port to it
 // via env (the MCP process can't otherwise know which session it belongs to).
 function mcpConfigJson(sessionId) {
   return JSON.stringify({
@@ -293,7 +293,7 @@ app.post("/api/gui", (req, res) => {
   }
 
   let frame;
-  if (type === "presentMarkdown") {
+  if (type === "presentDocument") {
     if (typeof data.markdown !== "string") {
       return res.status(400).json({ error: "invalid markdown" });
     }
@@ -522,7 +522,7 @@ wss.on("connection", (ws, req) => {
     }
   } else {
     const settings = hookSettingsJson();
-    // Register the GUI MCP server and auto-allow its tool so presentMarkdown
+    // Register the GUI MCP server and auto-allow its tool so presentDocument
     // runs without a permission prompt (--strict-mcp-config keeps the user's
     // other MCP servers out of the spike).
     const mcp = mcpConfigJson(sessionId);
