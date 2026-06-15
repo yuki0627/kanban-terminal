@@ -89,21 +89,34 @@ jobs:
           # dropping them is safe (zizmor artipacked).
           persist-credentials: false
 
-      - name: Use Node.js 22.x
+      - name: Use Node.js 24.x
         uses: actions/setup-node@v6
         with:
-          node-version: 22.x
+          node-version: 24.x
 
       - name: Cache global npm tarballs
         uses: actions/cache@v5
         with:
           path: ~/.npm
-          key: codex-cli-${{ env.CODEX_VERSION }}-node22
+          key: codex-cli-${{ env.CODEX_VERSION }}-node24
           restore-keys: |
             codex-cli-${{ env.CODEX_VERSION }}-
 
       - name: Install codex CLI (pinned)
         run: npm install -g "@openai/codex@${CODEX_VERSION}"
+
+      - name: Debug BASE_URL shape (temporary)
+        env:
+          AZURE_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+        run: |
+          # Length + first / last 3 chars (after secret masking) — no
+          # full value leak. Confirms whether the secret has stray
+          # whitespace, missing scheme, etc.
+          echo "len=$(printf '%s' "$AZURE_BASE_URL" | wc -c)"
+          echo "head3=$(printf '%s' "$AZURE_BASE_URL" | head -c 3)"
+          echo "tail3=$(printf '%s' "$AZURE_BASE_URL" | tail -c 3)"
+          echo "hex (first 8 bytes)="
+          printf '%s' "$AZURE_BASE_URL" | head -c 8 | xxd
 
       - name: Configure Codex for Azure OpenAI
         env:
