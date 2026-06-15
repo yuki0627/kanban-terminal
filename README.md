@@ -15,6 +15,7 @@ attention** (waiting for input, or finished with output you haven't seen).
 ## Contents
 
 - [Architecture](#architecture)
+- [Why a PTY?](#why-a-pty)
 - [Tech stack](#tech-stack)
 - [Configuration](#configuration)
 - [Running](#running)
@@ -53,6 +54,23 @@ attention** (waiting for input, or finished with output you haven't seen).
   the server learns of activity from **Claude hooks** that POST to `/api/hook`.
 - The Vite dev server proxies `/ws`, `/ws/pubsub`, and `/api` to the backend;
   in production the backend serves the built client from `dist/`.
+
+---
+
+## Why a PTY?
+
+Claude Code's interactive mode renders its UI with [Ink](https://github.com/vadimdemedes/ink)
+(a React-based TUI framework), which requires a real **TTY** to be attached. A
+plain `child_process.spawn()` provides no TTY, so interactive Claude won't start
+(it stays silent). [node-pty](https://github.com/microsoft/node-pty) allocates a
+real **pseudo-terminal** at the OS level, so from Claude's point of view it's
+running in an ordinary terminal — full TUI rendering, cursor movement, colors,
+and tool-approval prompts all work. We don't use `-p`/headless mode or the Agent
+SDK; we drive the real interactive CLI and relay its TTY over the WebSocket.
+
+> **macOS note:** node-pty's bundled `spawn-helper` binary ships without the
+> execute bit (mode 644), which causes a `posix_spawnp failed` error. The
+> `postinstall` script (`server/fix-pty-perms.js`) fixes it to 755 automatically.
 
 ---
 
