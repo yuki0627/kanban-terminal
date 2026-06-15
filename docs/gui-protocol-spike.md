@@ -5,7 +5,9 @@ MulmoClaude's **GUI chat protocol** (`presentMarkdown`, `presentForm`, …) on t
 of the **interactive PTY** architecture. The lessons feed the larger MulmoClaude
 migration — see [Background](#background).
 
-> Status: planned. Fill in the **Findings** sections as each phase lands.
+> Status: Phase I + II implemented and smoke-tested. See each phase's
+> **Findings**. Remaining: manual check against a real interactive `claude`, and
+> the deferred permission-prompt probe.
 
 ---
 
@@ -145,11 +147,38 @@ server resolves the held request; the handler returns the answer to claude.
 - claude calls `presentForm`; the panel renders a form; the user submits; the
   answer reaches claude and the turn continues with it.
 
-### Findings (fill in after Phase II)
+### Findings (after Phase II)
 
-- How the blocking round-trip is implemented and how robust it is:
-- Timeout / abandoned-form behavior:
-- What this implies for MulmoClaude's `presentForm` / `handlePermission`:
+Status: **implemented and smoke-tested** end-to-end — `presentForm` blocks the
+tool call until a `POST /api/gui/answer` arrives, then returns the answer JSON to
+claude; history replay shows the form as completed afterward.
+
+- **How the blocking round-trip is implemented and how robust it is:**
+  `presentForm` generates a `requestId`, `POST`s `{ requestId, schema }` to
+  `/api/gui` (which registers a pending-form entry and publishes the form), then
+  **long-polls** `GET /api/gui/answer/:requestId`. The server parks that response
+  in the form's `waiters` set and releases it the instant the panel `POST`s
+  `/api/gui/answer` — or replies `204` after a 25 s hold so the MCP process
+  re-polls (an overall 10-min deadline lives in the MCP process). The 25 s
+  chunked-hold avoids any single request tripping a proxy/client idle timeout,
+  and `req.on("close")` drops parked responses if claude is killed mid-form. The
+  whole thing rides the **same `data` channel** as Phase I — no new transport.
+- **Timeout / abandoned-form behavior:** if no answer arrives within the MCP
+  deadline the tool returns "the user did not submit the form (timed out)" so
+  claude can recover rather than hang forever; a `404` (form gone, e.g. server
+  restarted) returns "the form is no longer available." Submission is
+  **idempotent** — a second `/api/gui/answer` for an already-answered form is a
+  no-op, and `formAnswered` is broadcast on `gui` so any other viewer (or a
+  history replay) locks the form and shows the result.
+- **What this implies for MulmoClaude's `presentForm` / `handlePermission`:**
+  the load-bearing assumption holds — a **blocking** GUI tool works under the
+  interactive PTY with no special claude support, because the block lives
+  entirely in the MCP subprocess (await an HTTP round-trip) and is invisible to
+  claude, which just sees a slow tool call. `handlePermission` is the same shape
+  (a blocking ask that returns allow/deny), so the `AskUserQuestion →
+  presentForm` redirect should port cleanly. The remaining open risk is the
+  **native permission prompt** (`--permission-prompt-tool`), still a deferred
+  probe — see below.
 
 ---
 

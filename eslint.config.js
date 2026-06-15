@@ -35,6 +35,8 @@ export default [
         process: "readonly",
         URL: "readonly",
         fetch: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
       },
     },
   },

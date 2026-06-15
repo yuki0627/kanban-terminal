@@ -3,16 +3,28 @@ import { ref, watch, onMounted, onUnmounted, computed } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { usePubSub } from "../composables/usePubSub";
+import GuiForm from "./GuiForm.vue";
 
 // The GUI panel renders the structured `data` pushed by GUI-protocol MCP tools
-// (Phase I: presentMarkdown). It mirrors the terminal's active session: live
+// (presentMarkdown, presentForm). It mirrors the terminal's active session: live
 // frames arrive on the "gui" pub/sub channel, and history is replayed from
 // /api/gui/:sessionId when a session is (re)selected. See the spike doc.
 const props = defineProps<{ sessionId: string | null }>();
 
+interface FormSchema {
+  title?: string;
+  fields: { name: string; label?: string; type?: string; options?: string[] }[];
+  submitLabel?: string;
+}
 interface GuiFrame {
   type: string;
-  data: { markdown?: string };
+  data: {
+    markdown?: string;
+    requestId?: string;
+    schema?: FormSchema;
+    answered?: boolean;
+    answer?: Record<string, unknown> | null;
+  };
 }
 
 const frames = ref<GuiFrame[]>([]);
@@ -23,10 +35,6 @@ function renderMarkdown(md: string): string {
   const raw = marked.parse(md, { async: false }) as string;
   return DOMPurify.sanitize(raw);
 }
-
-const renderedFrames = computed(() =>
-  frames.value.map((f) => renderMarkdown(f.data.markdown ?? ""))
-);
 
 async function loadHistory(id: string) {
   try {
@@ -59,6 +67,18 @@ onMounted(() => {
     const msg = data as { sessionId: string } & GuiFrame;
     // Only render frames for the session currently in the foreground.
     if (msg.sessionId !== props.sessionId) return;
+    if (msg.type === "formAnswered") {
+      // A submission (here or in another viewer) completed a pending form: lock
+      // the matching frame and record the answer.
+      const f = frames.value.find(
+        (fr) => fr.type === "presentForm" && fr.data.requestId === msg.data.requestId
+      );
+      if (f) {
+        f.data.answered = true;
+        f.data.answer = msg.data.answer ?? null;
+      }
+      return;
+    }
     frames.value = [...frames.value, { type: msg.type, data: msg.data }];
   });
 });
@@ -74,17 +94,22 @@ const hasContent = computed(() => frames.value.length > 0);
     </div>
     <div class="content">
       <div v-if="!hasContent" class="empty">
-        Ask Claude to use <code>presentMarkdown</code> to render content here.
+        Ask Claude to use <code>presentMarkdown</code> or <code>presentForm</code>
+        to render content here.
       </div>
-      <!-- DOMPurify-sanitized above; v-html is required to render markdown. -->
-      <!-- eslint-disable vue/no-v-html -->
-      <article
-        v-for="(html, i) in renderedFrames"
-        :key="i"
-        class="frame markdown-body"
-        v-html="html"
-      />
-      <!-- eslint-enable vue/no-v-html -->
+      <template v-for="(f, i) in frames" :key="i">
+        <GuiForm
+          v-if="f.type === 'presentForm' && f.data.requestId && f.data.schema"
+          class="frame"
+          :request-id="f.data.requestId"
+          :schema="f.data.schema"
+          :answered="f.data.answered ?? false"
+          :answer="f.data.answer ?? null"
+        />
+        <!-- DOMPurify-sanitized in renderMarkdown; v-html required to render it. -->
+        <!-- eslint-disable-next-line vue/no-v-html -->
+        <article v-else class="frame markdown-body" v-html="renderMarkdown(f.data.markdown ?? '')" />
+      </template>
     </div>
   </section>
 </template>

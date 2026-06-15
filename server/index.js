@@ -43,19 +43,35 @@ const SESSIONS_CHANNEL = "sessions";
 const GUI_CHANNEL = "gui";
 
 // Stdio MCP server wired into each spawned claude (--mcp-config). It exposes the
-// presentMarkdown tool that drives the GUI panel.
+// GUI-protocol tools (presentMarkdown, presentForm) that drive the GUI panel.
 const MCP_SERVER_PATH = path.join(__dirname, "mcp", "present-markdown.js");
 
-// MCP tool name claude uses, in the mcp__<server>__<tool> form. Auto-allowed via
+// MCP tool names claude uses, in the mcp__<server>__<tool> form. Auto-allowed via
 // --allowedTools so the spike doesn't trip the permission prompt (a deferred
-// probe — see the doc).
-const GUI_MCP_TOOL = "mcp__mulmoterminal-gui__presentMarkdown";
+// probe — see the doc). Comma-joined into a single --allowedTools value.
+const GUI_MCP_TOOLS = [
+  "mcp__mulmoterminal-gui__presentMarkdown",
+  "mcp__mulmoterminal-gui__presentForm",
+].join(",");
 
 // Latest GUI payloads per session, kept in memory for the spike so the panel can
 // replay them when a session is (re)selected. Each entry is an array, capped to
 // the most recent N frames.
 const guiPayloads = new Map(); // id -> [{ type, data }]
 const GUI_HISTORY_LIMIT = 50;
+
+// requestId is a UUID, same shape as a session id. Validate it before it reaches
+// the pending-form registry / route params.
+const UUID_RE = SESSION_ID_RE;
+
+// In-flight presentForm requests, keyed by requestId. Each presentForm tool call
+// blocks until the user submits; the MCP process long-polls /api/gui/answer and
+// the entry's `waiters` hold those open responses until the answer arrives.
+const pendingForms = new Map(); // requestId -> { sessionId, answered, answer, waiters:Set, frame }
+
+// How long the server holds a single answer long-poll open before replying 204
+// (the MCP process then re-polls). Kept under typical proxy/client idle limits.
+const FORM_POLL_HOLD_MS = 25 * 1000;
 
 // Only the most-recent N sessions are listed in the sidebar; older ones aren't
 // read or parsed, keeping /api/sessions cheap for projects with many sessions.
@@ -261,9 +277,10 @@ app.post("/api/hook", (req, res) => {
   res.json({ ok: true });
 });
 
-// The presentMarkdown MCP tool POSTs GUI frames here. We validate the frame,
-// store the latest payloads keyed by session id (in-memory for the spike), and
-// publish on the "gui" channel so the active GUI panel renders it live.
+// The GUI-protocol MCP tools POST frames here. We validate the frame, store the
+// latest payloads keyed by session id (in-memory for the spike), and publish on
+// the "gui" channel so the active GUI panel renders it live. A presentForm frame
+// additionally registers a pending request the user's answer will resolve.
 app.post("/api/gui", (req, res) => {
   const { sessionId, type, data } = req.body || {};
   // The MCP process is local and trusted, but the session id flows from env and
@@ -271,14 +288,38 @@ app.post("/api/gui", (req, res) => {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) {
     return res.status(400).json({ error: "invalid sessionId" });
   }
-  if (typeof type !== "string" || type !== "presentMarkdown") {
-    return res.status(400).json({ error: "unsupported type" });
-  }
-  if (!data || typeof data !== "object" || typeof data.markdown !== "string") {
+  if (typeof data !== "object" || data === null) {
     return res.status(400).json({ error: "invalid data" });
   }
 
-  const frame = { type, data: { markdown: data.markdown } };
+  let frame;
+  if (type === "presentMarkdown") {
+    if (typeof data.markdown !== "string") {
+      return res.status(400).json({ error: "invalid markdown" });
+    }
+    frame = { type, data: { markdown: data.markdown } };
+  } else if (type === "presentForm") {
+    const { requestId, schema } = data;
+    if (!requestId || !UUID_RE.test(requestId)) {
+      return res.status(400).json({ error: "invalid requestId" });
+    }
+    if (!schema || typeof schema !== "object" || !Array.isArray(schema.fields) || schema.fields.length === 0) {
+      return res.status(400).json({ error: "invalid schema" });
+    }
+    // `answered`/`answer` start empty and are filled in when the user submits,
+    // so a history replay can show the form as already completed.
+    frame = { type, data: { requestId, schema, answered: false, answer: null } };
+    pendingForms.set(requestId, {
+      sessionId,
+      answered: false,
+      answer: null,
+      waiters: new Set(),
+      frame,
+    });
+  } else {
+    return res.status(400).json({ error: "unsupported type" });
+  }
+
   const list = guiPayloads.get(sessionId) || [];
   list.push(frame);
   if (list.length > GUI_HISTORY_LIMIT) list.splice(0, list.length - GUI_HISTORY_LIMIT);
@@ -286,6 +327,67 @@ app.post("/api/gui", (req, res) => {
 
   pubsub?.publish(GUI_CHANNEL, { sessionId, ...frame });
   console.log(`[gui] ${type} for ${sessionId}`);
+  res.json({ ok: true });
+});
+
+// Long-poll for a form's answer. The MCP process calls this after publishing a
+// presentForm; we hold the response open until the user submits (resolved by
+// POST /api/gui/answer) or briefly time out with 204 so the caller re-polls.
+app.get("/api/gui/answer/:requestId", (req, res) => {
+  const { requestId } = req.params;
+  if (!UUID_RE.test(requestId)) {
+    return res.status(400).json({ error: "invalid requestId" });
+  }
+  const form = pendingForms.get(requestId);
+  if (!form) return res.status(404).json({ error: "unknown requestId" });
+  if (form.answered) return res.json({ answer: form.answer });
+
+  // Park the response; release it on submit or after the hold window.
+  const waiter = { res, timer: null };
+  waiter.timer = setTimeout(() => {
+    form.waiters.delete(waiter);
+    if (!res.headersSent) res.status(204).end();
+  }, FORM_POLL_HOLD_MS);
+  form.waiters.add(waiter);
+  // If the MCP process gives up (claude killed), drop the parked response.
+  req.on("close", () => {
+    clearTimeout(waiter.timer);
+    form.waiters.delete(waiter);
+  });
+});
+
+// The GUI panel POSTs the user's form submission here. We record the answer,
+// release any parked long-polls, and broadcast so other viewers mark the form
+// done. Idempotent: a second submission for an answered form is ignored.
+app.post("/api/gui/answer", (req, res) => {
+  const { requestId, answer } = req.body || {};
+  if (!requestId || !UUID_RE.test(requestId)) {
+    return res.status(400).json({ error: "invalid requestId" });
+  }
+  if (typeof answer !== "object" || answer === null || Array.isArray(answer)) {
+    return res.status(400).json({ error: "invalid answer" });
+  }
+  const form = pendingForms.get(requestId);
+  if (!form) return res.status(404).json({ error: "unknown requestId" });
+
+  if (!form.answered) {
+    form.answered = true;
+    form.answer = answer;
+    // Reflect into the stored frame so a later history replay shows it answered.
+    form.frame.data.answered = true;
+    form.frame.data.answer = answer;
+    for (const w of form.waiters) {
+      clearTimeout(w.timer);
+      if (!w.res.headersSent) w.res.json({ answer });
+    }
+    form.waiters.clear();
+    pubsub?.publish(GUI_CHANNEL, {
+      sessionId: form.sessionId,
+      type: "formAnswered",
+      data: { requestId, answer },
+    });
+    console.log(`[gui] form answered ${requestId}`);
+  }
   res.json({ ok: true });
 });
 
@@ -424,7 +526,7 @@ wss.on("connection", (ws, req) => {
     // runs without a permission prompt (--strict-mcp-config keeps the user's
     // other MCP servers out of the spike).
     const mcp = mcpConfigJson(sessionId);
-    const guiArgs = ["--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOL];
+    const guiArgs = ["--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
     const args = resume
       ? ["--resume", resume, "--settings", settings, ...guiArgs]
       : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
