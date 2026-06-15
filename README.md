@@ -82,7 +82,7 @@ SDK; we drive the real interactive CLI and relay its TTY over the WebSocket.
 | Backend  | Node (ESM), Express 5, `ws` (terminal WebSocket), `node-pty`, socket.io |
 | Tests    | Vitest + @vue/test-utils + jsdom |
 
-Requires **Node ≥ 22** (uses `node --env-file-if-exists`) and the `claude` CLI on `PATH`.
+Requires **Node ≥ 22.9** (uses `node --env-file-if-exists`) and the `claude` CLI on `PATH`.
 
 ---
 
