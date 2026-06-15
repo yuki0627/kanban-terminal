@@ -15,6 +15,25 @@ const PORT = process.env.PORT || 3456;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const CLAUDE_CWD = process.env.CLAUDE_CWD || process.env.HOME;
 
+// A session id is always a UUID (server-generated, or a .jsonl basename). Reject
+// anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
+// a value that claude re-parses as a flag) into the spawned process.
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Only same-machine browser origins may open the terminal / pub-sub sockets, so
+// a malicious website the user visits can't drive the local Claude PTY (a
+// cross-site WebSocket hijack). A missing Origin (non-browser local client) is
+// allowed; any localhost host on any port is allowed (covers the Vite dev proxy).
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  try {
+    const host = new URL(origin).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
 // Pub/sub channel the sidebar subscribes to for live session-activity changes.
 const SESSIONS_CHANNEL = "sessions";
 
@@ -149,7 +168,8 @@ async function readSessionMeta(dir, file) {
     else if (o.type === "user" && firstUserMsg === null) {
       let c = o.message?.content;
       if (Array.isArray(c)) {
-        c = c.map((x) => (typeof x === "object" ? x.text || "" : x)).join(" ");
+        // Guard against null elements (`typeof null === "object"`).
+        c = c.map((x) => (x && typeof x === "object" ? x.text || "" : x)).join(" ");
       }
       // Skip slash-command / local-command wrappers that aren't real prompts.
       if (typeof c === "string" && c.trim() && !/^\s*<(local-command|command-|bash-)/.test(c)) {
@@ -210,7 +230,11 @@ app.get("/api/sessions", async (_req, res) => {
     } catch (err) {
       if (err.code !== "ENOENT") throw err;
     }
-    const fsSessions = await Promise.all(files.map((f) => readSessionMeta(dir, f)));
+    // A file deleted/renamed between readdir and read, or one that fails to
+    // parse, must not 500 the whole list — drop just that file.
+    const fsSessions = (
+      await Promise.all(files.map((f) => readSessionMeta(dir, f).catch(() => null)))
+    ).filter(Boolean);
     const onDisk = new Set(fsSessions.map((s) => s.id));
 
     // In-memory sessions not yet written to disk. Prune any that have since
@@ -239,7 +263,7 @@ app.get("/api/sessions", async (_req, res) => {
 });
 
 const server = http.createServer(app);
-pubsub = createPubSub(server);
+pubsub = createPubSub(server, isAllowedOrigin);
 
 // Terminal WebSocket. Uses noServer + manual upgrade routing so it shares the
 // HTTP server with socket.io (the pub/sub at /ws/pubsub) without the two
@@ -248,6 +272,11 @@ const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const { pathname } = new URL(req.url, "http://localhost");
   if (pathname === "/ws") {
+    if (!isAllowedOrigin(req.headers.origin)) {
+      console.warn(`[ws] rejected cross-origin upgrade from ${req.headers.origin}`);
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   }
   // Other paths (e.g. /ws/pubsub) are left to socket.io's own upgrade handler.
@@ -258,6 +287,11 @@ wss.on("connection", (ws, req) => {
   // For new sessions we generate the id ourselves (--session-id) so the server
   // always knows the current session's id, even before any file exists.
   const resume = new URL(req.url, "http://localhost").searchParams.get("session");
+  if (resume && !SESSION_ID_RE.test(resume)) {
+    console.warn(`[ws] rejecting non-UUID session id: ${JSON.stringify(resume)}`);
+    ws.close();
+    return;
+  }
   const sessionId = resume || randomUUID();
 
   // Tell the browser which session this is (it learns the id of new sessions).

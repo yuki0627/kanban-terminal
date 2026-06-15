@@ -4,11 +4,18 @@ import { Server as IOServer } from "socket.io";
 // Channel names are socket.io rooms — subscribe/unsubscribe map to
 // socket.join / socket.leave, and publish broadcasts to the room.
 // socket.io handles reconnect / heartbeat / transport for us.
-export function createPubSub(server) {
+export function createPubSub(server, isAllowedOrigin = () => true) {
   const io = new IOServer(server, {
     path: "/ws/pubsub",
-    cors: { origin: true, credentials: true },
     transports: ["websocket"],
+    // Reject cross-origin connections so an untrusted website can't subscribe to
+    // session activity. allowRequest covers the websocket handshake; cors covers
+    // any polling/preflight.
+    allowRequest: (req, cb) => cb(null, isAllowedOrigin(req.headers.origin)),
+    cors: {
+      origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+      credentials: true,
+    },
   });
 
   io.on("connection", (socket) => {
