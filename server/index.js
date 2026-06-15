@@ -37,6 +37,10 @@ function isAllowedOrigin(origin) {
 // Pub/sub channel the sidebar subscribes to for live session-activity changes.
 const SESSIONS_CHANNEL = "sessions";
 
+// Only the most-recent N sessions are listed in the sidebar; older ones aren't
+// read or parsed, keeping /api/sessions cheap for projects with many sessions.
+const SESSION_LIST_LIMIT = 50;
+
 // Per-session "working" state, driven by Claude hooks (see /api/hook):
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
 const activity = new Map(); // id -> { working, event, at }
@@ -230,12 +234,22 @@ app.get("/api/sessions", async (_req, res) => {
     } catch (err) {
       if (err.code !== "ENOENT") throw err;
     }
-    // A file deleted/renamed between readdir and read, or one that fails to
-    // parse, must not 500 the whole list — drop just that file.
-    const fsSessions = (
-      await Promise.all(files.map((f) => readSessionMeta(dir, f).catch(() => null)))
+
+    // Cheap pass: stat (don't read) every file just for its mtime, so we can
+    // rank by recency. Skip any that vanished between readdir and stat.
+    const onDiskStats = (
+      await Promise.all(
+        files.map(async (file) => {
+          try {
+            const st = await fs.stat(path.join(dir, file));
+            return { kind: "disk", id: path.basename(file, ".jsonl"), file, mtime: st.mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+      )
     ).filter(Boolean);
-    const onDisk = new Set(fsSessions.map((s) => s.id));
+    const onDisk = new Set(onDiskStats.map((s) => s.id));
 
     // In-memory sessions not yet written to disk. Prune any that have since
     // been persisted — the on-disk record (with its real title) wins.
@@ -246,6 +260,7 @@ app.get("/api/sessions", async (_req, res) => {
         continue;
       }
       pending.push({
+        kind: "pending",
         id,
         title: meta.title,
         mtime: meta.createdAt,
@@ -254,7 +269,23 @@ app.get("/api/sessions", async (_req, res) => {
       });
     }
 
-    const sessions = [...fsSessions, ...pending].sort((a, b) => b.mtime - a.mtime);
+    // Keep only the most-recent N, then read & parse contents for just those
+    // on-disk files (a deleted/corrupt file is dropped, not fatal).
+    const top = [...onDiskStats, ...pending]
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, SESSION_LIST_LIMIT);
+    const sessions = (
+      await Promise.all(
+        top.map((s) =>
+          s.kind === "pending"
+            ? { id: s.id, title: s.title, mtime: s.mtime, working: s.working, waiting: s.waiting }
+            : readSessionMeta(dir, s.file).catch(() => null)
+        )
+      )
+    )
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+
     res.json({ cwd: CLAUDE_CWD, sessions });
   } catch (err) {
     console.error("[api] /api/sessions failed:", err);

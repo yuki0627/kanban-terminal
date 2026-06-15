@@ -114,8 +114,8 @@ Base URL: `http://localhost:$PORT` (default `http://localhost:3456`).
 
 ### HTTP: `GET /api/sessions`
 
-Lists every chat session for the current project (`CLAUDE_CWD`), newest first,
-including freshly-created sessions that aren't yet written to disk.
+Lists the most-recent chat sessions for the current project (`CLAUDE_CWD`),
+newest first, including freshly-created sessions that aren't yet written to disk.
 
 **Response `200 application/json`**
 
@@ -138,7 +138,9 @@ including freshly-created sessions that aren't yet written to disk.
 - Sessions are read from `~/.claude/projects/<encoded CLAUDE_CWD>/*.jsonl` and
   merged with in-memory sessions started this run but not yet persisted (those
   have `title: "New session"` and `mtime` = creation time).
-- Sorted by `mtime` descending.
+- Sorted by `mtime` descending and capped at the **50** most recent. Files are
+  ranked by a cheap `stat`-only pass; only the top 50 are read and parsed for
+  titles, so the endpoint stays cheap regardless of how many sessions exist.
 - `500 { "error": string }` on an unexpected filesystem error. A missing project
   directory is **not** an error — it yields an empty `sessions` array.
 
