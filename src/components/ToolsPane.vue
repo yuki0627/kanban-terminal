@@ -18,7 +18,7 @@ interface ToolCall {
   toolName: string;
   toolInput?: unknown;
   toolOutput?: unknown;
-  status: "running" | "completed";
+  status: "running" | "completed" | "failed";
   at: number;
   durationMs?: number;
 }
@@ -58,10 +58,15 @@ function upsert(call: ToolCall) {
 async function loadHistory(id: string) {
   try {
     const res = await fetch(`/api/tool-calls/${encodeURIComponent(id)}`);
+    // Guard against a session-switch race: if the user moved on while this was in
+    // flight, drop the stale response instead of clobbering the new session's pane.
+    if (id !== props.sessionId) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    toolCalls.value = (await res.json()).toolCalls ?? [];
+    const data = await res.json();
+    if (id !== props.sessionId) return;
+    toolCalls.value = data.toolCalls ?? [];
   } catch {
-    toolCalls.value = [];
+    if (id === props.sessionId) toolCalls.value = [];
   }
 }
 
@@ -155,6 +160,7 @@ function formatValue(v: unknown): string {
             <code class="call-name">{{ call.toolName }}</code>
             <span class="call-meta">
               <span v-if="call.status === 'running'" class="badge running">running…</span>
+              <span v-else-if="call.status === 'failed'" class="badge failed">failed</span>
               <span v-else class="badge done">{{ call.durationMs != null ? `${call.durationMs} ms` : "done" }}</span>
               <span class="time">{{ formatTime(call.at) }}</span>
             </span>
@@ -164,11 +170,11 @@ function formatValue(v: unknown): string {
               arguments
             </div>
             <pre class="block">{{ formatValue(call.toolInput) }}</pre>
-            <template v-if="call.status === 'completed'">
+            <template v-if="call.status === 'completed' || call.status === 'failed'">
               <div class="label">
-                result
+                {{ call.status === 'failed' ? 'error' : 'result' }}
               </div>
-              <pre class="block result">{{ formatValue(call.toolOutput) || "(no output)" }}</pre>
+              <pre class="block" :class="call.status === 'failed' ? 'error' : 'result'">{{ formatValue(call.toolOutput) || "(no output)" }}</pre>
             </template>
             <div v-else class="muted italic">
               Waiting for result…
@@ -297,6 +303,10 @@ function formatValue(v: unknown): string {
   background: #14361c;
   color: #a5d6a7;
 }
+.badge.failed {
+  background: #4a1414;
+  color: #ef9a9a;
+}
 .time {
   color: #6b769a;
   font-size: 11px;
@@ -327,5 +337,9 @@ function formatValue(v: unknown): string {
 }
 .block.result {
   border-color: #1c3a24;
+}
+.block.error {
+  border-color: #4a1414;
+  color: #ef9a9a;
 }
 </style>

@@ -40,11 +40,15 @@ function upsert(result: ToolResult) {
 async function loadHistory(id: string) {
   try {
     const res = await fetch(`/api/agent/toolResults/${encodeURIComponent(id)}`);
+    // Guard against a session-switch race: a slow response for an old session must
+    // not clobber the pane after the user has switched to a newer one.
+    if (id !== props.sessionId) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    if (id !== props.sessionId) return;
     results.value = data.toolResults ?? [];
   } catch {
-    results.value = [];
+    if (id === props.sessionId) results.value = [];
   }
 }
 
@@ -100,6 +104,8 @@ const hasContent = computed(() => results.value.length > 0);
         class="gear"
         :class="{ active: toolsOpen }"
         title="Tools & tool-call history"
+        aria-label="Toggle tools pane"
+        :aria-pressed="toolsOpen ? 'true' : 'false'"
         @click="emit('toggleTools')"
       >
         ⚙

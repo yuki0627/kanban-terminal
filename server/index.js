@@ -134,6 +134,17 @@ async function storeToolResult(sessionId, result) {
 const toolCallsStore = createSessionStore(".toolcalls");
 const TOOLCALLS_LIMIT = 200;
 const toolCallsChannel = (id) => `toolcalls:${id}`;
+// Stored tool outputs are capped so one verbose tool can't bloat the on-disk
+// history (and the pane). The raw output still reaches the LLM via the terminal;
+// this is only the history copy.
+const TOOL_OUTPUT_CAP = 20_000;
+
+function capToolOutput(output) {
+  if (typeof output === "string" && output.length > TOOL_OUTPUT_CAP) {
+    return output.slice(0, TOOL_OUTPUT_CAP) + `\n… (truncated ${output.length - TOOL_OUTPUT_CAP} chars)`;
+  }
+  return output;
+}
 
 // PreToolUse: a tool started. Append a "running" entry (deduped by tool_use_id).
 async function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }) {
@@ -146,17 +157,20 @@ async function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }
   toolCallsStore.save(sessionId);
 }
 
-// PostToolUse: a tool finished. Complete the matching entry by tool_use_id (or add
-// one if we somehow never saw the start).
-async function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutput, durationMs }) {
+// PostToolUse (status "completed") or PostToolUseFailure (status "failed"):
+// complete the matching entry by tool_use_id (or add one if we never saw the
+// start). A failed tool fires PostToolUseFailure, NOT PostToolUse, so both route
+// here — otherwise the entry would be stuck on "running".
+async function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutput, durationMs, status }) {
   const list = await toolCallsStore.get(sessionId);
+  const output = capToolOutput(toolOutput);
   let call = toolUseId ? list.find((c) => c.toolUseId === toolUseId) : undefined;
   if (call) {
-    call.status = "completed";
-    call.toolOutput = toolOutput;
+    call.status = status;
+    call.toolOutput = output;
     call.durationMs = durationMs;
   } else {
-    call = { toolUseId, toolName, toolInput, toolOutput, status: "completed", at: Date.now(), durationMs };
+    call = { toolUseId, toolName, toolInput, toolOutput: output, status, at: Date.now(), durationMs };
     list.push(call);
     if (list.length > TOOLCALLS_LIMIT) list.splice(0, list.length - TOOLCALLS_LIMIT);
   }
@@ -255,9 +269,11 @@ function setWaiting(id, waiting, event) {
 
 // Hook config injected via `claude --settings <json>`. Each event POSTs the full
 // hook payload to /api/hook. UserPromptSubmit => working, Stop => idle,
-// Notification => waiting for input. PreToolUse/PostToolUse (matcher "" => every
-// tool, including built-ins and MCP tools) feed the per-session tool-call history
-// that the GUI's tools pane shows.
+// Notification => waiting for input. PreToolUse/PostToolUse/PostToolUseFailure
+// (matcher "" => every tool, including built-ins and MCP tools) feed the
+// per-session tool-call history that the GUI's tools pane shows. A failed tool
+// fires PostToolUseFailure (NOT PostToolUse), so we register both to complete the
+// entry either way — otherwise a failed call would stay stuck on "running".
 function hookSettingsJson() {
   const cmd =
     `curl -s -X POST http://localhost:${PORT}/api/hook ` +
@@ -272,6 +288,7 @@ function hookSettingsJson() {
       Notification: entry,
       PreToolUse: toolEntry,
       PostToolUse: toolEntry,
+      PostToolUseFailure: toolEntry,
     },
   });
 }
@@ -349,7 +366,10 @@ async function readSessionMeta(dir, file) {
 }
 
 const app = express();
-app.use(express.json());
+// Generous body limit: PostToolUse hook payloads carry the tool's full output
+// (a big Read/Bash result can blow past Express's 100kb default, which would 413
+// the hook and leave its tool-call entry stuck on "running").
+app.use(express.json({ limit: "25mb" }));
 
 // Mount each enabled GUI plugin's REST routes (e.g. POST /api/markdown,
 // POST /api/form). The MCP broker dispatches tool calls to these.
@@ -390,13 +410,14 @@ app.post("/api/hook", async (req, res) => {
         toolName: tool_name,
         toolInput: tool_input,
       });
-    } else if (hook_event_name === "PostToolUse") {
+    } else if (hook_event_name === "PostToolUse" || hook_event_name === "PostToolUseFailure") {
       await recordToolCallEnd(session_id, {
         toolUseId: tool_use_id,
         toolName: tool_name,
         toolInput: tool_input,
         toolOutput: tool_output ?? tool_response,
         durationMs: duration_ms,
+        status: hook_event_name === "PostToolUseFailure" ? "failed" : "completed",
       });
     }
     console.log(`[hook] ${hook_event_name} for ${session_id}`);
