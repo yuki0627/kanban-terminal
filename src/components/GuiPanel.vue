@@ -21,7 +21,9 @@ interface ToolResult {
 const props = defineProps<{
   sessionId: string | null;
   sendTextMessage: (text: string) => boolean;
+  toolsOpen?: boolean;
 }>();
+const emit = defineEmits<{ toggleTools: [] }>();
 
 const results = ref<ToolResult[]>([]);
 
@@ -38,11 +40,15 @@ function upsert(result: ToolResult) {
 async function loadHistory(id: string) {
   try {
     const res = await fetch(`/api/agent/toolResults/${encodeURIComponent(id)}`);
+    // Guard against a session-switch race: a slow response for an old session must
+    // not clobber the pane after the user has switched to a newer one.
+    if (id !== props.sessionId) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    if (id !== props.sessionId) return;
     results.value = data.toolResults ?? [];
   } catch {
-    results.value = [];
+    if (id === props.sessionId) results.value = [];
   }
 }
 
@@ -93,6 +99,17 @@ const hasContent = computed(() => results.value.length > 0);
   <section class="gui-panel">
     <div class="header">
       <span class="title">GUI</span>
+      <button
+        type="button"
+        class="gear"
+        :class="{ active: toolsOpen }"
+        title="Tools & tool-call history"
+        aria-label="Toggle tools pane"
+        :aria-pressed="toolsOpen ? 'true' : 'false'"
+        @click="emit('toggleTools')"
+      >
+        ⚙
+      </button>
     </div>
     <div class="content">
       <div v-if="!hasContent" class="empty">
@@ -130,9 +147,28 @@ const hasContent = computed(() => results.value.length > 0);
   color: #e0e0e0;
   font-family: system-ui, sans-serif;
   font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 .title {
   font-weight: 600;
+}
+.gear {
+  background: none;
+  border: none;
+  color: #7c87a8;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.gear:hover {
+  color: #e0e0e0;
+}
+.gear.active {
+  color: #4a8cff;
 }
 
 .content {

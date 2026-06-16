@@ -8,7 +8,7 @@ import fs from "fs/promises";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
-import { mountAllRoutes, allowedToolNames } from "./plugins-registry.js";
+import { mountAllRoutes, allowedToolNames, toolSummaries } from "./plugins-registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,18 +53,66 @@ const MCP_SERVER_PATH = path.join(__dirname, "mcp", "broker.js");
 // prompt (permissions stay terminal-native). Comma-joined into one --allowedTools.
 const GUI_MCP_TOOLS = allowedToolNames().join(",");
 
-// GUI toolResults per session, kept in memory for the spike so the panel can
-// replay them when a session is (re)selected. (Chat + message history already
-// live in the terminal and Claude's .jsonl; this is the only GUI-side store.)
+// A per-session list store mirrored to disk so it survives a server reboot — one
+// JSON file per session under <workspace>/<dirName>/<sessionId>.json
+// (<workspace> = CLAUDE_CWD). The in-memory Map is the working copy; the file is
+// rewritten on each change and lazy-loaded on first access. Session ids are
+// validated UUIDs (SESSION_ID_RE), so they're safe to use as filenames.
+function createSessionStore(dirName) {
+  const dir = path.join(CLAUDE_CWD, dirName);
+  const fileFor = (id) => path.join(dir, `${id}.json`);
+  const map = new Map(); // id -> list (the working copy; mutate in place)
+  const loading = new Map(); // id -> Promise<list>, dedupes concurrent loads
+
+  // Lazily load a session's list from disk, then keep using the in-memory copy.
+  function get(sessionId) {
+    const cached = map.get(sessionId);
+    if (cached) return Promise.resolve(cached);
+    if (loading.has(sessionId)) return loading.get(sessionId);
+    const p = (async () => {
+      let list = [];
+      if (SESSION_ID_RE.test(sessionId)) {
+        try {
+          const parsed = JSON.parse(await fs.readFile(fileFor(sessionId), "utf8"));
+          if (Array.isArray(parsed)) list = parsed;
+        } catch {
+          // No file yet (or unreadable) => start empty.
+        }
+      }
+      map.set(sessionId, list);
+      loading.delete(sessionId);
+      return list;
+    })();
+    loading.set(sessionId, p);
+    return p;
+  }
+
+  // Persist a session's list (best-effort, fire-and-forget).
+  async function save(sessionId) {
+    if (!SESSION_ID_RE.test(sessionId)) return;
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(fileFor(sessionId), JSON.stringify(map.get(sessionId) || []));
+    } catch (e) {
+      console.error(`[${dirName}] failed to persist ${sessionId}: ${e.message}`);
+    }
+  }
+
+  return { get, save };
+}
+
+// GUI toolResults per session, persisted under <workspace>/.toolresults so the
+// panel replays the rendered views even after a server reboot. (Chat + message
+// history live in the terminal and Claude's .jsonl; this is the GUI-side store.)
 // Each entry is an array of toolResults, capped to the most recent N.
-const toolResultsBySession = new Map(); // id -> [toolResult]
+const toolResultsStore = createSessionStore(".toolresults");
 const GUI_HISTORY_LIMIT = 50;
 
 // Upsert a toolResult into a session's list, deduped by uuid — a re-emitted result
 // (e.g. a form whose viewState changed after the user submitted) updates in place.
 // Mirrors MulmoClaude's applyToolResultToSession.
-function storeToolResult(sessionId, result) {
-  const list = toolResultsBySession.get(sessionId) || [];
+async function storeToolResult(sessionId, result) {
+  const list = await toolResultsStore.get(sessionId);
   const idx = list.findIndex((r) => r.uuid === result.uuid);
   if (idx >= 0) {
     list[idx] = result;
@@ -72,7 +120,62 @@ function storeToolResult(sessionId, result) {
     list.push(result);
     if (list.length > GUI_HISTORY_LIMIT) list.splice(0, list.length - GUI_HISTORY_LIMIT);
   }
-  toolResultsBySession.set(sessionId, list);
+  toolResultsStore.save(sessionId);
+}
+
+// Per-session tool-call history, fed by Claude's PreToolUse/PostToolUse hooks so
+// it captures EVERY tool call — built-ins (Bash, Read, …), the user's MCP tools,
+// AND our GUI plugin tools — not just the GUI ones the broker sees. Published on a
+// per-session channel the tools pane subscribes to. (The broker's toolResults
+// store above is separate; it only drives rendering of GUI views.)
+//
+// Persisted under <workspace>/.toolcalls via the same disk-backed store as the
+// toolResults, so the history survives a server reboot.
+const toolCallsStore = createSessionStore(".toolcalls");
+const TOOLCALLS_LIMIT = 200;
+const toolCallsChannel = (id) => `toolcalls:${id}`;
+// Stored tool outputs are capped so one verbose tool can't bloat the on-disk
+// history (and the pane). The raw output still reaches the LLM via the terminal;
+// this is only the history copy.
+const TOOL_OUTPUT_CAP = 20_000;
+
+function capToolOutput(output) {
+  if (typeof output === "string" && output.length > TOOL_OUTPUT_CAP) {
+    return output.slice(0, TOOL_OUTPUT_CAP) + `\n… (truncated ${output.length - TOOL_OUTPUT_CAP} chars)`;
+  }
+  return output;
+}
+
+// PreToolUse: a tool started. Append a "running" entry (deduped by tool_use_id).
+async function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }) {
+  const list = await toolCallsStore.get(sessionId);
+  if (toolUseId && list.some((c) => c.toolUseId === toolUseId)) return;
+  const call = { toolUseId, toolName, toolInput, status: "running", at: Date.now() };
+  list.push(call);
+  if (list.length > TOOLCALLS_LIMIT) list.splice(0, list.length - TOOLCALLS_LIMIT);
+  pubsub?.publish(toolCallsChannel(sessionId), call);
+  toolCallsStore.save(sessionId);
+}
+
+// PostToolUse (status "completed") or PostToolUseFailure (status "failed"):
+// complete the matching entry by tool_use_id (or add one if we never saw the
+// start). A failed tool fires PostToolUseFailure, NOT PostToolUse, so both route
+// here — otherwise the entry would be stuck on "running".
+async function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutput, durationMs, status }) {
+  const list = await toolCallsStore.get(sessionId);
+  const output = capToolOutput(toolOutput);
+  let call = toolUseId ? list.find((c) => c.toolUseId === toolUseId) : undefined;
+  if (call) {
+    call.status = status;
+    call.toolOutput = output;
+    call.durationMs = durationMs;
+  } else {
+    call = { toolUseId, toolName, toolInput, toolOutput: output, status, at: Date.now(), durationMs };
+    list.push(call);
+    if (list.length > TOOLCALLS_LIMIT) list.splice(0, list.length - TOOLCALLS_LIMIT);
+  }
+  pubsub?.publish(toolCallsChannel(sessionId), call);
+  toolCallsStore.save(sessionId);
 }
 
 // Only the most-recent N sessions are listed in the sidebar; older ones aren't
@@ -164,17 +267,29 @@ function setWaiting(id, waiting, event) {
   publishActivity(id);
 }
 
-// Hook config injected via `claude --settings <json>`. Each event POSTs the
-// hook payload (session_id + hook_event_name) to /api/hook:
-//   UserPromptSubmit => working, Stop => idle,
-//   Notification     => waiting for input (permission / question / idle).
+// Hook config injected via `claude --settings <json>`. Each event POSTs the full
+// hook payload to /api/hook. UserPromptSubmit => working, Stop => idle,
+// Notification => waiting for input. PreToolUse/PostToolUse/PostToolUseFailure
+// (matcher "" => every tool, including built-ins and MCP tools) feed the
+// per-session tool-call history that the GUI's tools pane shows. A failed tool
+// fires PostToolUseFailure (NOT PostToolUse), so we register both to complete the
+// entry either way — otherwise a failed call would stay stuck on "running".
 function hookSettingsJson() {
   const cmd =
     `curl -s -X POST http://localhost:${PORT}/api/hook ` +
     `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
   const entry = [{ hooks: [{ type: "command", command: cmd }] }];
+  // Tool hooks take a matcher; "" matches all tools.
+  const toolEntry = [{ matcher: "", hooks: [{ type: "command", command: cmd }] }];
   return JSON.stringify({
-    hooks: { UserPromptSubmit: entry, Stop: entry, Notification: entry },
+    hooks: {
+      UserPromptSubmit: entry,
+      Stop: entry,
+      Notification: entry,
+      PreToolUse: toolEntry,
+      PostToolUse: toolEntry,
+      PostToolUseFailure: toolEntry,
+    },
   });
 }
 
@@ -251,7 +366,10 @@ async function readSessionMeta(dir, file) {
 }
 
 const app = express();
-app.use(express.json());
+// Generous body limit: PostToolUse hook payloads carry the tool's full output
+// (a big Read/Bash result can blow past Express's 100kb default, which would 413
+// the hook and leave its tool-call entry stuck on "running").
+app.use(express.json({ limit: "25mb" }));
 
 // Mount each enabled GUI plugin's REST routes (e.g. POST /api/markdown,
 // POST /api/form). The MCP broker dispatches tool calls to these.
@@ -262,8 +380,17 @@ app.use(express.static(path.join(__dirname, "../dist")));
 
 // Claude hooks (Stop / Notification) POST their payload here so we can flag
 // which background sessions have new activity.
-app.post("/api/hook", (req, res) => {
-  const { session_id, hook_event_name } = req.body || {};
+app.post("/api/hook", async (req, res) => {
+  const {
+    session_id,
+    hook_event_name,
+    tool_name,
+    tool_input,
+    tool_use_id,
+    tool_output,
+    tool_response,
+    duration_ms,
+  } = req.body || {};
   if (session_id) {
     const entry = ptys.get(session_id);
     const foreground = entry && entry.ws; // a ws is attached => being viewed
@@ -277,6 +404,21 @@ app.post("/api/hook", (req, res) => {
     } else if (hook_event_name === "Notification") {
       // Background session waiting for input (permission / question / idle).
       if (!foreground) setWaiting(session_id, true, hook_event_name);
+    } else if (hook_event_name === "PreToolUse") {
+      await recordToolCallStart(session_id, {
+        toolUseId: tool_use_id,
+        toolName: tool_name,
+        toolInput: tool_input,
+      });
+    } else if (hook_event_name === "PostToolUse" || hook_event_name === "PostToolUseFailure") {
+      await recordToolCallEnd(session_id, {
+        toolUseId: tool_use_id,
+        toolName: tool_name,
+        toolInput: tool_input,
+        toolOutput: tool_output ?? tool_response,
+        durationMs: duration_ms,
+        status: hook_event_name === "PostToolUseFailure" ? "failed" : "completed",
+      });
     }
     console.log(`[hook] ${hook_event_name} for ${session_id}`);
   }
@@ -290,7 +432,7 @@ app.post("/api/hook", (req, res) => {
 // We store the result keyed by session id and publish it on that session's channel
 // so the active panel renders/updates it live. Mirrors MulmoClaude's internal
 // toolResult route + applyToolResultToSession.
-app.post("/api/agent/toolResult", (req, res) => {
+app.post("/api/agent/toolResult", async (req, res) => {
   const { sessionId, toolName, uuid } = req.body || {};
   // The session id flows from env (broker) / the client and ends up in a pub/sub
   // channel name — keep it to the known UUID shape.
@@ -308,7 +450,7 @@ app.post("/api/agent/toolResult", (req, res) => {
   // the panel renders.
   const result = { ...req.body };
   delete result.sessionId;
-  storeToolResult(sessionId, result);
+  await storeToolResult(sessionId, result);
 
   pubsub?.publish(sessionChannel(sessionId), result);
   console.log(`[gui] toolResult ${toolName} for ${sessionId}`);
@@ -316,13 +458,32 @@ app.post("/api/agent/toolResult", (req, res) => {
 });
 
 // Replay a session's stored toolResults so the panel can render them when the
-// user (re)selects that session.
-app.get("/api/agent/toolResults/:sessionId", (req, res) => {
+// user (re)selects that session. Loads from disk (<workspace>/.toolresults) on
+// first access so the views survive a reboot.
+app.get("/api/agent/toolResults/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   if (!SESSION_ID_RE.test(sessionId)) {
     return res.status(400).json({ error: "invalid sessionId" });
   }
-  res.json({ sessionId, toolResults: toolResultsBySession.get(sessionId) || [] });
+  res.json({ sessionId, toolResults: await toolResultsStore.get(sessionId) });
+});
+
+// The GUI plugin tools available this session (for the tools pane's "Available
+// Tools" list). The full set claude can call — built-ins, other MCP — is not
+// enumerable server-side; those still show up in the tool-call history below.
+app.get("/api/tools", (_req, res) => {
+  res.json({ tools: toolSummaries });
+});
+
+// Replay a session's tool-call history (every tool, via the Pre/PostToolUse hooks)
+// so the tools pane can render it when the user (re)selects that session. Loads
+// from disk (<workspace>/.toolcalls) on first access so it survives a reboot.
+app.get("/api/tool-calls/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  if (!SESSION_ID_RE.test(sessionId)) {
+    return res.status(400).json({ error: "invalid sessionId" });
+  }
+  res.json({ sessionId, toolCalls: await toolCallsStore.get(sessionId) });
 });
 
 // List the chat sessions for the current project (CLAUDE_CWD), including

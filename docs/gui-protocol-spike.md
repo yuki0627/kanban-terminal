@@ -231,12 +231,15 @@ real protocol**, so M3 is a near-copy port rather than a translation. Three shif
 
 **Persistence (what we store, and why so little).** Chat + message history already
 live in the terminal and Claude's `.jsonl` (resume), so the only GUI-side store is
-the **list of toolResults per session id** (`toolResultsBySession`, in-memory for
-the spike), replayed from `GET /api/agent/toolResults/:id` on (re)select. A view's
-state change (e.g. a submitted form's `viewState`) is persisted by re-`POST`ing the
-same `uuid` to `/api/agent/toolResult`, which upserts in place (dedupe by `uuid`,
-mirroring `applyToolResultToSession`) — so a revisited session shows the form as
-already submitted.
+the **list of toolResults per session id**, replayed from
+`GET /api/agent/toolResults/:id` on (re)select. A view's state change (e.g. a
+submitted form's `viewState`) is persisted by re-`POST`ing the same `uuid` to
+`/api/agent/toolResult`, which upserts in place (dedupe by `uuid`, mirroring
+`applyToolResultToSession`) — so a revisited session shows the form as already
+submitted. The store is **mirrored to disk** (one JSON file per session under
+`<workspace>/.toolresults/`, via a small `createSessionStore(dirName)` helper: an
+in-memory Map as the working copy, rewritten on each change and lazy-loaded on
+first access) so the rendered views also survive a **server reboot**.
 
 ### Updated seam
 
@@ -281,6 +284,36 @@ interactive `claude`** is the remaining manual check (the unit under it —
   spike with **no MulmoClaude analogue**. Replacing it with PTY-typed feedback means
   the spike now exercises the *actual* GUI→LLM mechanism the migration depends on,
   and removes ~70 lines of parked-response/timeout bookkeeping.
+
+### Tools pane (gear toggle)
+
+Mirrors MulmoClaude's right sidebar (`RightSidebar.vue`): a gear button in the GUI
+panel header toggles a third column (`src/components/ToolsPane.vue`, visibility
+persisted in `localStorage`) with two sections:
+
+- **Available Tools** — the enabled GUI plugin tools (name + collapsible
+  description) from `GET /api/tools` (registry `toolSummaries`). The full set claude
+  can call (built-ins, other MCP) isn't enumerable server-side, so it isn't listed
+  here — but it *does* appear in the history below.
+- **Tool Call History** — **every** tool call for the session (Bash, Read, other
+  MCP, and the GUI plugin tools), each row showing name, status/duration, time, and
+  collapsible arguments + result.
+
+**Key point — the history is hook-driven, not broker-driven.** The MCP broker only
+sees GUI-protocol tool calls, so it can't be the history source. Instead the spawn's
+`--settings` registers **`PreToolUse` + `PostToolUse` hooks (matcher `""` = all
+tools)** that `curl` each event to `/api/hook`; the server keys a per-session history
+by **`tool_use_id`** (PreToolUse → "running", PostToolUse → completes it with
+`tool_output` + `duration_ms`) and publishes on `toolcalls:<id>`, replayed from
+`GET /api/tool-calls/:id`. This is the same shape as MulmoClaude's
+`toolCallHistory` (toolCall event → toolCallResult event), and confirms hooks are a
+viable, complete tool-call feed under the interactive PTY — useful beyond this pane.
+
+**Persistence (survives reboot).** The tool-call history is mirrored to disk via the
+same `createSessionStore(dirName)` helper the GUI toolResults use — one JSON file per
+session under `<workspace>/.toolcalls/<sessionId>.json` (`<workspace>` = `CLAUDE_CWD`).
+The in-memory Map is the working copy; the file is rewritten on each change and
+lazy-loaded on first access, so the history is still there after a server restart.
 
 ---
 
