@@ -9,14 +9,11 @@ const connectKey = ref(0);
 const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
 
 // GUI -> LLM: a plugin view (e.g. a submitted form) calls this with the user's
-// response. We type it into the PTY, then send a SEPARATE delayed carriage return
-// — a same-burst text+CR is treated as a paste by Claude Code's TUI and the CR
-// becomes a newline instead of submitting. (Same mechanism MulmoClaude uses.)
-function sendTextMessage(text: string) {
-  const term = terminalRef.value;
-  if (!term) return;
-  term.sendText(text);
-  setTimeout(() => terminalRef.value?.sendText("\r"), 60);
+// response. Terminal.submitText types it into the PTY and submits it (text + a
+// delayed CR, both pinned to the same socket). Returns whether it was delivered
+// so the caller only locks/persists on success.
+function sendTextMessage(text: string): boolean {
+  return terminalRef.value?.submitText(text) ?? false;
 }
 
 function selectSession(id: string) {

@@ -20,7 +20,7 @@ interface ToolResult {
 
 const props = defineProps<{
   sessionId: string | null;
-  sendTextMessage: (text: string) => void;
+  sendTextMessage: (text: string) => boolean;
 }>();
 
 const results = ref<ToolResult[]>([]);

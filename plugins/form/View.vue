@@ -34,7 +34,8 @@ interface ToolResult {
 
 const props = defineProps<{
   selectedResult: ToolResult;
-  sendTextMessage: (text: string) => void;
+  // Returns whether the answer was actually delivered to the PTY.
+  sendTextMessage: (text: string) => boolean;
 }>();
 const emit = defineEmits<{ updateResult: [result: ToolResult] }>();
 
@@ -56,6 +57,16 @@ function seed() {
 seed();
 // If a different toolResult is rendered into this same component instance, reseed.
 watch(() => props.selectedResult.uuid, seed);
+// Another viewer submitted this same form: the result is re-published with the
+// same uuid (so the uuid watch above won't fire) but viewState.submitted flips.
+// Reseed to lock this instance too — guarded so it can't clobber in-progress
+// typing on a non-submit update.
+watch(
+  () => props.selectedResult.viewState?.submitted,
+  (s) => {
+    if (s && !submitted.value) seed();
+  }
+);
 
 const locked = () => submitted.value;
 
@@ -68,7 +79,6 @@ function submit() {
       return;
     }
   }
-  error.value = null;
 
   // Build a readable summary and type it into the PTY as the next user turn.
   const lines: string[] = [];
@@ -76,8 +86,17 @@ function submit() {
   for (const f of form.value.fields) {
     lines.push(`- ${f.label || f.name}: ${values[f.name] ?? ""}`);
   }
+
+  // Only lock + persist if the answer actually reached the PTY. If the terminal
+  // is disconnected/reconnecting, submitText is a no-op — keep the form editable
+  // and surface the failure so the user can retry (Claude never saw it).
+  const delivered = props.sendTextMessage(lines.join("\n"));
+  if (!delivered) {
+    error.value = "Couldn't reach the terminal (is the session connected?). Please try again.";
+    return;
+  }
+  error.value = null;
   submitted.value = true;
-  props.sendTextMessage(lines.join("\n"));
 
   // Persist submitted state so the form replays as completed on revisit.
   emit("updateResult", {

@@ -108,15 +108,27 @@ watch(
   }
 );
 
-// Type text straight into the PTY (same channel as keyboard input). This is the
-// GUI->LLM feedback path: a plugin view's answer is written here, and a separate
-// delayed CR (see App.vue) submits it as the user's next turn.
-function sendText(data: string) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "input", data }));
-  }
+// Submit a GUI-originated message into the PTY (same channel as keyboard input).
+// This is the GUI->LLM feedback path. We type the text, then send a SEPARATE
+// delayed carriage return — a same-burst text+CR is treated as a paste by Claude
+// Code's TUI, so the CR becomes a newline instead of submitting.
+//
+// Both writes are pinned to the socket captured *now*: if the session switches or
+// reconnects before the CR fires, that socket is no longer `ws`, so we skip the CR
+// rather than submit a stray turn in whatever session is current. Returns whether
+// the text was delivered, so the caller (e.g. a form) only locks on success.
+function submitText(text: string): boolean {
+  const sock = ws;
+  if (!sock || sock.readyState !== WebSocket.OPEN) return false;
+  sock.send(JSON.stringify({ type: "input", data: text }));
+  setTimeout(() => {
+    if (sock === ws && sock.readyState === WebSocket.OPEN) {
+      sock.send(JSON.stringify({ type: "input", data: "\r" }));
+    }
+  }, 60);
+  return true;
 }
-defineExpose({ sendText });
+defineExpose({ submitText });
 
 onUnmounted(() => {
   resizeObserver?.disconnect();
