@@ -1,90 +1,92 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from "vue";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
+import { ref, watch, onUnmounted, computed } from "vue";
 import { usePubSub } from "../composables/usePubSub";
-import GuiForm from "./GuiForm.vue";
+import { getPlugin } from "../plugins-registry";
 
-// The GUI panel renders the structured `data` pushed by GUI-protocol MCP tools
-// (presentDocument, presentForm). It mirrors the terminal's active session: live
-// frames arrive on the "gui" pub/sub channel, and history is replayed from
-// /api/gui/:sessionId when a session is (re)selected. See the spike doc.
-const props = defineProps<{ sessionId: string | null }>();
-
-interface FormSchema {
+// The GUI panel renders the toolResults produced by GUI-protocol plugins. It
+// mirrors the terminal's active session: live results arrive on that session's
+// pub/sub channel, history is replayed from /api/agent/toolResults/:id on (re)select.
+// Each result is rendered by its plugin's viewComponent (getPlugin(toolName)) — no
+// hard-coded type switch. See the spike doc.
+interface ToolResult {
+  uuid: string;
+  toolName: string;
   title?: string;
-  fields: { name: string; label?: string; type?: string; options?: string[] }[];
-  submitLabel?: string;
-}
-interface GuiFrame {
-  type: string;
-  data: {
-    markdown?: string;
-    requestId?: string;
-    schema?: FormSchema;
-    answered?: boolean;
-    answer?: Record<string, unknown> | null;
-  };
+  message?: string;
+  data?: unknown;
+  jsonData?: unknown;
+  viewState?: unknown;
 }
 
-const frames = ref<GuiFrame[]>([]);
+const props = defineProps<{
+  sessionId: string | null;
+  sendTextMessage: (text: string) => boolean;
+}>();
 
-// Render markdown -> sanitized HTML. marked handles GFM tables; DOMPurify strips
-// anything unsafe before it reaches v-html.
-function renderMarkdown(md: string): string {
-  const raw = marked.parse(md, { async: false }) as string;
-  return DOMPurify.sanitize(raw);
+const results = ref<ToolResult[]>([]);
+
+const sessionChannel = (id: string) => `session:${id}`;
+
+// Insert or update a result, deduped by uuid (a re-emitted result — e.g. a form
+// whose viewState changed — updates in place). Mirrors applyToolResultToSession.
+function upsert(result: ToolResult) {
+  const idx = results.value.findIndex((r) => r.uuid === result.uuid);
+  if (idx >= 0) results.value[idx] = result;
+  else results.value = [...results.value, result];
 }
 
 async function loadHistory(id: string) {
   try {
-    const res = await fetch(`/api/gui/${encodeURIComponent(id)}`);
+    const res = await fetch(`/api/agent/toolResults/${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    frames.value = data.payloads ?? [];
+    results.value = data.toolResults ?? [];
   } catch {
-    frames.value = [];
+    results.value = [];
   }
 }
 
-// Reload history whenever the active session changes (and clear for a fresh,
-// not-yet-identified session).
+const { subscribe } = usePubSub();
+let unsubscribe: (() => void) | undefined;
+
+function subscribeTo(id: string | null) {
+  unsubscribe?.();
+  unsubscribe = undefined;
+  if (!id) return;
+  unsubscribe = subscribe(sessionChannel(id), (data) => upsert(data as ToolResult));
+}
+
+// Reload history + re-subscribe whenever the active session changes (and clear
+// for a fresh, not-yet-identified session).
 watch(
   () => props.sessionId,
   (id) => {
     if (id) loadHistory(id);
-    else frames.value = [];
+    else results.value = [];
+    subscribeTo(id);
   },
   { immediate: true }
 );
 
-const GUI_CHANNEL_NAME = "gui";
-const { subscribe } = usePubSub();
-let unsubscribe: (() => void) | undefined;
-
-onMounted(() => {
-  unsubscribe = subscribe(GUI_CHANNEL_NAME, (data) => {
-    const msg = data as { sessionId: string } & GuiFrame;
-    // Only render frames for the session currently in the foreground.
-    if (msg.sessionId !== props.sessionId) return;
-    if (msg.type === "formAnswered") {
-      // A submission (here or in another viewer) completed a pending form: lock
-      // the matching frame and record the answer.
-      const f = frames.value.find(
-        (fr) => fr.type === "presentForm" && fr.data.requestId === msg.data.requestId
-      );
-      if (f) {
-        f.data.answered = true;
-        f.data.answer = msg.data.answer ?? null;
-      }
-      return;
-    }
-    frames.value = [...frames.value, { type: msg.type, data: msg.data }];
-  });
-});
 onUnmounted(() => unsubscribe?.());
 
-const hasContent = computed(() => frames.value.length > 0);
+// A plugin view changed its state (e.g. a form was submitted): reflect it locally
+// and persist it under the same uuid so it replays as completed on revisit.
+async function onUpdateResult(result: ToolResult) {
+  upsert(result);
+  if (!props.sessionId) return;
+  try {
+    await fetch("/api/agent/toolResult", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...result, sessionId: props.sessionId }),
+    });
+  } catch {
+    // Best-effort persistence; the live view already updated.
+  }
+}
+
+const hasContent = computed(() => results.value.length > 0);
 </script>
 
 <template>
@@ -97,18 +99,15 @@ const hasContent = computed(() => frames.value.length > 0);
         Ask Claude to use <code>presentDocument</code> or <code>presentForm</code>
         to render content here.
       </div>
-      <template v-for="(f, i) in frames" :key="i">
-        <GuiForm
-          v-if="f.type === 'presentForm' && f.data.requestId && f.data.schema"
+      <template v-for="r in results" :key="r.uuid">
+        <component
+          :is="getPlugin(r.toolName)!.viewComponent"
+          v-if="getPlugin(r.toolName)"
           class="frame"
-          :request-id="f.data.requestId"
-          :schema="f.data.schema"
-          :answered="f.data.answered ?? false"
-          :answer="f.data.answer ?? null"
+          :selected-result="r"
+          :send-text-message="sendTextMessage"
+          @update-result="onUpdateResult"
         />
-        <!-- DOMPurify-sanitized in renderMarkdown; v-html required to render it. -->
-        <!-- eslint-disable-next-line vue/no-v-html -->
-        <article v-else class="frame markdown-body" v-html="renderMarkdown(f.data.markdown ?? '')" />
       </template>
     </div>
   </section>
@@ -160,47 +159,5 @@ const hasContent = computed(() => frames.value.length > 0);
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #2a2a4e;
-}
-</style>
-
-<!-- Markdown element styling (unscoped: targets v-html output). -->
-<style>
-.markdown-body table {
-  border-collapse: collapse;
-  margin: 8px 0;
-}
-.markdown-body th,
-.markdown-body td {
-  border: 1px solid #2a2a4e;
-  padding: 4px 10px;
-  text-align: left;
-}
-.markdown-body th {
-  background: #1d2b4e;
-}
-.markdown-body code {
-  background: #1d2b4e;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.9em;
-}
-.markdown-body pre {
-  background: #0d1124;
-  padding: 10px 12px;
-  border-radius: 6px;
-  overflow-x: auto;
-}
-.markdown-body pre code {
-  background: none;
-  padding: 0;
-}
-.markdown-body a {
-  color: #4a8cff;
-}
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3 {
-  margin: 12px 0 6px;
 }
 </style>

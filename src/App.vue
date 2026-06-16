@@ -6,6 +6,15 @@ import GuiPanel from "./components/GuiPanel.vue";
 
 const activeId = ref<string | null>(null);
 const connectKey = ref(0);
+const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
+
+// GUI -> LLM: a plugin view (e.g. a submitted form) calls this with the user's
+// response. Terminal.submitText types it into the PTY and submits it (text + a
+// delayed CR, both pinned to the same socket). Returns whether it was delivered
+// so the caller only locks/persists on success.
+function sendTextMessage(text: string): boolean {
+  return terminalRef.value?.submitText(text) ?? false;
+}
 
 function selectSession(id: string) {
   activeId.value = id;
@@ -35,11 +44,12 @@ function onSession(id: string) {
     />
     <div class="main">
       <TerminalView
+        ref="terminalRef"
         :session-id="activeId"
         :connect-key="connectKey"
         @session="onSession"
       />
-      <GuiPanel :session-id="activeId" />
+      <GuiPanel :session-id="activeId" :send-text-message="sendTextMessage" />
     </div>
   </div>
 </template>
