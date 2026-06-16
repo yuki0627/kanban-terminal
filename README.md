@@ -82,14 +82,16 @@ SDK; we drive the real interactive CLI and relay its TTY over the WebSocket.
 | Backend  | Node (ESM), Express 5, `ws` (terminal WebSocket), `node-pty`, socket.io |
 | Tests    | Vitest + @vue/test-utils + jsdom |
 
-Requires **Node ≥ 20.6** (uses `node --env-file`) and the `claude` CLI on `PATH`.
+Requires **Node ≥ 22.9** (uses `node --env-file-if-exists`) and the `claude` CLI on `PATH`.
 
 ---
 
 ## Configuration
 
-The server is configured entirely through environment variables, loaded from a
-`.env` file via `node --env-file=.env` (wired into the npm scripts).
+The server is configured entirely through environment variables, optionally
+loaded from a `.env` file via `node --env-file-if-exists=.env` (wired into the
+npm scripts). The `.env` is optional — every variable below has a default, so
+the server runs without one.
 
 | Variable     | Default        | Description |
 | ------------ | -------------- | ----------- |
@@ -112,7 +114,7 @@ yarn install            # postinstall fixes node-pty prebuilt binary perms
 
 yarn dev                # server (:3456) + Vite dev server, concurrently
 # or individually:
-yarn dev:server         # backend only  (node --env-file=.env server/index.js)
+yarn dev:server         # backend only  (node --env-file-if-exists=.env server/index.js)
 yarn dev:client         # Vite dev server only
 
 yarn build              # type-check (vue-tsc) + vite build -> dist/
