@@ -128,25 +128,28 @@ async function storeToolResult(sessionId, result) {
 // AND our GUI plugin tools — not just the GUI ones the broker sees. Published on a
 // per-session channel the tools pane subscribes to. (The broker's toolResults
 // store above is separate; it only drives rendering of GUI views.)
-const toolCallsBySession = new Map(); // id -> [{ toolUseId, toolName, toolInput, toolOutput?, status, at, durationMs? }]
+//
+// Persisted under <workspace>/.toolcalls via the same disk-backed store as the
+// toolResults, so the history survives a server reboot.
+const toolCallsStore = createSessionStore(".toolcalls");
 const TOOLCALLS_LIMIT = 200;
 const toolCallsChannel = (id) => `toolcalls:${id}`;
 
 // PreToolUse: a tool started. Append a "running" entry (deduped by tool_use_id).
-function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }) {
-  const list = toolCallsBySession.get(sessionId) || [];
+async function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }) {
+  const list = await toolCallsStore.get(sessionId);
   if (toolUseId && list.some((c) => c.toolUseId === toolUseId)) return;
   const call = { toolUseId, toolName, toolInput, status: "running", at: Date.now() };
   list.push(call);
   if (list.length > TOOLCALLS_LIMIT) list.splice(0, list.length - TOOLCALLS_LIMIT);
-  toolCallsBySession.set(sessionId, list);
   pubsub?.publish(toolCallsChannel(sessionId), call);
+  toolCallsStore.save(sessionId);
 }
 
 // PostToolUse: a tool finished. Complete the matching entry by tool_use_id (or add
 // one if we somehow never saw the start).
-function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutput, durationMs }) {
-  const list = toolCallsBySession.get(sessionId) || [];
+async function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutput, durationMs }) {
+  const list = await toolCallsStore.get(sessionId);
   let call = toolUseId ? list.find((c) => c.toolUseId === toolUseId) : undefined;
   if (call) {
     call.status = "completed";
@@ -156,9 +159,9 @@ function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutp
     call = { toolUseId, toolName, toolInput, toolOutput, status: "completed", at: Date.now(), durationMs };
     list.push(call);
     if (list.length > TOOLCALLS_LIMIT) list.splice(0, list.length - TOOLCALLS_LIMIT);
-    toolCallsBySession.set(sessionId, list);
   }
   pubsub?.publish(toolCallsChannel(sessionId), call);
+  toolCallsStore.save(sessionId);
 }
 
 // Only the most-recent N sessions are listed in the sidebar; older ones aren't
@@ -357,7 +360,7 @@ app.use(express.static(path.join(__dirname, "../dist")));
 
 // Claude hooks (Stop / Notification) POST their payload here so we can flag
 // which background sessions have new activity.
-app.post("/api/hook", (req, res) => {
+app.post("/api/hook", async (req, res) => {
   const {
     session_id,
     hook_event_name,
@@ -382,13 +385,13 @@ app.post("/api/hook", (req, res) => {
       // Background session waiting for input (permission / question / idle).
       if (!foreground) setWaiting(session_id, true, hook_event_name);
     } else if (hook_event_name === "PreToolUse") {
-      recordToolCallStart(session_id, {
+      await recordToolCallStart(session_id, {
         toolUseId: tool_use_id,
         toolName: tool_name,
         toolInput: tool_input,
       });
     } else if (hook_event_name === "PostToolUse") {
-      recordToolCallEnd(session_id, {
+      await recordToolCallEnd(session_id, {
         toolUseId: tool_use_id,
         toolName: tool_name,
         toolInput: tool_input,
@@ -452,13 +455,14 @@ app.get("/api/tools", (_req, res) => {
 });
 
 // Replay a session's tool-call history (every tool, via the Pre/PostToolUse hooks)
-// so the tools pane can render it when the user (re)selects that session.
-app.get("/api/tool-calls/:sessionId", (req, res) => {
+// so the tools pane can render it when the user (re)selects that session. Loads
+// from disk (<workspace>/.toolcalls) on first access so it survives a reboot.
+app.get("/api/tool-calls/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   if (!SESSION_ID_RE.test(sessionId)) {
     return res.status(400).json({ error: "invalid sessionId" });
   }
-  res.json({ sessionId, toolCalls: toolCallsBySession.get(sessionId) || [] });
+  res.json({ sessionId, toolCalls: await toolCallsStore.get(sessionId) });
 });
 
 // List the chat sessions for the current project (CLAUDE_CWD), including

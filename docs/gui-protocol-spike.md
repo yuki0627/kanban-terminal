@@ -309,6 +309,12 @@ by **`tool_use_id`** (PreToolUse → "running", PostToolUse → completes it wit
 `toolCallHistory` (toolCall event → toolCallResult event), and confirms hooks are a
 viable, complete tool-call feed under the interactive PTY — useful beyond this pane.
 
+**Persistence (survives reboot).** The tool-call history is mirrored to disk via the
+same `createSessionStore(dirName)` helper the GUI toolResults use — one JSON file per
+session under `<workspace>/.toolcalls/<sessionId>.json` (`<workspace>` = `CLAUDE_CWD`).
+The in-memory Map is the working copy; the file is rewritten on each change and
+lazy-loaded on first access, so the history is still there after a server restart.
+
 ---
 
 ## Decision: permissions are terminal-native
