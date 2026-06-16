@@ -6,6 +6,18 @@ import GuiPanel from "./components/GuiPanel.vue";
 
 const activeId = ref<string | null>(null);
 const connectKey = ref(0);
+const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
+
+// GUI -> LLM: a plugin view (e.g. a submitted form) calls this with the user's
+// response. We type it into the PTY, then send a SEPARATE delayed carriage return
+// — a same-burst text+CR is treated as a paste by Claude Code's TUI and the CR
+// becomes a newline instead of submitting. (Same mechanism MulmoClaude uses.)
+function sendTextMessage(text: string) {
+  const term = terminalRef.value;
+  if (!term) return;
+  term.sendText(text);
+  setTimeout(() => terminalRef.value?.sendText("\r"), 60);
+}
 
 function selectSession(id: string) {
   activeId.value = id;
@@ -35,11 +47,12 @@ function onSession(id: string) {
     />
     <div class="main">
       <TerminalView
+        ref="terminalRef"
         :session-id="activeId"
         :connect-key="connectKey"
         @session="onSession"
       />
-      <GuiPanel :session-id="activeId" />
+      <GuiPanel :session-id="activeId" :send-text-message="sendTextMessage" />
     </div>
   </div>
 </template>

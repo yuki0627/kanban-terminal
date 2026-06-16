@@ -9,6 +9,12 @@ migration — see [Background](#background).
 > (`presentDocument` one-way and `presentForm` round-trip both work). Permissions
 > are **decided, not probed** — terminal-native (see
 > [Decision](#decision-permissions-are-terminal-native)).
+>
+> **Phase III** then upgraded the spike from its stripped-down protocol to the
+> **full GUI chat protocol** — config-driven plugins, the toolResult model, and a
+> GUI→LLM feedback path that **types into the PTY** (no blocking long-poll). This
+> is now the high-fidelity base MulmoClaude ports from. See
+> [Phase III](#phase-iii--full-gui-chat-protocol).
 
 ---
 
@@ -182,6 +188,102 @@ claude; history replay shows the form as completed afterward.
 
 ---
 
+## Phase III — full GUI chat protocol
+
+**Goal:** Phases I + II proved the *seam* with a deliberately stripped-down,
+parallel protocol (hard-coded tools, a `type` switch, a blocking `/api/gui/answer`
+long-poll). Phase III makes the spike a **high-fidelity mirror of MulmoClaude's
+real protocol**, so M3 is a near-copy port rather than a translation. Three shifts:
+
+1. **Two plugins, loaded from configuration data.** The single hard-coded MCP
+   server is gone. Each tool is now a self-contained **plugin package** under
+   `plugins/<name>/` with a server half (`meta.js`, `definition.js`, `server.js` —
+   plain JS, imported by Node) and a frontend half (`View.vue`, `index.ts` —
+   imported by Vite). `plugins/plugins.json` (`{ "enabled": [...] }`) is the
+   configuration data that drives loading on **both** sides: `server/plugins-registry.js`
+   (server) and `src/plugins-registry.ts` (frontend, via `import.meta.glob` filtered
+   by the config). Flip the list → claude is offered fewer tools and the panel
+   renders fewer views, with no code change.
+
+2. **Full toolResult model + per-plugin REST + a broker.** `server/mcp/broker.js`
+   replaces `present-markdown.js`: it registers **one MCP tool per enabled plugin**
+   and is a **thin HTTP bridge** — on a call it `POST`s the args to the plugin's own
+   REST route (`/api/<namespace>`, mounted by the registry), gets back an envelope
+   `{ data, message, instructions }`, and (only when `data` is set — *data gates
+   rendering*) `POST`s a **toolResult** `{ uuid, toolName, data, jsonData, … }` to
+   `POST /api/agent/toolResult`. That route stores it **keyed by session id** and
+   publishes it on the per-session channel `session:<id>`. The panel renders each
+   result via `getPlugin(toolName).viewComponent` — no `type` switch. This is
+   MulmoClaude's exact shape (broker → REST → internal toolResult route →
+   `applyToolResultToSession` → plugin view).
+
+3. **GUI→LLM feedback types into the PTY (long-poll deleted).** The blocking
+   `/api/gui/answer` round-trip is **removed entirely** (`pendingForms`, the
+   `waiters` long-poll, the MCP deadline — all gone). Instead every plugin view
+   receives a `sendTextMessage(text)` prop; the form view builds a markdown summary
+   on submit and calls it. `App.vue` wires that to `Terminal.sendText()`, which
+   writes the text into the PTY over the existing `/ws` input channel, followed by a
+   **separate, delayed `\r`** (~60 ms) — a same-burst text+CR is treated as a paste
+   by Claude Code's TUI and the CR becomes a newline instead of submitting. So a
+   submitted form is **just the user's next turn**, exactly like MulmoClaude.
+   `presentForm` therefore no longer blocks; its `instructions` tell claude to wait
+   for that message.
+
+**Persistence (what we store, and why so little).** Chat + message history already
+live in the terminal and Claude's `.jsonl` (resume), so the only GUI-side store is
+the **list of toolResults per session id** (`toolResultsBySession`, in-memory for
+the spike), replayed from `GET /api/agent/toolResults/:id` on (re)select. A view's
+state change (e.g. a submitted form's `viewState`) is persisted by re-`POST`ing the
+same `uuid` to `/api/agent/toolResult`, which upserts in place (dedupe by `uuid`,
+mirroring `applyToolResultToSession`) — so a revisited session shows the form as
+already submitted.
+
+### Updated seam
+
+```
+ interactive claude (PTY)
+   │ calls MCP tool  presentDocument / presentForm
+   ▼
+ broker MCP (server/mcp/broker.js)  ── one tool per enabled plugin (plugins.json)
+   │ POST /api/<namespace>          ── thin HTTP bridge → plugin's REST route
+   ▼
+ plugin REST (plugins/<name>/server.js)  ── envelope { data, message, instructions }
+   │ broker forwards (when data is set) ↓
+   ▼
+ POST /api/agent/toolResult  ── store by sessionId + publish on session:<id>
+   ▼
+ GuiPanel ── getPlugin(toolName).viewComponent renders selectedResult
+   │ user submits → sendTextMessage(text)
+   ▼
+ Terminal.sendText(text) then delayed "\r"  ── types it into the PTY = next user turn
+```
+
+### Findings (after Phase III)
+
+Status: **built (vue-tsc + vite), lint-clean, and tested end-to-end via an MCP
+client** — `tools/list` returns the two config-driven tools; `tools/call`
+`presentDocument`/`presentForm` flow through the per-plugin REST routes and the
+broker into the toolResult store; `GET /api/agent/toolResults/:id` replays both;
+re-POSTing a result's `uuid` upserts (no duplicate) with `viewState` preserved;
+flipping `plugins.json` to `["markdown"]` drops `presentForm` from both the tool
+list and `--allowedTools`. Driving the form's PTY-typed answer from a **real
+interactive `claude`** is the remaining manual check (the unit under it —
+`Terminal.sendText` over `/ws` — is the same input path the keyboard already uses).
+
+- **Config-driven loading without codegen.** MulmoClaude self-registers plugins via
+  `_generated/*` barrels (`scripts/codegen-plugin-barrels.ts`). The spike skips that:
+  the server uses dynamic `import()` over the `enabled` list; the frontend uses Vite
+  `import.meta.glob("../plugins/*/index.ts", { eager:true })` filtered by the same
+  JSON. Same outcome (drop a dir + name it in the config → it loads), far less
+  plumbing. `tsconfig.app.json` had to add `plugins/**/*.{ts,vue}` to `include` and
+  `resolveJsonModule` for the config import.
+- **Why deleting the long-poll is the important part.** It was the one piece of the
+  spike with **no MulmoClaude analogue**. Replacing it with PTY-typed feedback means
+  the spike now exercises the *actual* GUI→LLM mechanism the migration depends on,
+  and removes ~70 lines of parked-response/timeout bookkeeping.
+
+---
+
 ## Decision: permissions are terminal-native
 
 We will **not** intercept permission prompts into the GUI. Because the chat is a
@@ -209,9 +311,11 @@ Decide that pre-auth policy as part of MulmoClaude M5/M6.
 
 ## Out of scope
 
-Docker sandbox, roles, multiple plugins, durable persistence, mobile input, and
-any MulmoClaude code changes. This spike is purely to **learn the seam**; the
-real work lands on MulmoClaude's `staging` branch afterward.
+Docker sandbox, roles, durable persistence, mobile input, sidebar preview
+thumbnails (`previewComponent`), codegen plugin barrels, and any MulmoClaude code
+changes. (Multiple config-loaded plugins moved **into** scope in Phase III.) This
+spike is to **learn the seam and grow a faithful base**; the real work lands on
+MulmoClaude's `staging` branch afterward.
 
 ## What this de-risks for MulmoClaude
 
@@ -221,3 +325,10 @@ branch" into "port a proven pattern" — they confirm the GUI survives the
 interactive PTY, the load-bearing assumption of the entire migration. With
 permissions decided terminal-native (above), M3 has no open risks and the
 `staging` migration can begin.
+
+**Phase III** raises the fidelity: the spike now mirrors MulmoClaude's *actual*
+protocol — config-driven plugins, the toolResult model, per-plugin REST + broker,
+and PTY-typed GUI→LLM feedback. The earlier mis-port (M3 first carried the spike's
+stripped-down shapes and had to be redone) is exactly what this prevents: the port
+target is now structurally the same as the destination, so M3 becomes closer to
+copy-paste than translation.

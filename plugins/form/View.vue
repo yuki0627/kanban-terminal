@@ -1,98 +1,104 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from "vue";
+import { reactive, ref, computed, watch } from "vue";
 
-// Renders a presentForm from its schema and POSTs the user's answer back to the
-// server, which unblocks the waiting MCP tool call (Phase II round-trip). Once
-// answered — here or in another viewer — the form locks and shows the result.
+// Plugin viewComponent for presentForm. High-fidelity contract: `selectedResult`
+// is the toolResult; on submit we build a readable summary and TYPE IT INTO THE
+// PTY via `sendTextMessage` (the same GUI->LLM path MulmoClaude uses) — there is
+// no blocking round-trip. We persist the submitted state via `updateResult` so a
+// later history replay shows the form already completed.
 interface Field {
   name: string;
   label?: string;
   // "text" (default) | "textarea" | "number" | "select"; kept as string so the
-  // schema from the server (and the parent panel) assigns without friction.
+  // schema from the server assigns without friction.
   type?: string;
   options?: string[];
   placeholder?: string;
   required?: boolean;
 }
-interface Schema {
+interface FormData {
   title?: string;
   fields: Field[];
   submitLabel?: string;
 }
+interface ViewState {
+  values?: Record<string, string>;
+  submitted?: boolean;
+}
+interface ToolResult {
+  uuid: string;
+  toolName: string;
+  data: FormData;
+  viewState?: ViewState;
+}
 
 const props = defineProps<{
-  requestId: string;
-  schema: Schema;
-  answered: boolean;
-  answer: Record<string, unknown> | null;
+  selectedResult: ToolResult;
+  sendTextMessage: (text: string) => void;
 }>();
+const emit = defineEmits<{ updateResult: [result: ToolResult] }>();
 
-// Working copy of the field values, keyed by field name.
+const form = computed(() => props.selectedResult.data);
 const values = reactive<Record<string, string>>({});
 const submitted = ref(false);
-const submitting = ref(false);
 const error = ref<string | null>(null);
 
-// Seed values from the schema (and from a prior answer when replaying an already
-// completed form). Re-runs if the form arrives already answered.
+// Seed values from the field schema, and from prior viewState when replaying an
+// already-submitted form.
 function seed() {
-  for (const f of props.schema.fields) {
-    const prior = props.answer?.[f.name];
+  const vs = props.selectedResult.viewState;
+  for (const f of form.value.fields) {
+    const prior = vs?.values?.[f.name];
     values[f.name] = prior != null ? String(prior) : "";
   }
-  submitted.value = props.answered;
+  submitted.value = vs?.submitted ?? false;
 }
 seed();
+// If a different toolResult is rendered into this same component instance, reseed.
+watch(() => props.selectedResult.uuid, seed);
 
-// Another viewer (or a history replay) reports this form was answered: lock it.
-watch(
-  () => props.answered,
-  (a) => {
-    if (a) seed();
-  }
-);
+const locked = () => submitted.value;
 
-const locked = () => submitted.value || props.answered;
-
-async function submit() {
-  if (locked() || submitting.value) return;
-  // Basic required-field check before we commit the round-trip.
-  for (const f of props.schema.fields) {
+function submit() {
+  if (locked()) return;
+  // Basic required-field check before we commit.
+  for (const f of form.value.fields) {
     if (f.required && !values[f.name]?.trim()) {
       error.value = `"${f.label || f.name}" is required.`;
       return;
     }
   }
   error.value = null;
-  submitting.value = true;
-  try {
-    const res = await fetch("/api/gui/answer", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ requestId: props.requestId, answer: { ...values } }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    submitted.value = true;
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    submitting.value = false;
+
+  // Build a readable summary and type it into the PTY as the next user turn.
+  const lines: string[] = [];
+  if (form.value.title) lines.push(`**${form.value.title}**`, "");
+  for (const f of form.value.fields) {
+    lines.push(`- ${f.label || f.name}: ${values[f.name] ?? ""}`);
   }
+  submitted.value = true;
+  props.sendTextMessage(lines.join("\n"));
+
+  // Persist submitted state so the form replays as completed on revisit.
+  emit("updateResult", {
+    ...props.selectedResult,
+    viewState: { values: { ...values }, submitted: true },
+  });
 }
 </script>
 
 <template>
   <form class="gui-form" @submit.prevent="submit">
-    <h3 v-if="schema.title" class="form-title">
-      {{ schema.title }}
+    <h3 v-if="form.title" class="form-title">
+      {{ form.title }}
     </h3>
 
-    <div v-for="f in schema.fields" :key="f.name" class="field">
-      <label :for="`${requestId}-${f.name}`">{{ f.label || f.name }}</label>
+    <div v-for="f in form.fields" :key="f.name" class="field">
+      <label :for="`${selectedResult.uuid}-${f.name}`">{{ f.label || f.name }}</label>
 
       <textarea
         v-if="f.type === 'textarea'"
-        :id="`${requestId}-${f.name}`"
+        :id="`${selectedResult.uuid}-${f.name}`"
         v-model="values[f.name]"
         :placeholder="f.placeholder"
         :disabled="locked()"
@@ -100,7 +106,7 @@ async function submit() {
       />
       <select
         v-else-if="f.type === 'select'"
-        :id="`${requestId}-${f.name}`"
+        :id="`${selectedResult.uuid}-${f.name}`"
         v-model="values[f.name]"
         :disabled="locked()"
       >
@@ -113,7 +119,7 @@ async function submit() {
       </select>
       <input
         v-else
-        :id="`${requestId}-${f.name}`"
+        :id="`${selectedResult.uuid}-${f.name}`"
         v-model="values[f.name]"
         :type="f.type === 'number' ? 'number' : 'text'"
         :placeholder="f.placeholder"
@@ -126,8 +132,8 @@ async function submit() {
     </div>
 
     <div class="actions">
-      <button type="submit" :disabled="locked() || submitting">
-        {{ locked() ? "Submitted ✓" : submitting ? "Submitting…" : schema.submitLabel || "Submit" }}
+      <button type="submit" :disabled="locked()">
+        {{ locked() ? "Submitted ✓" : form.submitLabel || "Submit" }}
       </button>
     </div>
   </form>

@@ -108,6 +108,16 @@ watch(
   }
 );
 
+// Type text straight into the PTY (same channel as keyboard input). This is the
+// GUI->LLM feedback path: a plugin view's answer is written here, and a separate
+// delayed CR (see App.vue) submits it as the user's next turn.
+function sendText(data: string) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "input", data }));
+  }
+}
+defineExpose({ sendText });
+
 onUnmounted(() => {
   resizeObserver?.disconnect();
   ws?.close();
