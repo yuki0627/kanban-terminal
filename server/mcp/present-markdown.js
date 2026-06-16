@@ -1,7 +1,7 @@
 // Stdio MCP server for the GUI chat protocol spike.
 //
 // Exposes the GUI-protocol tools:
-//   presentMarkdown({ markdown })  - Phase I, one-way: render markdown.
+//   presentDocument({ markdown })  - Phase I, one-way: render markdown.
 //   presentForm({ title, fields }) - Phase II, round-trip: render a form and
 //                                    block until the user submits, returning
 //                                    the answer to claude so the turn continues.
@@ -33,9 +33,9 @@ const FORM_TIMEOUT_MS = 10 * 60 * 1000;
 const server = new McpServer({ name: "mulmoterminal-gui", version: "0.0.0" });
 
 server.registerTool(
-  "presentMarkdown",
+  "presentDocument",
   {
-    title: "Present Markdown",
+    title: "Present Document",
     description:
       "Render markdown in the user's GUI panel (right side), beside the terminal. " +
       "Use this to show formatted content — tables, lists, headings, code — that is " +
@@ -48,7 +48,7 @@ server.registerTool(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         sessionId: SESSION_ID,
-        type: "presentMarkdown",
+        type: "presentDocument",
         data: { markdown },
       }),
     });

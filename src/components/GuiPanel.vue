@@ -6,7 +6,7 @@ import { usePubSub } from "../composables/usePubSub";
 import GuiForm from "./GuiForm.vue";
 
 // The GUI panel renders the structured `data` pushed by GUI-protocol MCP tools
-// (presentMarkdown, presentForm). It mirrors the terminal's active session: live
+// (presentDocument, presentForm). It mirrors the terminal's active session: live
 // frames arrive on the "gui" pub/sub channel, and history is replayed from
 // /api/gui/:sessionId when a session is (re)selected. See the spike doc.
 const props = defineProps<{ sessionId: string | null }>();
@@ -94,7 +94,7 @@ const hasContent = computed(() => frames.value.length > 0);
     </div>
     <div class="content">
       <div v-if="!hasContent" class="empty">
-        Ask Claude to use <code>presentMarkdown</code> or <code>presentForm</code>
+        Ask Claude to use <code>presentDocument</code> or <code>presentForm</code>
         to render content here.
       </div>
       <template v-for="(f, i) in frames" :key="i">
