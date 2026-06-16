@@ -1,13 +1,104 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import Sidebar from "./components/Sidebar.vue";
+import SessionTabBar from "./components/SessionTabBar.vue";
 import TerminalView from "./components/Terminal.vue";
 import GuiPanel from "./components/GuiPanel.vue";
 import ToolsPane from "./components/ToolsPane.vue";
+import { useSessions, type Filter } from "./composables/useSessions";
 
 const activeId = ref<string | null>(null);
 const connectKey = ref(0);
 const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
+
+// Single source of truth for the session list, owned here (not inside the
+// layout components) so toggling vertical/horizontal — which swaps Sidebar and
+// SessionTabBar via v-if/v-else — never unmounts the store, refetches, or resets
+// the filter. Both layouts render this same shared state.
+const { sessions, loading, error, refresh } = useSessions();
+const filter = ref<Filter>("all");
+
+// Terminal column width (px), set by dragging the splitter between the terminal
+// and the GUI panel; the GUI panel absorbs whatever is left. Persisted across
+// reloads. The terminal's own ResizeObserver refits xterm's cols/rows as this
+// changes, so a drag live-resizes the PTY.
+const MIN_TERMINAL = 320;
+const MIN_GUI = 360;
+const terminalWidth = ref<number>(Number(localStorage.getItem("terminal_width")) || 560);
+
+// Track the viewport so the splitter's max (and aria-valuemax) stays correct and
+// the saved width re-clamps when the window shrinks.
+const viewportWidth = ref(window.innerWidth);
+const maxTerminal = computed(() => Math.max(MIN_TERMINAL, viewportWidth.value - MIN_GUI));
+
+function clampWidth(w: number): number {
+  return Math.max(MIN_TERMINAL, Math.min(w, maxTerminal.value));
+}
+
+function persistWidth() {
+  localStorage.setItem("terminal_width", String(terminalWidth.value));
+}
+
+let stopDrag: (() => void) | null = null;
+function startDrag(e: MouseEvent) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = terminalWidth.value;
+  const onMove = (ev: MouseEvent) => {
+    terminalWidth.value = clampWidth(startW + (ev.clientX - startX));
+  };
+  const onUp = () => {
+    persistWidth();
+    stopDrag?.();
+  };
+  stopDrag = () => {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    stopDrag = null;
+  };
+  // Suppress text selection / keep the resize cursor for the whole drag.
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+// Keyboard resize for the separator (arrows nudge, Home/End jump to the limits)
+// so the splitter is operable without a mouse.
+function onSplitterKey(e: KeyboardEvent) {
+  const STEP = 16;
+  if (e.key === "ArrowLeft") terminalWidth.value = clampWidth(terminalWidth.value - STEP);
+  else if (e.key === "ArrowRight") terminalWidth.value = clampWidth(terminalWidth.value + STEP);
+  else if (e.key === "Home") terminalWidth.value = MIN_TERMINAL;
+  else if (e.key === "End") terminalWidth.value = maxTerminal.value;
+  else return;
+  e.preventDefault();
+  persistWidth();
+}
+
+function onViewportResize() {
+  viewportWidth.value = window.innerWidth;
+  terminalWidth.value = clampWidth(terminalWidth.value);
+}
+onMounted(() => window.addEventListener("resize", onViewportResize));
+onUnmounted(() => {
+  stopDrag?.();
+  window.removeEventListener("resize", onViewportResize);
+});
+
+// Session-history layout: "vertical" (left Sidebar) or "horizontal" (top
+// SessionTabBar), mirroring mulmoclaude's two history layouts. Persisted across
+// reloads like the tools pane.
+type Layout = "vertical" | "horizontal";
+const layout = ref<Layout>(
+  localStorage.getItem("session_layout") === "horizontal" ? "horizontal" : "vertical"
+);
+watch(layout, (v) => localStorage.setItem("session_layout", v));
+function toggleLayout() {
+  layout.value = layout.value === "vertical" ? "horizontal" : "vertical";
+}
 
 // Tools pane visibility, persisted across reloads (mirrors MulmoClaude's
 // right-sidebar toggle).
@@ -45,18 +136,50 @@ function onSession(id: string) {
 </script>
 
 <template>
-  <div class="app">
+  <div :class="['app', layout === 'horizontal' ? 'app-horizontal' : 'app-vertical']">
     <Sidebar
+      v-if="layout === 'vertical'"
+      v-model:filter="filter"
+      :sessions="sessions"
+      :loading="loading"
+      :error="error"
       :active-id="activeId"
       @select="selectSession"
       @new="newSession"
+      @toggle-layout="toggleLayout"
+      @refresh="refresh"
+    />
+    <SessionTabBar
+      v-else
+      v-model:filter="filter"
+      :sessions="sessions"
+      :active-id="activeId"
+      @select="selectSession"
+      @new="newSession"
+      @toggle-layout="toggleLayout"
+      @refresh="refresh"
     />
     <div class="main">
       <TerminalView
         ref="terminalRef"
+        class="terminal-pane"
+        :style="{ flex: `0 0 ${terminalWidth}px` }"
         :session-id="activeId"
         :connect-key="connectKey"
         @session="onSession"
+      />
+      <div
+        class="splitter"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-label="Resize terminal"
+        :aria-valuenow="terminalWidth"
+        :aria-valuemin="MIN_TERMINAL"
+        :aria-valuemax="maxTerminal"
+        title="Drag (or use arrow keys) to resize the terminal"
+        @mousedown="startDrag"
+        @keydown="onSplitterKey"
       />
       <GuiPanel
         :session-id="activeId"
@@ -77,10 +200,46 @@ function onSession(id: string) {
   overflow: hidden;
 }
 
-/* Sidebar | [ Terminal | GuiPanel ] — the unified two-panel view in miniature. */
+/* Vertical: Sidebar | [ Terminal | GuiPanel ]. */
+.app-vertical {
+  flex-direction: row;
+}
+
+/* Horizontal: SessionTabBar stacked above [ Terminal | GuiPanel ]. */
+.app-horizontal {
+  flex-direction: column;
+}
+
+/* [ Terminal | GuiPanel ] — the unified two-panel view in miniature. Bounded to
+   the leftover height (full viewport in vertical mode, viewport minus the tab
+   bar in horizontal mode) so the panes fill it exactly instead of overflowing
+   under `.app { overflow: hidden }`. Panes size to height:100% of this. */
 .main {
   display: flex;
   flex: 1;
   min-width: 0;
+  min-height: 0;
+}
+
+/* Terminal pane: fixed flex-basis (set inline from terminalWidth); the GUI
+   panel beside it absorbs the remaining width. */
+.terminal-pane {
+  min-width: 0;
+}
+
+/* Draggable divider between the terminal and the GUI panel. */
+.splitter {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: #16213e;
+  border-left: 1px solid #2a2a4e;
+  border-right: 1px solid #2a2a4e;
+}
+.splitter:hover {
+  background: #2a3b66;
+}
+.splitter:focus-visible {
+  outline: none;
+  background: #4a8cff;
 }
 </style>
