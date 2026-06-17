@@ -906,6 +906,17 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => handleClientClose(entry, ws, sessionId));
 });
 
+// A bind failure (most often the port already in use) must not surface as an
+// unhandled 'error' event / stack trace — exit with a clear message instead.
+server.on("error", (err) => {
+  if (hasErrnoCode(err) && err.code === "EADDRINUSE") {
+    console.error(`[mulmoterminal] Port ${PORT} is already in use — set PORT=<n> or pass --port <n>.`);
+  } else {
+    console.error(`[mulmoterminal] server error: ${messageOf(err)}`);
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, () => {
   console.log(`mulmoterminal running at http://localhost:${PORT}`);
 });

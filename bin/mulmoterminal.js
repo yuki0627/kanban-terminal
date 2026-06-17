@@ -18,7 +18,6 @@ const PKG_DIR = join(__dirname, "..");
 const SERVER_ENTRY = join(PKG_DIR, "server", "index.ts");
 const DEFAULT_PORT = 3456;
 const READY_TIMEOUT_MS = 15_000;
-const MAX_PORT_PROBES = 20;
 
 // Single source of truth: read the version from the shipped package.json so
 // `--version` never drifts from the published version.
@@ -45,21 +44,33 @@ function pickOpenCommand() {
   return "xdg-open";
 }
 
-// Resolve with true if nothing is listening on `port`, false otherwise.
+// Resolve with true if nothing is listening on `port`, false otherwise. Binds
+// without a host — same as the server's `server.listen(port)` (the `::`
+// dual-stack address) — so the probe and the real bind agree on availability.
+// Probing 127.0.0.1 here let a port held only on `::` slip through as "free".
 function isPortFree(port) {
   return new Promise((resolve) => {
     const probe = createServer();
     probe.once("error", () => resolve(false));
     probe.once("listening", () => probe.close(() => resolve(true)));
-    probe.listen(port, "127.0.0.1");
+    probe.listen(port);
   });
 }
 
-async function findAvailablePort(start) {
-  for (let port = start; port < start + MAX_PORT_PROBES; port++) {
-    if (await isPortFree(port)) return port;
-  }
-  return null;
+// Ask the OS for a free port (listen on 0) and return the one it assigned, or
+// null. A collision-proof, effectively-random fallback when the preferred port
+// is taken — no two instances clash.
+function findEphemeralPort() {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => resolve(null));
+    probe.once("listening", () => {
+      const addr = probe.address();
+      const assigned = addr && typeof addr === "object" ? addr.port : null;
+      probe.close(() => resolve(assigned));
+    });
+    probe.listen(0);
+  });
 }
 
 // Poll the server until it answers, then call onReady; give up after the timeout
@@ -111,9 +122,9 @@ async function choosePort(requested, explicit) {
     error(`Port ${requested} is already in use. Stop the other process or pick a different --port.`);
     process.exit(1);
   }
-  const fallback = await findAvailablePort(requested + 1);
+  const fallback = await findEphemeralPort();
   if (fallback === null) {
-    error(`Port ${requested} is in use and no free port found nearby.`);
+    error(`Port ${requested} is in use and no free port could be found.`);
     process.exit(1);
   }
   log(`Port ${requested} busy → using ${fallback} instead. (Pass --port <N> to pin.)`);
@@ -128,7 +139,7 @@ async function main() {
 Usage: npx mulmoterminal [options]
 
 Options:
-  --port <number>   Server port (default: ${DEFAULT_PORT})
+  --port <number>   Server port (default: ${DEFAULT_PORT}; a free port is chosen if it's busy)
   --no-open         Don't open the browser automatically
   --version         Show version
   --help            Show this help
