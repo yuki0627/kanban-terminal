@@ -89,8 +89,7 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 // the backend runs hands-off; override with CLAUDE_PERMISSION_MODE (e.g.
 // "default" / "acceptEdits" / "bypassPermissions" / "plan") when needed.
 const CLAUDE_PERMISSION_MODE = process.env.CLAUDE_PERMISSION_MODE || "auto";
-const CLAUDE_CWD =
-  process.env.CLAUDE_CWD || path.join(os.homedir(), "mulmoclaude");
+const CLAUDE_CWD = process.env.CLAUDE_CWD || path.join(os.homedir(), "mulmoclaude");
 
 // CLAUDE_CWD is the workspace used as the PTY cwd and as the root for persisted
 // session state, so it must exist before we spawn anything into it.
@@ -228,10 +227,7 @@ function capToolOutput(output: unknown): unknown {
 }
 
 // PreToolUse: a tool started. Append a "running" entry (deduped by tool_use_id).
-async function recordToolCallStart(
-  sessionId: string,
-  { toolUseId, toolName, toolInput }: { toolUseId?: string; toolName?: string; toolInput?: unknown },
-) {
+async function recordToolCallStart(sessionId: string, { toolUseId, toolName, toolInput }: { toolUseId?: string; toolName?: string; toolInput?: unknown }) {
   const list = await toolCallsStore.get(sessionId);
   if (toolUseId && list.some((c) => c.toolUseId === toolUseId)) return;
   const call = { toolUseId, toolName, toolInput, status: "running", at: Date.now() };
@@ -376,9 +372,7 @@ function setWaiting(id: string, waiting: boolean, event?: string) {
 // fires PostToolUseFailure (NOT PostToolUse), so we register both to complete the
 // entry either way — otherwise a failed call would stay stuck on "running".
 function hookSettingsJson() {
-  const cmd =
-    `curl -s -X POST http://localhost:${PORT}/api/hook ` +
-    `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
+  const cmd = `curl -s -X POST http://localhost:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
   const entry = [{ hooks: [{ type: "command", command: cmd }] }];
   // Tool hooks take a matcher; "" matches all tools.
   const toolEntry = [{ matcher: "", hooks: [{ type: "command", command: cmd }] }];
@@ -422,9 +416,7 @@ function projectSessionsDir(cwd: string) {
 // slash-/local-command wrapper rather than a typed prompt. Content may be a
 // plain string or an array of blocks (guard against null elements).
 function userPromptText(content: unknown): string | null {
-  const text = Array.isArray(content)
-    ? content.map((x) => (isRecord(x) ? String(x.text ?? "") : String(x ?? ""))).join(" ")
-    : content;
+  const text = Array.isArray(content) ? content.map((x) => (isRecord(x) ? String(x.text ?? "") : String(x ?? ""))).join(" ") : content;
   if (typeof text === "string" && text.trim() && !/^\s*<(local-command|command-|bash-)/.test(text)) {
     return text.trim();
   }
@@ -449,10 +441,7 @@ function parseJsonl(raw: string): Record<string, unknown>[] {
 // Scan a session JSONL for a human-friendly title and last activity.
 async function readSessionMeta(dir: string, file: string): Promise<SessionMeta> {
   const full = path.join(dir, file);
-  const [raw, stat] = await Promise.all([
-    fs.readFile(full, "utf8"),
-    fs.stat(full),
-  ]);
+  const [raw, stat] = await Promise.all([fs.readFile(full, "utf8"), fs.stat(full)]);
 
   let aiTitle: string | null = null;
   let lastPrompt: string | null = null;
@@ -694,7 +683,7 @@ app.get("/api/sessions", async (_req, res) => {
           } catch {
             return null;
           }
-        })
+        }),
       )
     ).filter((s): s is DiskStat => s !== null);
     const onDisk = new Set(onDiskStats.map((s) => s.id));
@@ -719,16 +708,14 @@ app.get("/api/sessions", async (_req, res) => {
 
     // Keep only the most-recent N, then read & parse contents for just those
     // on-disk files (a deleted/corrupt file is dropped, not fatal).
-    const top = [...onDiskStats, ...pending]
-      .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, SESSION_LIST_LIMIT);
+    const top = [...onDiskStats, ...pending].sort((a, b) => b.mtime - a.mtime).slice(0, SESSION_LIST_LIMIT);
     const sessions = (
       await Promise.all(
         top.map((s) =>
           s.kind === "pending"
             ? { id: s.id, title: s.title, mtime: s.mtime, working: s.working, waiting: s.waiting }
-            : readSessionMeta(dir, s.file).catch(() => null)
-        )
+            : readSessionMeta(dir, s.file).catch(() => null),
+        ),
       )
     )
       .filter((s): s is SessionMeta => s !== null)
@@ -787,29 +774,14 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
 // a viewer yet (e.g. spawnBackgroundChat) — output just buffers until a client
 // reattaches. `initialPrompt`, when given, is passed to claude as the first turn
 // so the session starts working immediately, before anyone opens it.
-function spawnClaudePty(
-  sessionId: string,
-  resume: string | null,
-  ws: WebSocket | null,
-  initialPrompt?: string,
-): PtyEntry {
+function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket | null, initialPrompt?: string): PtyEntry {
   const settings = hookSettingsJson();
   // Register the GUI MCP broker and auto-allow its tools so the plugin tools run
   // without a permission prompt (--strict-mcp-config keeps the user's other MCP
   // servers out of the spike).
   const mcp = mcpConfigJson(sessionId);
-  const guiArgs = [
-    "--permission-mode",
-    CLAUDE_PERMISSION_MODE,
-    "--mcp-config",
-    mcp,
-    "--strict-mcp-config",
-    "--allowedTools",
-    GUI_MCP_TOOLS,
-  ];
-  const baseArgs = resume
-    ? ["--resume", resume, "--settings", settings, ...guiArgs]
-    : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
+  const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
+  const baseArgs = resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
   // The initial prompt goes last as a positional arg (claude's initial-prompt
   // form). "--" ends option parsing so a prompt that happens to start with "-"
   // can't be reinterpreted as a flag.
