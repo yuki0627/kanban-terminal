@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchLatestVersion, isNewerVersion } from "./update-check.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = join(__dirname, "..");
@@ -29,6 +30,21 @@ const { version: VERSION } = createRequire(import.meta.url)("../package.json");
 
 const log = (msg) => console.log(`\x1b[36m[mulmoterminal]\x1b[0m ${msg}`);
 const error = (msg) => console.error(`\x1b[31m[mulmoterminal]\x1b[0m ${msg}`);
+
+// Non-blocking notice when a newer version is published — `npm i -g` never
+// auto-updates. Opt out via MULMOTERMINAL_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
+function checkForUpdate() {
+  if (process.env.MULMOTERMINAL_NO_UPDATE_CHECK || process.env.NO_UPDATE_NOTIFIER) return;
+  fetchLatestVersion()
+    .then((latest) => {
+      if (latest && isNewerVersion(latest, VERSION)) {
+        log(`\x1b[33mUpdate available: ${VERSION} → ${latest}  ·  run: npm i -g mulmoterminal\x1b[0m`);
+      }
+    })
+    .catch(() => {
+      // best-effort; never disrupt startup
+    });
+}
 
 function claudeInstalled() {
   try {
@@ -229,6 +245,8 @@ Options:
     console.log(`mulmoterminal ${VERSION}`);
     return;
   }
+
+  checkForUpdate();
 
   if (!claudeInstalled()) {
     error("Claude Code CLI not found.");
