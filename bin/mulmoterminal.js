@@ -79,13 +79,17 @@ function findEphemeralPort() {
 }
 
 // Poll the server until it answers, then call onReady; give up after the timeout
-// so the launcher never hangs on a crash loop.
+// so the launcher never hangs on a crash loop. Returns a cancel function — a
+// raced/abandoned attempt stops polling so it can't fire a stale banner.
 function waitUntilReady(port, onReady) {
   const startedAt = Date.now();
+  let timer = null;
+  let cancelled = false;
   const attempt = () => {
+    if (cancelled) return;
     const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: 1000 }, (res) => {
       res.resume();
-      onReady();
+      if (!cancelled) onReady();
     });
     req.on("error", retry);
     req.on("timeout", () => {
@@ -94,10 +98,14 @@ function waitUntilReady(port, onReady) {
     });
   };
   const retry = () => {
-    if (Date.now() - startedAt > READY_TIMEOUT_MS) return;
-    setTimeout(attempt, 300);
+    if (cancelled || Date.now() - startedAt > READY_TIMEOUT_MS) return;
+    timer = setTimeout(attempt, 300);
   };
   attempt();
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 function printReadyBanner(url) {
@@ -151,10 +159,8 @@ function runServer(port, noOpen, onChild) {
     });
     onChild(server);
 
-    let ready = false;
     const url = `http://localhost:${port}`;
-    waitUntilReady(port, () => {
-      ready = true;
+    const cancelReady = waitUntilReady(port, () => {
       printReadyBanner(url);
       if (noOpen) return;
       try {
@@ -167,7 +173,11 @@ function runServer(port, noOpen, onChild) {
     });
 
     server.on("exit", (code) => {
-      if (!ready && code === PORT_IN_USE_EXIT_CODE) {
+      cancelReady();
+      // Exit code 75 means this child failed to bind (EADDRINUSE) and never
+      // served — always retriable, regardless of what a probe to the port saw
+      // (another process could have answered it). Other exits are terminal.
+      if (code === PORT_IN_USE_EXIT_CODE) {
         resolve();
         return;
       }
