@@ -15,6 +15,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import type { Express } from "express";
 import { generateImage } from "./backends/image-gen.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,21 +42,21 @@ function loadConfig() {
 // ToolDefinition) and a ToolPluginCore whose execute(context, args) returns the
 // result envelope. We invoke it in-process when the broker dispatches, passing the
 // host backends as context.app (image generation, etc.).
-async function loadPackage(name) {
+async function loadPackage(name: string) {
   const mod = await import(name);
   const definition = mod.TOOL_DEFINITION ?? mod.pluginCore?.toolDefinition;
   const execute = mod.pluginCore?.execute ?? mod.execute;
   if (!definition || typeof execute !== "function") {
     throw new Error(`Package "${name}" is not a gui-chat-protocol plugin (missing TOOL_DEFINITION/execute).`);
   }
-  return { toolName: definition.name, definition, execute: (args) => execute({ app: APP_CONTEXT }, args ?? {}) };
+  return { toolName: definition.name, definition, execute: (args?: unknown) => execute({ app: APP_CONTEXT }, args ?? {}) };
 }
 
 // A local plugin: definition.js exports TOOL_DEFINITION (a gui-chat-protocol
 // ToolDefinition), server.js exports execute(args).
-async function loadLocal(name) {
+async function loadLocal(name: string) {
   const dir = path.join(PLUGINS_DIR, name);
-  const importJs = (file) => import(pathToFileURL(path.join(dir, file)).href);
+  const importJs = (file: string) => import(pathToFileURL(path.join(dir, file)).href);
   const [{ TOOL_DEFINITION }, { execute }] = await Promise.all([
     importJs("definition.js"),
     importJs("server.js"),
@@ -63,7 +64,7 @@ async function loadLocal(name) {
   if (!TOOL_DEFINITION || typeof execute !== "function") {
     throw new Error(`Local plugin "${name}" must export TOOL_DEFINITION and execute().`);
   }
-  return { toolName: TOOL_DEFINITION.name, definition: TOOL_DEFINITION, execute: (args) => execute(args ?? {}) };
+  return { toolName: TOOL_DEFINITION.name, definition: TOOL_DEFINITION, execute: (args?: unknown) => execute(args ?? {}) };
 }
 
 const config = loadConfig();
@@ -89,7 +90,7 @@ export const toolSummaries = plugins.map((p) => ({
 // Mount the uniform dispatch route. The MCP broker POSTs a tool's args to
 // /api/plugin/<toolName>; the plugin's execute returns the result envelope
 // { data?, jsonData?, message?, instructions?, title? } the broker forwards.
-export function mountAllRoutes(app) {
+export function mountAllRoutes(app: Express) {
   app.post("/api/plugin/:toolName", async (req, res) => {
     const plugin = byName[req.params.toolName];
     if (!plugin) return res.status(404).json({ error: `Unknown tool: ${req.params.toolName}` });

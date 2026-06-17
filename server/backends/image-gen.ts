@@ -23,7 +23,7 @@ const DEFAULT_IMAGE_CONFIG = {
 // `data:` URL, so constrain it to a safe image allowlist and default to PNG.
 const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
-let client = null;
+let client: GoogleGenAI | null = null;
 function getClient() {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
@@ -32,7 +32,7 @@ function getClient() {
 }
 
 // gui-chat-protocol ToolContext.app.generateImage contract: (prompt) -> ToolResult.
-export async function generateImage(prompt) {
+export async function generateImage(prompt: string) {
   const ai = getClient();
   if (!ai) {
     return { message: "Image generation is unavailable on this server (set GEMINI_API_KEY)." };

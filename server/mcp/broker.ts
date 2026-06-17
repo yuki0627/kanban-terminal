@@ -47,7 +47,7 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-async function postJson(url, body) {
+async function postJson(url: string, body: unknown) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -60,7 +60,7 @@ async function postJson(url, body) {
 // A ToolDefinition's optional `prompt` is host-injected usage guidance that isn't
 // part of the JSON-schema sent to the model; fold it into the description so claude
 // still sees it (MulmoClaude does the same).
-function describe(def) {
+function describe(def: { description?: string; prompt?: string }) {
   return [def.description, def.prompt].filter(Boolean).join("\n\n");
 }
 
