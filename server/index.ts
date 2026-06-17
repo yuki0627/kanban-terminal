@@ -8,8 +8,10 @@ import os from "os";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPubSub } from "./pubsub.js";
 import { mountAllRoutes, allowedToolNames, toolSummaries } from "./plugins-registry.js";
+import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 
 // Per-session activity flags, driven by Claude hooks (see /api/hook).
@@ -120,15 +122,10 @@ const SESSIONS_CHANNEL = "sessions";
 // publishes it here (mirrors MulmoClaude's sessionChannel; see the spike doc).
 const sessionChannel = (id: string) => `session:${id}`;
 
-// Stdio MCP broker wired into each spawned claude (--mcp-config). It exposes one
-// GUI-protocol tool per enabled plugin (driven by plugins/plugins.json) and drives
-// the GUI panel via the toolResult route.
-const MCP_SERVER_PATH = path.join(__dirname, "mcp", "broker.ts");
-// Absolute URL of the tsx ESM loader, so the broker can execute its `.ts` entry
-// regardless of the cwd claude spawns it in. claude runs in the WORKSPACE
-// (CLAUDE_CWD), where tsx isn't installed — a bare `--import tsx` would resolve
-// against that cwd and fail with ERR_MODULE_NOT_FOUND.
-const TSX_LOADER = import.meta.resolve("tsx");
+// The GUI MCP server is served in-process over Streamable HTTP at /mcp/:sessionId
+// (see the route below) and wired into each spawned claude via --mcp-config. It
+// exposes one GUI-protocol tool per enabled plugin (driven by plugins/plugins.json)
+// and drives the GUI panel via the toolResult route.
 
 // MCP tool names claude uses, in the mcp__<server>__<tool> form, one per enabled
 // plugin. Auto-allowed via --allowedTools so the spike doesn't trip the permission
@@ -391,22 +388,18 @@ function hookSettingsJson() {
   });
 }
 
-// MCP config injected via `claude --mcp-config <json>`. Registers the stdio GUI
-// broker and passes this session's id + the server port to it via env (the MCP
-// process can't otherwise know which session it belongs to).
+// MCP config injected via `claude --mcp-config <json>`. Points claude at the
+// in-process GUI MCP server served over Streamable HTTP. The session id rides in
+// the URL path (the MCP server is otherwise stateless), so no env or subprocess is
+// needed — the agent just makes an HTTP call back to this server. Using
+// 127.0.0.1 (not localhost) avoids an IPv6/IPv4 resolution mismatch against the
+// server's listen address.
 function mcpConfigJson(sessionId: string) {
   return JSON.stringify({
     mcpServers: {
       "mulmoterminal-gui": {
-        command: process.execPath, // the node running this server
-        // Run the stdio broker through tsx (same as the main server) — it's a
-        // .ts file, so plain `node broker.ts` can't execute it. Use the resolved
-        // absolute loader URL (see TSX_LOADER) so it works from the workspace cwd.
-        args: ["--import", TSX_LOADER, MCP_SERVER_PATH],
-        env: {
-          MULMOTERMINAL_SESSION_ID: sessionId,
-          MULMOTERMINAL_PORT: String(PORT),
-        },
+        type: "http",
+        url: `http://127.0.0.1:${PORT}/mcp/${sessionId}`,
       },
     },
   });
@@ -480,9 +473,61 @@ const app = express();
 // the hook and leave its tool-call entry stuck on "running").
 app.use(express.json({ limit: "25mb" }));
 
+// Host tool: spawnBackgroundChat. Unlike a plugin (handled by mountAllRoutes'
+// catch-all), it needs server internals — it spawns a brand-new interactive Claude
+// terminal session, seeded with `message`, that the user can open from the sidebar.
+// `role`/`hidden` are accepted for signature parity with MulmoClaude but ignored:
+// the session is always visible. Registered BEFORE mountAllRoutes so this specific
+// route wins over /api/plugin/:toolName.
+app.post("/api/plugin/spawnBackgroundChat", (req, res) => {
+  const body = isRecord(req.body) ? req.body : {};
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message) {
+    return res.json({ message: "spawnBackgroundChat: `message` is required (non-empty string)." });
+  }
+  const sessionId = randomUUID();
+  // ws is null: the session runs headless until the user opens it (reattach
+  // replays the buffered output). The "created" pubsub event in spawnClaudePty
+  // surfaces it in the sidebar right away.
+  spawnClaudePty(sessionId, null, null, message);
+  return res.json({
+    message: `Spawned a new terminal session (chatId ${sessionId}). It runs in parallel; the user can open it from the sidebar.`,
+    jsonData: { chatId: sessionId },
+  });
+});
+
 // Mount each enabled GUI plugin's REST routes (e.g. POST /api/markdown,
-// POST /api/form). The MCP broker dispatches tool calls to these.
+// POST /api/form). The GUI MCP server dispatches tool calls to these.
 mountAllRoutes(app);
+
+// In-process GUI MCP server, served over Streamable HTTP. claude (wired up via
+// mcpConfigJson) POSTs JSON-RPC here; the session id is in the URL path. We run in
+// STATELESS mode (sessionIdGenerator: undefined): one fresh Server+transport per
+// request, no session header / no initialize handshake required across requests.
+// The SDK forbids reusing a stateless transport, so we never cache it.
+const mcpReject = (_req: express.Request, res: express.Response) => res.status(405).set("Allow", "POST").json({ error: "method not allowed" });
+app.post("/mcp/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  if (!SESSION_ID_RE.test(sessionId)) {
+    return res.status(400).json({ error: "invalid sessionId" });
+  }
+  const server = buildGuiMcpServer(sessionId, `http://127.0.0.1:${PORT}`);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on("close", () => {
+    transport.close();
+    server.close();
+  });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error(`[mcp] request failed for ${sessionId}:`, err);
+    if (!res.headersSent) res.status(500).json({ error: "mcp error" });
+  }
+});
+// No SSE stream / session teardown in stateless mode — reject the rest.
+app.get("/mcp/:sessionId", mcpReject);
+app.delete("/mcp/:sessionId", mcpReject);
 
 // Serve Vite build output
 app.use(express.static(path.join(__dirname, "../dist")));
@@ -725,15 +770,22 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
 }
 
 // Spawn a fresh claude PTY for this session, register it, and wire its output /
-// exit back to the browser socket.
-function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket): PtyEntry {
+// exit back to the browser socket. `ws` may be null for a session spawned without
+// a viewer yet (e.g. spawnBackgroundChat) — output just buffers until a client
+// reattaches. `initialPrompt`, when given, is passed to claude as the first turn
+// so the session starts working immediately, before anyone opens it.
+function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket | null, initialPrompt?: string): PtyEntry {
   const settings = hookSettingsJson();
   // Register the GUI MCP broker and auto-allow its tools so the plugin tools run
   // without a permission prompt (--strict-mcp-config keeps the user's other MCP
   // servers out of the spike).
   const mcp = mcpConfigJson(sessionId);
   const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
-  const args = resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
+  const baseArgs = resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
+  // The initial prompt goes last as a positional arg (claude's initial-prompt
+  // form). "--" ends option parsing so a prompt that happens to start with "-"
+  // can't be reinterpreted as a flag.
+  const args = initialPrompt ? [...baseArgs, "--", initialPrompt] : baseArgs;
 
   console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
 
@@ -750,8 +802,11 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket)
   ptys.set(sessionId, entry);
 
   if (!resume) {
-    // Brand-new session: surface it in the sidebar before it's persisted.
-    knownSessions.set(sessionId, { createdAt: Date.now(), title: "New session" });
+    // Brand-new session: surface it in the sidebar before it's persisted. A
+    // spawned session (initialPrompt) gets a title from its first message so it's
+    // recognizable in the sidebar before anyone opens it.
+    const title = initialPrompt ? initialPrompt.replace(/\s+/g, " ").trim().slice(0, 60) || "New session" : "New session";
+    knownSessions.set(sessionId, { createdAt: Date.now(), title });
     pubsub?.publish(SESSIONS_CHANNEL, { id: sessionId, working: false, event: "created" });
   }
 
