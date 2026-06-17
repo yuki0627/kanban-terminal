@@ -24,6 +24,10 @@ npm install -g mulmoterminal
 mulmoterminal
 ```
 
+A global install isn't auto-updated, so on startup MulmoTerminal checks npm and
+prints a one-line notice when a newer version is available (`npm i -g mulmoterminal`
+to update). Disable with `MULMOTERMINAL_NO_UPDATE_CHECK=1` (or `NO_UPDATE_NOTIFIER=1`).
+
 Options: `--cwd <dir>` (working directory — relative paths allowed; defaults to the
 directory you run the command from), `--port <n>` (default 3456), `--no-open`,
 `--version`, `--help`.
