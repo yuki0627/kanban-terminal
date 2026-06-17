@@ -1,7 +1,8 @@
 import express from "express";
 import http from "http";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import pty from "node-pty";
+import type { IPty } from "node-pty";
 import path from "path";
 import os from "os";
 import fs from "fs/promises";
@@ -9,6 +10,71 @@ import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountAllRoutes, allowedToolNames, toolSummaries } from "./plugins-registry.js";
+
+// Per-session activity flags, driven by Claude hooks (see /api/hook).
+interface Activity {
+  working?: boolean;
+  waiting?: boolean;
+  event?: string | null;
+  at?: number;
+}
+
+// A live PTY and its (possibly detached) browser socket.
+interface PtyEntry {
+  term: IPty;
+  ws: WebSocket | null;
+  buffer: string;
+}
+
+interface KnownSession {
+  createdAt: number;
+  title: string;
+}
+
+// A GUI plugin result, deduped by uuid; the rest of the payload is opaque here.
+interface ToolResult {
+  uuid: string;
+  [key: string]: unknown;
+}
+
+// One entry in a session's tool-call history (Pre/PostToolUse hooks).
+interface ToolCall {
+  toolUseId?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolOutput?: unknown;
+  durationMs?: number;
+  status: string;
+  at: number;
+}
+
+// A sidebar session row (resolved from disk or a pending in-memory session).
+interface SessionMeta {
+  id: string;
+  title: string;
+  mtime: number;
+  working: boolean;
+  waiting: boolean;
+}
+
+// Recency rank for an on-disk .jsonl, before its contents are read.
+interface DiskStat {
+  kind: "disk";
+  id: string;
+  file: string;
+  mtime: number;
+}
+
+// An in-memory session not yet persisted to disk.
+interface PendingSession extends SessionMeta {
+  kind: "pending";
+}
+
+// Node fs errors carry a `code` (e.g. "ENOENT"); narrow before reading it.
+const hasErrnoCode = (e: unknown): e is { code?: string } => typeof e === "object" && e !== null;
+
+// Error message extracted defensively from an unknown thrown value.
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,7 +112,7 @@ const SESSIONS_CHANNEL = "sessions";
 // Per-session pub/sub channel the GUI panel subscribes to. The MCP broker POSTs a
 // toolResult to /api/agent/toolResult, which stores it keyed by session id and
 // publishes it here (mirrors MulmoClaude's sessionChannel; see the spike doc).
-const sessionChannel = (id) => `session:${id}`;
+const sessionChannel = (id: string) => `session:${id}`;
 
 // Stdio MCP broker wired into each spawned claude (--mcp-config). It exposes one
 // GUI-protocol tool per enabled plugin (driven by plugins/plugins.json) and drives
@@ -63,19 +129,20 @@ const GUI_MCP_TOOLS = allowedToolNames().join(",");
 // (<workspace> = CLAUDE_CWD). The in-memory Map is the working copy; the file is
 // rewritten on each change and lazy-loaded on first access. Session ids are
 // validated UUIDs (SESSION_ID_RE), so they're safe to use as filenames.
-function createSessionStore(dirName) {
+function createSessionStore<T>(dirName: string) {
   const dir = path.join(CLAUDE_CWD, dirName);
-  const fileFor = (id) => path.join(dir, `${id}.json`);
-  const map = new Map(); // id -> list (the working copy; mutate in place)
-  const loading = new Map(); // id -> Promise<list>, dedupes concurrent loads
+  const fileFor = (id: string) => path.join(dir, `${id}.json`);
+  const map = new Map<string, T[]>(); // id -> list (the working copy; mutate in place)
+  const loading = new Map<string, Promise<T[]>>(); // id -> Promise<list>, dedupes concurrent loads
 
   // Lazily load a session's list from disk, then keep using the in-memory copy.
-  function get(sessionId) {
+  function get(sessionId: string): Promise<T[]> {
     const cached = map.get(sessionId);
     if (cached) return Promise.resolve(cached);
-    if (loading.has(sessionId)) return loading.get(sessionId);
+    const inflight = loading.get(sessionId);
+    if (inflight) return inflight;
     const p = (async () => {
-      let list = [];
+      let list: T[] = [];
       if (SESSION_ID_RE.test(sessionId)) {
         try {
           const parsed = JSON.parse(await fs.readFile(fileFor(sessionId), "utf8"));
@@ -93,13 +160,13 @@ function createSessionStore(dirName) {
   }
 
   // Persist a session's list (best-effort, fire-and-forget).
-  async function save(sessionId) {
+  async function save(sessionId: string) {
     if (!SESSION_ID_RE.test(sessionId)) return;
     try {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(fileFor(sessionId), JSON.stringify(map.get(sessionId) || []));
     } catch (e) {
-      console.error(`[${dirName}] failed to persist ${sessionId}: ${e.message}`);
+      console.error(`[${dirName}] failed to persist ${sessionId}: ${messageOf(e)}`);
     }
   }
 
@@ -110,13 +177,13 @@ function createSessionStore(dirName) {
 // panel replays the rendered views even after a server reboot. (Chat + message
 // history live in the terminal and Claude's .jsonl; this is the GUI-side store.)
 // Each entry is an array of toolResults, capped to the most recent N.
-const toolResultsStore = createSessionStore(".toolresults");
+const toolResultsStore = createSessionStore<ToolResult>(".toolresults");
 const GUI_HISTORY_LIMIT = 50;
 
 // Upsert a toolResult into a session's list, deduped by uuid — a re-emitted result
 // (e.g. a form whose viewState changed after the user submitted) updates in place.
 // Mirrors MulmoClaude's applyToolResultToSession.
-async function storeToolResult(sessionId, result) {
+async function storeToolResult(sessionId: string, result: ToolResult) {
   const list = await toolResultsStore.get(sessionId);
   const idx = list.findIndex((r) => r.uuid === result.uuid);
   if (idx >= 0) {
@@ -136,15 +203,15 @@ async function storeToolResult(sessionId, result) {
 //
 // Persisted under <workspace>/.toolcalls via the same disk-backed store as the
 // toolResults, so the history survives a server reboot.
-const toolCallsStore = createSessionStore(".toolcalls");
+const toolCallsStore = createSessionStore<ToolCall>(".toolcalls");
 const TOOLCALLS_LIMIT = 200;
-const toolCallsChannel = (id) => `toolcalls:${id}`;
+const toolCallsChannel = (id: string) => `toolcalls:${id}`;
 // Stored tool outputs are capped so one verbose tool can't bloat the on-disk
 // history (and the pane). The raw output still reaches the LLM via the terminal;
 // this is only the history copy.
 const TOOL_OUTPUT_CAP = 20_000;
 
-function capToolOutput(output) {
+function capToolOutput(output: unknown): unknown {
   if (typeof output === "string" && output.length > TOOL_OUTPUT_CAP) {
     return output.slice(0, TOOL_OUTPUT_CAP) + `\n… (truncated ${output.length - TOOL_OUTPUT_CAP} chars)`;
   }
@@ -152,7 +219,10 @@ function capToolOutput(output) {
 }
 
 // PreToolUse: a tool started. Append a "running" entry (deduped by tool_use_id).
-async function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }) {
+async function recordToolCallStart(
+  sessionId: string,
+  { toolUseId, toolName, toolInput }: { toolUseId?: string; toolName?: string; toolInput?: unknown },
+) {
   const list = await toolCallsStore.get(sessionId);
   if (toolUseId && list.some((c) => c.toolUseId === toolUseId)) return;
   const call = { toolUseId, toolName, toolInput, status: "running", at: Date.now() };
@@ -166,7 +236,24 @@ async function recordToolCallStart(sessionId, { toolUseId, toolName, toolInput }
 // complete the matching entry by tool_use_id (or add one if we never saw the
 // start). A failed tool fires PostToolUseFailure, NOT PostToolUse, so both route
 // here — otherwise the entry would be stuck on "running".
-async function recordToolCallEnd(sessionId, { toolUseId, toolName, toolInput, toolOutput, durationMs, status }) {
+async function recordToolCallEnd(
+  sessionId: string,
+  {
+    toolUseId,
+    toolName,
+    toolInput,
+    toolOutput,
+    durationMs,
+    status,
+  }: {
+    toolUseId?: string;
+    toolName?: string;
+    toolInput?: unknown;
+    toolOutput?: unknown;
+    durationMs?: number;
+    status: string;
+  },
+) {
   const list = await toolCallsStore.get(sessionId);
   const output = capToolOutput(toolOutput);
   let call = toolUseId ? list.find((c) => c.toolUseId === toolUseId) : undefined;
@@ -189,33 +276,33 @@ const SESSION_LIST_LIMIT = 50;
 
 // Per-session "working" state, driven by Claude hooks (see /api/hook):
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
-const activity = new Map(); // id -> { working, event, at }
+const activity = new Map<string, Activity>(); // id -> { working, event, at }
 
 // Live ptys keyed by session id. A pty outlives its WebSocket while the session
 // is still "working", so switching away doesn't interrupt Claude mid-turn; it
 // is reaped once the session goes idle (Stop hook) or the process exits. `ws`
 // is null while the session runs in the background.
-const ptys = new Map(); // id -> { term, ws, buffer }
+const ptys = new Map<string, PtyEntry>(); // id -> { term, ws, buffer }
 
 // New sessions started in this process that have no .jsonl on disk yet (Claude
 // only writes the file on the first prompt). Merged into /api/sessions so a
 // freshly created session shows in the sidebar immediately. An entry is dropped
 // once the file exists (the on-disk record takes over) or the pty is reaped.
-const knownSessions = new Map(); // id -> { createdAt, title }
+const knownSessions = new Map<string, KnownSession>(); // id -> { createdAt, title }
 
 // Bytes of recent output kept per pty and replayed when a client reattaches to
 // a background session, so the user sees context instead of a blank screen.
 const OUTPUT_BUFFER_LIMIT = 64 * 1024;
 
 // Assigned once the HTTP server exists (createPubSub needs it).
-let pubsub = null;
+let pubsub: ReturnType<typeof createPubSub> | null = null;
 
 // Tear down a session's PTY and bookkeeping, then notify subscribers. The
 // `activity` entry is dropped too — UNLESS it still carries `waiting`, which is
 // what keeps a finished/needs-attention background session bold (via its
 // on-disk record) until the user opens it. This keeps `activity` from growing
 // unbounded while preserving the bold-until-viewed behavior.
-function reap(id) {
+function reap(id: string) {
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
   ptys.delete(id);
@@ -233,7 +320,7 @@ function reap(id) {
 }
 
 // Publish a session's current activity (working + waiting) to subscribers.
-function publishActivity(id) {
+function publishActivity(id: string) {
   const a = activity.get(id) || {};
   pubsub?.publish(SESSIONS_CHANNEL, {
     id,
@@ -245,7 +332,7 @@ function publishActivity(id) {
 
 // Claude is thinking (UserPromptSubmit) until it finishes (Stop). No-op (and no
 // publish) when the state is unchanged.
-function setWorking(id, working, event?) {
+function setWorking(id: string, working: boolean, event?: string) {
   const prev = activity.get(id) || {};
   if ((prev.working ?? false) === working) return;
   activity.set(id, { ...prev, working, event: event ?? prev.event ?? null, at: Date.now() });
@@ -265,7 +352,7 @@ function setWorking(id, working, event?) {
 // (Notification: permission / question / idle) or has finished a turn with
 // output the user hasn't seen (Stop). Cleared when brought to the foreground
 // (see the WebSocket connection handler).
-function setWaiting(id, waiting, event?) {
+function setWaiting(id: string, waiting: boolean, event?: string) {
   const prev = activity.get(id) || {};
   if ((prev.waiting ?? false) === waiting) return;
   activity.set(id, { ...prev, waiting, event: event ?? prev.event ?? null, at: Date.now() });
@@ -301,7 +388,7 @@ function hookSettingsJson() {
 // MCP config injected via `claude --mcp-config <json>`. Registers the stdio GUI
 // broker and passes this session's id + the server port to it via env (the MCP
 // process can't otherwise know which session it belongs to).
-function mcpConfigJson(sessionId) {
+function mcpConfigJson(sessionId: string) {
   return JSON.stringify({
     mcpServers: {
       "mulmoterminal-gui": {
@@ -318,13 +405,13 @@ function mcpConfigJson(sessionId) {
 
 // Claude stores each project's sessions under ~/.claude/projects/<encoded-cwd>/,
 // where the absolute cwd has its "/" and "." characters replaced by "-".
-function projectSessionsDir(cwd) {
+function projectSessionsDir(cwd: string) {
   const encoded = path.resolve(cwd).replace(/[/.]/g, "-");
   return path.join(os.homedir(), ".claude", "projects", encoded);
 }
 
 // Scan a session JSONL for a human-friendly title and last activity.
-async function readSessionMeta(dir, file) {
+async function readSessionMeta(dir: string, file: string): Promise<SessionMeta> {
   const full = path.join(dir, file);
   const [raw, stat] = await Promise.all([
     fs.readFile(full, "utf8"),
@@ -505,18 +592,18 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
 app.get("/api/sessions", async (_req, res) => {
   try {
     const dir = projectSessionsDir(CLAUDE_CWD);
-    let files = [];
+    let files: string[] = [];
     try {
       files = (await fs.readdir(dir)).filter((f) => f.endsWith(".jsonl"));
     } catch (err) {
-      if (err.code !== "ENOENT") throw err;
+      if (!hasErrnoCode(err) || err.code !== "ENOENT") throw err;
     }
 
     // Cheap pass: stat (don't read) every file just for its mtime, so we can
     // rank by recency. Skip any that vanished between readdir and stat.
     const onDiskStats = (
       await Promise.all(
-        files.map(async (file) => {
+        files.map(async (file): Promise<DiskStat | null> => {
           try {
             const st = await fs.stat(path.join(dir, file));
             return { kind: "disk", id: path.basename(file, ".jsonl"), file, mtime: st.mtimeMs };
@@ -525,12 +612,12 @@ app.get("/api/sessions", async (_req, res) => {
           }
         })
       )
-    ).filter(Boolean);
+    ).filter((s): s is DiskStat => s !== null);
     const onDisk = new Set(onDiskStats.map((s) => s.id));
 
     // In-memory sessions not yet written to disk. Prune any that have since
     // been persisted — the on-disk record (with its real title) wins.
-    const pending = [];
+    const pending: PendingSession[] = [];
     for (const [id, meta] of knownSessions) {
       if (onDisk.has(id)) {
         knownSessions.delete(id);
@@ -560,7 +647,7 @@ app.get("/api/sessions", async (_req, res) => {
         )
       )
     )
-      .filter(Boolean)
+      .filter((s): s is SessionMeta => s !== null)
       .sort((a, b) => b.mtime - a.mtime);
 
     res.json({ cwd: CLAUDE_CWD, sessions });
@@ -578,7 +665,7 @@ pubsub = createPubSub(server, isAllowedOrigin);
 // libraries fighting over the "upgrade" event.
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
-  const { pathname } = new URL(req.url, "http://localhost");
+  const { pathname } = new URL(req.url ?? "/", "http://localhost");
   if (pathname === "/ws") {
     if (!isAllowedOrigin(req.headers.origin)) {
       console.warn(`[ws] rejected cross-origin upgrade from ${req.headers.origin}`);
@@ -594,7 +681,7 @@ wss.on("connection", (ws, req) => {
   // ?session=<id> resumes an existing conversation; absent => fresh session.
   // For new sessions we generate the id ourselves (--session-id) so the server
   // always knows the current session's id, even before any file exists.
-  const resume = new URL(req.url, "http://localhost").searchParams.get("session");
+  const resume = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
   if (resume && !SESSION_ID_RE.test(resume)) {
     console.warn(`[ws] rejecting non-UUID session id: ${JSON.stringify(resume)}`);
     ws.close();
@@ -605,8 +692,10 @@ wss.on("connection", (ws, req) => {
   // Tell the browser which session this is (it learns the id of new sessions).
   ws.send(JSON.stringify({ type: "session", id: sessionId }));
 
-  let entry = ptys.get(sessionId);
-  if (entry) {
+  const existing = ptys.get(sessionId);
+  let entry: PtyEntry;
+  if (existing) {
+    entry = existing;
     // A background pty for this session is still alive — reattach instead of
     // spawning a duplicate claude. Replay recent output for context.
     console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
@@ -704,7 +793,7 @@ wss.on("connection", (ws, req) => {
       }
     } catch (err) {
       // e.g. a write/resize that races the PTY exiting — drop it, never crash.
-      console.warn(`[ws] dropped message for ${sessionId}: ${err.message}`);
+      console.warn(`[ws] dropped message for ${sessionId}: ${messageOf(err)}`);
     }
   });
 

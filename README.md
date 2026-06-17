@@ -124,8 +124,8 @@ yarn test               # vitest run
 ```
 
 The backend is TypeScript run directly via `tsx` (no build step); `server/` is
-type-checked separately through `tsconfig.server.json` (loose to start — see the
-server-TypeScript migration issue).
+type-checked separately through `tsconfig.server.json` (`strict`), kept out of
+the main `build` so the two type-check independently.
 
 In dev, open the Vite URL; its proxy forwards `/ws`, `/ws/pubsub`, and `/api` to
 `:3456`. In production, run `yarn build` then `yarn server` and open

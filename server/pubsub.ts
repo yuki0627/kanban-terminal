@@ -1,10 +1,11 @@
 import { Server as IOServer } from "socket.io";
+import type { Server as HttpServer } from "node:http";
 
 // Minimal socket.io pub/sub, modeled on mulmoclaude's server/events/pub-sub.
 // Channel names are socket.io rooms — subscribe/unsubscribe map to
 // socket.join / socket.leave, and publish broadcasts to the room.
 // socket.io handles reconnect / heartbeat / transport for us.
-export function createPubSub(server, isAllowedOrigin: (origin?: string) => boolean = () => true) {
+export function createPubSub(server: HttpServer, isAllowedOrigin: (origin?: string) => boolean = () => true) {
   const io = new IOServer(server, {
     path: "/ws/pubsub",
     transports: ["websocket"],
@@ -28,7 +29,7 @@ export function createPubSub(server, isAllowedOrigin: (origin?: string) => boole
   });
 
   return {
-    publish(channel, data) {
+    publish(channel: string, data: unknown) {
       io.to(channel).emit("data", { channel, data });
     },
   };
