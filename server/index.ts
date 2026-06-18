@@ -96,6 +96,11 @@ const CLAUDE_CWD = process.env.CLAUDE_CWD || path.join(os.homedir(), "mulmoclaud
 // session state, so it must exist before we spawn anything into it.
 await fs.mkdir(CLAUDE_CWD, { recursive: true });
 
+// MulmoTerminal's own per-session GUI state (tool-result render data + tool-call
+// history) lives here, keyed by sessionId (a global UUID) — NOT under the
+// workspace dir, so it stays valid regardless of which directory is active.
+const MULMOTERMINAL_HOME = path.join(os.homedir(), ".mulmoterminal");
+
 // A session id is always a UUID (server-generated, or a .jsonl basename). Reject
 // anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
 // a value that claude re-parses as a flag) into the spawned process.
@@ -139,7 +144,7 @@ const GUI_MCP_TOOLS = allowedToolNames().join(",");
 // rewritten on each change and lazy-loaded on first access. Session ids are
 // validated UUIDs (SESSION_ID_RE), so they're safe to use as filenames.
 function createSessionStore<T>(dirName: string) {
-  const dir = path.join(CLAUDE_CWD, dirName);
+  const dir = path.join(MULMOTERMINAL_HOME, dirName);
   const fileFor = (id: string) => path.join(dir, `${id}.json`);
   const map = new Map<string, T[]>(); // id -> list (the working copy; mutate in place)
   const loading = new Map<string, Promise<T[]>>(); // id -> Promise<list>, dedupes concurrent loads
@@ -182,11 +187,11 @@ function createSessionStore<T>(dirName: string) {
   return { get, save };
 }
 
-// GUI toolResults per session, persisted under <workspace>/.toolresults so the
-// panel replays the rendered views even after a server reboot. (Chat + message
-// history live in the terminal and Claude's .jsonl; this is the GUI-side store.)
-// Each entry is an array of toolResults, capped to the most recent N.
-const toolResultsStore = createSessionStore<ToolResult>(".toolresults");
+// GUI toolResults per session, persisted under ~/.mulmoterminal/toolresults so
+// the panel replays the rendered views even after a server reboot. (Chat +
+// message history live in the terminal and Claude's .jsonl; this is the GUI-side
+// store.) Each entry is an array of toolResults, capped to the most recent N.
+const toolResultsStore = createSessionStore<ToolResult>("toolresults");
 const GUI_HISTORY_LIMIT = 50;
 
 // Upsert a toolResult into a session's list, deduped by uuid — a re-emitted result
@@ -210,9 +215,9 @@ async function storeToolResult(sessionId: string, result: ToolResult) {
 // per-session channel the tools pane subscribes to. (The broker's toolResults
 // store above is separate; it only drives rendering of GUI views.)
 //
-// Persisted under <workspace>/.toolcalls via the same disk-backed store as the
-// toolResults, so the history survives a server reboot.
-const toolCallsStore = createSessionStore<ToolCall>(".toolcalls");
+// Persisted under ~/.mulmoterminal/toolcalls via the same disk-backed store as
+// the toolResults, so the history survives a server reboot.
+const toolCallsStore = createSessionStore<ToolCall>("toolcalls");
 const TOOLCALLS_LIMIT = 200;
 const toolCallsChannel = (id: string) => `toolcalls:${id}`;
 // Stored tool outputs are capped so one verbose tool can't bloat the on-disk
@@ -638,7 +643,7 @@ app.post("/api/agent/toolResult", async (req, res) => {
 });
 
 // Replay a session's stored toolResults so the panel can render them when the
-// user (re)selects that session. Loads from disk (<workspace>/.toolresults) on
+// user (re)selects that session. Loads from disk (~/.mulmoterminal/toolresults) on
 // first access so the views survive a reboot.
 app.get("/api/agent/toolResults/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
@@ -657,7 +662,7 @@ app.get("/api/tools", (_req, res) => {
 
 // Replay a session's tool-call history (every tool, via the Pre/PostToolUse hooks)
 // so the tools pane can render it when the user (re)selects that session. Loads
-// from disk (<workspace>/.toolcalls) on first access so it survives a reboot.
+// from disk (~/.mulmoterminal/toolcalls) on first access so it survives a reboot.
 app.get("/api/tool-calls/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   if (!SESSION_ID_RE.test(sessionId)) {
