@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, useTemplateRef } from "vue";
 import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
+
+const termRef = useTemplateRef<InstanceType<typeof TerminalView>>("termRef");
 
 // `expanded` reflects whether this cell is zoomed to fill the grid (parent owns
 // the state). `initialSessionId` is a persisted session to resume on mount, so a
@@ -64,6 +66,9 @@ function launch() {
 }
 
 function close() {
+  // Ask the server to reap this session immediately (don't hold it through the
+  // disconnect grace window), then tear the cell down.
+  termRef.value?.terminate();
   launched.value = false;
   sessionId.value = null;
   working.value = false;
@@ -112,7 +117,7 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
           <button class="cell-btn cell-close" title="Close terminal" @click="close">✕</button>
         </span>
       </div>
-      <TerminalView class="cell-term" :session-id="sessionId" :connect-key="connectKey" @session="onSession" />
+      <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" @session="onSession" />
     </template>
     <button v-else class="cell-empty" @click="launch">＋ New terminal</button>
   </div>

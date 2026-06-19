@@ -178,7 +178,14 @@ function submitText(text: string): boolean {
   }, 60);
   return true;
 }
-defineExpose({ submitText });
+// Explicit close (the cell's ✕): tell the server to reap this session now
+// instead of holding it through the disconnect grace window. Suppress reconnect
+// since the imminent unmount closes the socket.
+function terminate() {
+  sawExit = true;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "terminate" }));
+}
+defineExpose({ submitText, terminate });
 
 onUnmounted(() => {
   disposed = true;

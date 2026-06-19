@@ -319,7 +319,36 @@ let pubsub: ReturnType<typeof createPubSub> | null = null;
 // what keeps a finished/needs-attention background session bold (via its
 // on-disk record) until the user opens it. This keeps `activity` from growing
 // unbounded while preserving the bold-until-viewed behavior.
+// On disconnect we don't kill an idle session immediately — a page reload is a
+// brief disconnect, and reaping then would throw away a perfectly good live
+// terminal (and its scrollback). Instead we keep the pty for a grace window; a
+// reattach within it cancels the reap, so a reload just re-attaches to the same
+// running terminal. Only after the window with no reattach do we reap.
+const REAP_GRACE_MS = 30_000;
+const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelReap(id: string) {
+  const t = reapTimers.get(id);
+  if (t) {
+    clearTimeout(t);
+    reapTimers.delete(id);
+  }
+}
+
+function scheduleReap(id: string) {
+  if (reapTimers.has(id)) return;
+  reapTimers.set(
+    id,
+    setTimeout(() => {
+      reapTimers.delete(id);
+      const entry = ptys.get(id);
+      if (entry && !entry.ws) reap(id); // still detached after the grace window
+    }, REAP_GRACE_MS),
+  );
+}
+
 function reap(id: string) {
+  cancelReap(id);
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
   ptys.delete(id);
@@ -809,6 +838,7 @@ server.on("upgrade", (req, socket, head) => {
 // Reattach a live background PTY to a new socket: drop any stale socket, swap in
 // the new one, and replay the buffered tail for context.
 function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntry {
+  cancelReap(sessionId); // a reattach within the grace window keeps the session
   console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
   // Drop any socket still attached (e.g. the same session open in another tab)
   // so it can't keep writing to this PTY.
@@ -909,7 +939,11 @@ function handleClientFrame(entry: PtyEntry, ws: WebSocket, raw: RawData, session
     return; // not JSON — never write arbitrary payloads to the PTY
   }
   try {
-    if (msg.type === "input" && typeof msg.data === "string") {
+    if (msg.type === "terminate") {
+      // Explicit close (the cell's ✕) — reap now instead of waiting out the
+      // disconnect grace window, so the session slot frees immediately.
+      reap(sessionId);
+    } else if (msg.type === "input" && typeof msg.data === "string") {
       entry.term.write(msg.data);
     } else if (
       msg.type === "resize" &&
@@ -937,8 +971,10 @@ function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   if (activity.get(sessionId)?.working) {
     console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
   } else {
-    console.log(`[ws] disconnected; killing idle session ${sessionId}`);
-    reap(sessionId);
+    // Don't reap now — a reload reconnects in a moment and should re-attach to
+    // this same live terminal. Reap only if nothing reattaches within the window.
+    console.log(`[ws] disconnected; idle session ${sessionId} reaped in ${REAP_GRACE_MS / 1000}s unless reattached`);
+    scheduleReap(sessionId);
   }
 }
 
