@@ -1,28 +1,78 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed, watch } from "vue";
 import TerminalCell from "./TerminalCell.vue";
 
-// Fixed 2x2 grid. Zooming interface: the grid is the base view; clicking a cell's
-// expand button zooms that one cell to fill the area, and restore returns to 2x2.
-// Other cells stay MOUNTED while zoomed (hidden via CSS, not v-if) so their
-// terminals keep running in the background.
+// Fixed 2x2 grid. Zooming interface: the grid is the base view; expanding a cell
+// grows it to fill the area and shrinks the others to zero — animated by
+// transitioning the grid track sizes (Mac-like zoom). All cells stay MOUNTED the
+// whole time, so their terminals keep running while another is zoomed.
+const COLS = 2;
 const CELL_COUNT = 4;
 const cells = Array.from({ length: CELL_COUNT }, (_, i) => i);
-const expanded = ref<number | null>(null);
+
+// Persisted so a page reload restores the open terminals (each cell resumes its
+// session) and the zoom state.
+const STORE_KEY = "grid_state_v1";
+
+function loadState(): { sessions: (string | null)[]; expanded: number | null } {
+  const fallback = { sessions: Array<string | null>(CELL_COUNT).fill(null), expanded: null };
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    const sessions = Array.from({ length: CELL_COUNT }, (_, i) => {
+      const v = parsed?.sessions?.[i];
+      return typeof v === "string" ? v : null;
+    });
+    const e = parsed?.expanded;
+    const expanded = typeof e === "number" && e >= 0 && e < CELL_COUNT ? e : null;
+    return { sessions, expanded };
+  } catch {
+    return fallback;
+  }
+}
+
+const initial = loadState();
+const cellSessions = ref<(string | null)[]>(initial.sessions);
+const expanded = ref<number | null>(initial.expanded);
+
+watch([cellSessions, expanded], () => localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: cellSessions.value, expanded: expanded.value })), {
+  deep: true,
+});
 
 function toggleExpand(i: number) {
   expanded.value = expanded.value === i ? null : i;
 }
+
+function setSession(i: number, id: string | null) {
+  cellSessions.value[i] = id;
+  // A closed cell can't stay zoomed.
+  if (id === null && expanded.value === i) expanded.value = null;
+}
+
+// Drive the zoom purely through the grid track template: the expanded cell's
+// row/column become 1fr and the others collapse to 0fr. Transitioning these
+// (plus the gap) gives the grow/shrink animation.
+const trackStyle = computed(() => {
+  const e = expanded.value;
+  if (e === null) {
+    return { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: "6px" };
+  }
+  const axis = (active: number) => [0, 1].map((n) => (n === active ? "1fr" : "0fr")).join(" ");
+  return { gridTemplateColumns: axis(e % COLS), gridTemplateRows: axis(Math.floor(e / COLS)), gap: "0px" };
+});
 </script>
 
 <template>
-  <div :class="['grid', { 'grid-zoomed': expanded !== null }]">
+  <div class="grid" :style="trackStyle">
     <TerminalCell
       v-for="i in cells"
       :key="i"
-      :class="{ 'cell-expanded': expanded === i, 'cell-hidden': expanded !== null && expanded !== i }"
       :expanded="expanded === i"
+      :initial-session-id="cellSessions[i]"
       @toggle-expand="toggleExpand(i)"
+      @session="(id) => setSession(i, id)"
+      @close="() => setSession(i, null)"
     />
   </div>
 </template>
@@ -32,21 +82,13 @@ function toggleExpand(i: number) {
   height: 100%;
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  grid-template-rows: repeat(2, 1fr);
-  gap: 6px;
   padding: 6px;
   background: #0f0f1e;
   box-sizing: border-box;
-}
-
-/* Zoomed: collapse the grid to a single area; the expanded cell fills it and the
-   others are hidden but stay mounted (their PTYs keep running). */
-.grid-zoomed {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
-}
-.cell-hidden {
-  display: none;
+  /* Mac-like zoom: animate the track sizes (and gap) as a cell expands/restores. */
+  transition:
+    grid-template-columns 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    grid-template-rows 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    gap 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 </style>

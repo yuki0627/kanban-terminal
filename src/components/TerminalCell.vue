@@ -2,17 +2,16 @@
 import { ref } from "vue";
 import TerminalView from "./Terminal.vue";
 
-// `expanded` reflects whether this cell is currently zoomed to fill the grid;
-// the parent owns the state and we just request a toggle.
-defineProps<{ expanded: boolean }>();
-const emit = defineEmits<{ (e: "toggle-expand"): void }>();
+// `expanded` reflects whether this cell is zoomed to fill the grid (parent owns
+// the state). `initialSessionId` is a persisted session to resume on mount, so a
+// page reload restores the terminals that were open (empty if null).
+const props = defineProps<{ expanded: boolean; initialSessionId: string | null }>();
+const emit = defineEmits<{ (e: "toggle-expand" | "close"): void; (e: "session", id: string): void }>();
 
-// One grid cell. Empty until the user launches it (lazy launch — we don't spawn
-// a claude process for an unused cell). Once launched it mounts a Terminal, which
-// opens its own WebSocket / PTY; closing the cell unmounts it (the server reaps
-// the idle session).
-const launched = ref(false);
-const sessionId = ref<string | null>(null);
+// A cell with a persisted session relaunches (resumes) on mount; otherwise it
+// starts empty and lazy-launches when the user clicks "New terminal".
+const launched = ref(props.initialSessionId !== null);
+const sessionId = ref<string | null>(props.initialSessionId);
 const connectKey = ref(0);
 
 function launch() {
@@ -24,11 +23,14 @@ function launch() {
 function close() {
   launched.value = false;
   sessionId.value = null;
+  emit("close");
 }
 
-// Adopt the server-assigned id so the header can show which session this is.
+// Adopt the server-assigned id (esp. for new sessions) and bubble it up so the
+// grid can persist it for the next reload.
 function onSession(id: string) {
   sessionId.value = id;
+  emit("session", id);
 }
 
 const shortId = (id: string | null) => (id ? id.slice(0, 8) : "starting…");
@@ -67,36 +69,40 @@ const shortId = (id: string | null) => (id ? id.slice(0, 8) : "starting…");
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 24px;
+  height: 34px;
   padding: 0 8px;
   background: #16213e;
   border-bottom: 1px solid #2a2a4e;
 }
 .cell-id {
   font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: #9aa3c0;
 }
 .cell-actions {
   display: flex;
-  gap: 2px;
+  gap: 4px;
 }
 .cell-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
   border: none;
   background: transparent;
-  color: #9aa3c0;
+  color: #c7cdf0;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1;
-  padding: 2px 5px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 .cell-btn:hover {
   background: #2a3b66;
   color: #e6e6f0;
 }
 .cell-close:hover {
-  background: transparent;
+  background: #3a2030;
   color: #ff6b6b;
 }
 
@@ -109,10 +115,11 @@ const shortId = (id: string | null) => (id ? id.slice(0, 8) : "starting…");
   flex: 1;
   border: none;
   background: transparent;
-  color: #6b7394;
+  color: #8b93b8;
   cursor: pointer;
   font-family: system-ui, sans-serif;
-  font-size: 13px;
+  font-size: 16px;
+  font-weight: 500;
 }
 .cell-empty:hover {
   background: #20203a;
