@@ -7,6 +7,7 @@ import path from "path";
 import os from "os";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPubSub } from "./pubsub.js";
@@ -796,13 +797,19 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
   // servers out of the spike).
   const mcp = mcpConfigJson(sessionId);
   const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
-  const baseArgs = resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
+  // Only `--resume` when the session actually exists on disk. claude doesn't write
+  // a session's .jsonl until its first prompt, so a started-but-unused session has
+  // no record — resuming it would fail ("[session ended]"). In that case (no live
+  // pty either, since reattach already happened upstream) restart fresh, reusing
+  // the same id via --session-id, so a reload of an idle cell just reopens it.
+  const canResume = resume !== null && existsSync(path.join(projectSessionsDir(CLAUDE_CWD), `${resume}.jsonl`));
+  const baseArgs = canResume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
   // The initial prompt goes last as a positional arg (claude's initial-prompt
   // form). "--" ends option parsing so a prompt that happens to start with "-"
   // can't be reinterpreted as a flag.
   const args = initialPrompt ? [...baseArgs, "--", initialPrompt] : baseArgs;
 
-  console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
+  console.log(`[ws] client connected (${canResume ? "resume" : "new"} ${sessionId})`);
 
   const term = pty.spawn(CLAUDE_BIN, args, {
     name: "xterm-256color",
@@ -816,10 +823,10 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
   const entry: PtyEntry = { term, ws, buffer: "" };
   ptys.set(sessionId, entry);
 
-  if (!resume) {
-    // Brand-new session: surface it in the sidebar before it's persisted. A
-    // spawned session (initialPrompt) gets a title from its first message so it's
-    // recognizable in the sidebar before anyone opens it.
+  if (!canResume) {
+    // Brand-new (or restarted-idle) session: surface it in the sidebar before
+    // it's persisted. A spawned session (initialPrompt) gets a title from its
+    // first message so it's recognizable in the sidebar before anyone opens it.
     const title = initialPrompt ? initialPrompt.replace(/\s+/g, " ").trim().slice(0, 60) || "New session" : "New session";
     knownSessions.set(sessionId, { createdAt: Date.now(), title });
     pubsub?.publish(SESSIONS_CHANNEL, { id: sessionId, working: false, event: "created" });
