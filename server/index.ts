@@ -792,11 +792,14 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
 // so the session starts working immediately, before anyone opens it.
 function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket | null, initialPrompt?: string): PtyEntry {
   const settings = hookSettingsJson();
-  // Register the GUI MCP broker and auto-allow its tools so the plugin tools run
-  // without a permission prompt (--strict-mcp-config keeps the user's other MCP
-  // servers out of the spike).
+  // Register the GUI MCP server and auto-allow its tools so the plugin tools run
+  // without a permission prompt. We deliberately do NOT pass --strict-mcp-config:
+  // --mcp-config is additive, so the user's (~/.claude.json) and the project's
+  // (<cwd>/.mcp.json) MCP servers load alongside the GUI MCP — MulmoTerminal is a
+  // real Claude Code dev terminal, not just the GUI layer. (skills are already
+  // honored: claude reads ~/.claude/skills + <cwd>/.claude/skills by cwd.)
   const mcp = mcpConfigJson(sessionId);
-  const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
+  const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--allowedTools", GUI_MCP_TOOLS];
   // Only `--resume` when the session actually exists on disk. claude doesn't write
   // a session's .jsonl until its first prompt, so a started-but-unused session has
   // no record — resuming it would fail ("[session ended]"). In that case (no live
