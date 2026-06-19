@@ -2,6 +2,11 @@
 import { ref } from "vue";
 import TerminalView from "./Terminal.vue";
 
+// `expanded` reflects whether this cell is currently zoomed to fill the grid;
+// the parent owns the state and we just request a toggle.
+defineProps<{ expanded: boolean }>();
+const emit = defineEmits<{ (e: "toggle-expand"): void }>();
+
 // One grid cell. Empty until the user launches it (lazy launch — we don't spawn
 // a claude process for an unused cell). Once launched it mounts a Terminal, which
 // opens its own WebSocket / PTY; closing the cell unmounts it (the server reaps
@@ -34,7 +39,10 @@ const shortId = (id: string | null) => (id ? id.slice(0, 8) : "starting…");
     <template v-if="launched">
       <div class="cell-header">
         <span class="cell-id" :title="sessionId ?? ''">{{ shortId(sessionId) }}</span>
-        <button class="cell-close" title="Close terminal" @click="close">✕</button>
+        <span class="cell-actions">
+          <button class="cell-btn" :title="expanded ? 'Restore' : 'Expand'" @click="emit('toggle-expand')">{{ expanded ? "⤡" : "⤢" }}</button>
+          <button class="cell-btn cell-close" title="Close terminal" @click="close">✕</button>
+        </span>
       </div>
       <TerminalView class="cell-term" :session-id="sessionId" :connect-key="connectKey" @session="onSession" />
     </template>
@@ -69,16 +77,26 @@ const shortId = (id: string | null) => (id ? id.slice(0, 8) : "starting…");
   font-size: 11px;
   color: #9aa3c0;
 }
-.cell-close {
+.cell-actions {
+  display: flex;
+  gap: 2px;
+}
+.cell-btn {
   border: none;
   background: transparent;
   color: #9aa3c0;
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
-  padding: 2px 4px;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+.cell-btn:hover {
+  background: #2a3b66;
+  color: #e6e6f0;
 }
 .cell-close:hover {
+  background: transparent;
   color: #ff6b6b;
 }
 
