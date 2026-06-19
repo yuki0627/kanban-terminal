@@ -290,6 +290,11 @@ const SESSION_LIST_LIMIT = 50;
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
 const activity = new Map<string, Activity>(); // id -> { working, event, at }
 
+// Latest user prompt per session (from the UserPromptSubmit hook), shown on the
+// grid cell header so you can tell at a glance what each terminal is doing.
+const lastPrompts = new Map<string, string>(); // id -> prompt text
+const LAST_PROMPT_CAP = 200;
+
 // Live ptys keyed by session id. A pty outlives its WebSocket while the session
 // is still "working", so switching away doesn't interrupt Claude mid-turn; it
 // is reaped once the session goes idle (Stop hook) or the process exits. `ws`
@@ -339,6 +344,7 @@ function publishActivity(id: string) {
     working: a.working ?? false,
     waiting: a.waiting ?? false,
     event: a.event ?? null,
+    lastPrompt: lastPrompts.get(id) ?? null,
   });
 }
 
@@ -595,6 +601,11 @@ app.post("/api/hook", async (req, res) => {
   if (sessionId) {
     const entry = ptys.get(sessionId);
     const foreground = !!(entry && entry.ws);
+    // Capture the prompt BEFORE handleActivityHook so the activity publish it
+    // triggers already carries the new lastPrompt.
+    if (event === "UserPromptSubmit" && typeof body.prompt === "string" && body.prompt.trim()) {
+      lastPrompts.set(sessionId, body.prompt.trim().slice(0, LAST_PROMPT_CAP));
+    }
     handleActivityHook(sessionId, event, foreground);
     await handleToolHook(sessionId, event, body);
     console.log(`[hook] ${event} for ${sessionId}`);
@@ -670,6 +681,26 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
     return res.status(400).json({ error: "invalid sessionId" });
   }
   res.json({ sessionId, toolCalls: await toolCallsStore.get(sessionId) });
+});
+
+// Server-wide config the UI shows (currently just the active workspace dir).
+app.get("/api/config", (_req, res) => {
+  res.json({ cwd: CLAUDE_CWD });
+});
+
+// Initial per-session status + last prompt, so a cell can render its header
+// immediately (the live updates then arrive via the "sessions" pub/sub channel).
+app.get("/api/session/:id", (req, res) => {
+  const { id } = req.params;
+  if (!SESSION_ID_RE.test(id)) return res.status(400).json({ error: "invalid session id" });
+  const a = activity.get(id) || {};
+  res.json({
+    id,
+    cwd: CLAUDE_CWD,
+    working: a.working ?? false,
+    waiting: a.waiting ?? false,
+    lastPrompt: lastPrompts.get(id) ?? null,
+  });
 });
 
 // List the chat sessions for the current project (CLAUDE_CWD), including

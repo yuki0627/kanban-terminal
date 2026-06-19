@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import TerminalCell from "./TerminalCell.vue";
 
 // Fixed 2x2 grid. Zooming interface: the grid is the base view; expanding a cell
@@ -9,6 +9,18 @@ import TerminalCell from "./TerminalCell.vue";
 const COLS = 2;
 const CELL_COUNT = 4;
 const cells = Array.from({ length: CELL_COUNT }, (_, i) => i);
+
+// The active workspace dir, shown in each cell header. One value for now (server
+// global); becomes per-cell once per-terminal dirs land (plan P5).
+const cwd = ref<string | null>(null);
+onMounted(async () => {
+  try {
+    const res = await fetch("/api/config");
+    if (res.ok) cwd.value = (await res.json()).cwd ?? null;
+  } catch {
+    // header just omits the dir if config can't be fetched
+  }
+});
 
 // Persisted so a page reload restores the open terminals (each cell resumes its
 // session) and the zoom state.
@@ -70,6 +82,7 @@ const trackStyle = computed(() => {
       :key="i"
       :expanded="expanded === i"
       :initial-session-id="cellSessions[i]"
+      :cwd="cwd"
       @toggle-expand="toggleExpand(i)"
       @session="(id) => setSession(i, id)"
       @close="() => setSession(i, null)"
