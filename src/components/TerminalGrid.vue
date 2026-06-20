@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import TerminalCell from "./TerminalCell.vue";
+import { MAX_CELLS, dims, trackStyle, type Layout } from "./gridLayout";
 
-// Fixed 2x2 grid. Zooming interface: the grid is the base view; expanding a cell
-// grows it to fill the area and shrinks the others to zero — animated by
-// transitioning the grid track sizes (Mac-like zoom). All cells stay MOUNTED the
-// whole time, so their terminals keep running while another is zoomed.
-const COLS = 2;
-const CELL_COUNT = 4;
-const cells = Array.from({ length: CELL_COUNT }, (_, i) => i);
+// Zooming interface: the grid is the base view; expanding a cell grows it to fill
+// the area and shrinks the others to zero — animated by transitioning the grid
+// track sizes (Mac-like zoom). All cells stay MOUNTED while zoomed, so their
+// terminals keep running. The layout (cell arrangement) is chosen in the toolbar.
+const props = defineProps<{ layout: Layout }>();
 
-// The active workspace dir, shown in each cell header. One value for now (server
-// global); becomes per-cell once per-terminal dirs land (plan P5).
+const cellCount = computed(() => dims(props.layout).cellCount);
+// Render only the visible cells; the persisted arrays are kept at MAX_CELLS so a
+// session/cwd survives switching to a smaller layout and back.
+const cells = computed(() => Array.from({ length: cellCount.value }, (_, i) => i));
+
+// The active workspace dir, shown in each cell header (server global for now;
+// per-cell dirs are a follow-up).
 const cwd = ref<string | null>(null);
 onMounted(async () => {
   try {
@@ -22,8 +26,7 @@ onMounted(async () => {
   }
 });
 
-// Persisted so a page reload restores the open terminals (each cell resumes its
-// session) and the zoom state.
+// Persisted so a page reload restores the open terminals and the zoom state.
 const STORE_KEY = "grid_state_v1";
 // Session ids are UUIDs. Drop anything else from a stale/tampered localStorage so
 // a cell never mounts with an invalid id (which the server rejects, leaving the
@@ -31,21 +34,20 @@ const STORE_KEY = "grid_state_v1";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function loadState(): { sessions: (string | null)[]; expanded: number | null } {
-  const fallback = { sessions: Array<string | null>(CELL_COUNT).fill(null), expanded: null };
+  const sessions = Array<string | null>(MAX_CELLS).fill(null);
+  let expanded: number | null = null;
   try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    const sessions = Array.from({ length: CELL_COUNT }, (_, i) => {
+    const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "");
+    for (let i = 0; i < MAX_CELLS; i++) {
       const v = parsed?.sessions?.[i];
-      return typeof v === "string" && UUID_RE.test(v) ? v : null;
-    });
+      if (typeof v === "string" && UUID_RE.test(v)) sessions[i] = v;
+    }
     const e = parsed?.expanded;
-    const expanded = typeof e === "number" && e >= 0 && e < CELL_COUNT ? e : null;
-    return { sessions, expanded };
+    if (typeof e === "number" && e >= 0 && e < MAX_CELLS) expanded = e;
   } catch {
-    return fallback;
+    // no/invalid state — defaults
   }
+  return { sessions, expanded };
 }
 
 const initial = loadState();
@@ -56,31 +58,25 @@ watch([cellSessions, expanded], () => localStorage.setItem(STORE_KEY, JSON.strin
   deep: true,
 });
 
+// A zoomed cell that's no longer visible (layout shrank) can't stay zoomed.
+watch(cellCount, (n) => {
+  if (expanded.value !== null && expanded.value >= n) expanded.value = null;
+});
+
 function toggleExpand(i: number) {
   expanded.value = expanded.value === i ? null : i;
 }
 
 function setSession(i: number, id: string | null) {
   cellSessions.value[i] = id;
-  // A closed cell can't stay zoomed.
-  if (id === null && expanded.value === i) expanded.value = null;
+  if (id === null && expanded.value === i) expanded.value = null; // a closed cell can't stay zoomed
 }
 
-// Drive the zoom purely through the grid track template: the expanded cell's
-// row/column become 1fr and the others collapse to 0fr. Transitioning these
-// (plus the gap) gives the grow/shrink animation.
-const trackStyle = computed(() => {
-  const e = expanded.value;
-  if (e === null) {
-    return { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: "6px" };
-  }
-  const axis = (active: number) => [0, 1].map((n) => (n === active ? "1fr" : "0fr")).join(" ");
-  return { gridTemplateColumns: axis(e % COLS), gridTemplateRows: axis(Math.floor(e / COLS)), gap: "0px" };
-});
+const gridStyle = computed(() => trackStyle(props.layout, expanded.value));
 </script>
 
 <template>
-  <div class="grid" :style="trackStyle">
+  <div class="grid" :style="gridStyle">
     <TerminalCell
       v-for="i in cells"
       :key="i"
