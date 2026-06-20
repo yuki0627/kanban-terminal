@@ -7,6 +7,7 @@ import path from "path";
 import os from "os";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPubSub } from "./pubsub.js";
@@ -289,6 +290,11 @@ const SESSION_LIST_LIMIT = 50;
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
 const activity = new Map<string, Activity>(); // id -> { working, event, at }
 
+// Latest user prompt per session (from the UserPromptSubmit hook), shown on the
+// grid cell header so you can tell at a glance what each terminal is doing.
+const lastPrompts = new Map<string, string>(); // id -> prompt text
+const LAST_PROMPT_CAP = 200;
+
 // Live ptys keyed by session id. A pty outlives its WebSocket while the session
 // is still "working", so switching away doesn't interrupt Claude mid-turn; it
 // is reaped once the session goes idle (Stop hook) or the process exits. `ws`
@@ -313,13 +319,43 @@ let pubsub: ReturnType<typeof createPubSub> | null = null;
 // what keeps a finished/needs-attention background session bold (via its
 // on-disk record) until the user opens it. This keeps `activity` from growing
 // unbounded while preserving the bold-until-viewed behavior.
+// On disconnect we don't kill an idle session immediately — a page reload is a
+// brief disconnect, and reaping then would throw away a perfectly good live
+// terminal (and its scrollback). Instead we keep the pty for a grace window; a
+// reattach within it cancels the reap, so a reload just re-attaches to the same
+// running terminal. Only after the window with no reattach do we reap.
+const REAP_GRACE_MS = 30_000;
+const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelReap(id: string) {
+  const t = reapTimers.get(id);
+  if (t) {
+    clearTimeout(t);
+    reapTimers.delete(id);
+  }
+}
+
+function scheduleReap(id: string) {
+  if (reapTimers.has(id)) return;
+  reapTimers.set(
+    id,
+    setTimeout(() => {
+      reapTimers.delete(id);
+      const entry = ptys.get(id);
+      if (entry && !entry.ws) reap(id); // still detached after the grace window
+    }, REAP_GRACE_MS),
+  );
+}
+
 function reap(id: string) {
+  cancelReap(id);
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
   ptys.delete(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
+  lastPrompts.delete(id); // don't leak prompt text for torn-down sessions
   const a = activity.get(id);
   if (!a || (!a.working && !a.waiting)) activity.delete(id);
   try {
@@ -338,6 +374,7 @@ function publishActivity(id: string) {
     working: a.working ?? false,
     waiting: a.waiting ?? false,
     event: a.event ?? null,
+    lastPrompt: lastPrompts.get(id) ?? null,
   });
 }
 
@@ -416,6 +453,12 @@ function mcpConfigJson(sessionId: string) {
 function projectSessionsDir(cwd: string) {
   const encoded = path.resolve(cwd).replace(/[/.]/g, "-");
   return path.join(os.homedir(), ".claude", "projects", encoded);
+}
+
+// Whether a session has an on-disk transcript (claude only writes it after the
+// first prompt). Determines whether `--resume <id>` will succeed.
+function sessionExistsOnDisk(id: string): boolean {
+  return existsSync(path.join(projectSessionsDir(CLAUDE_CWD), `${id}.jsonl`));
 }
 
 // A real user prompt from a JSONL "user" line's content, or null if it's a
@@ -594,6 +637,11 @@ app.post("/api/hook", async (req, res) => {
   if (sessionId) {
     const entry = ptys.get(sessionId);
     const foreground = !!(entry && entry.ws);
+    // Capture the prompt BEFORE handleActivityHook so the activity publish it
+    // triggers already carries the new lastPrompt.
+    if (event === "UserPromptSubmit" && typeof body.prompt === "string" && body.prompt.trim()) {
+      lastPrompts.set(sessionId, body.prompt.trim().slice(0, LAST_PROMPT_CAP));
+    }
     handleActivityHook(sessionId, event, foreground);
     await handleToolHook(sessionId, event, body);
     console.log(`[hook] ${event} for ${sessionId}`);
@@ -669,6 +717,26 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
     return res.status(400).json({ error: "invalid sessionId" });
   }
   res.json({ sessionId, toolCalls: await toolCallsStore.get(sessionId) });
+});
+
+// Server-wide config the UI shows (currently just the active workspace dir).
+app.get("/api/config", (_req, res) => {
+  res.json({ cwd: CLAUDE_CWD });
+});
+
+// Initial per-session status + last prompt, so a cell can render its header
+// immediately (the live updates then arrive via the "sessions" pub/sub channel).
+app.get("/api/session/:id", (req, res) => {
+  const { id } = req.params;
+  if (!SESSION_ID_RE.test(id)) return res.status(400).json({ error: "invalid session id" });
+  const a = activity.get(id) || {};
+  res.json({
+    id,
+    cwd: CLAUDE_CWD,
+    working: a.working ?? false,
+    waiting: a.waiting ?? false,
+    lastPrompt: lastPrompts.get(id) ?? null,
+  });
 });
 
 // List the chat sessions for the current project (CLAUDE_CWD), including
@@ -771,10 +839,18 @@ server.on("upgrade", (req, socket, head) => {
 // Reattach a live background PTY to a new socket: drop any stale socket, swap in
 // the new one, and replay the buffered tail for context.
 function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntry {
+  cancelReap(sessionId); // a reattach within the grace window keeps the session
   console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
-  // Drop any socket still attached (e.g. the same session open in another tab)
-  // so it can't keep writing to this PTY.
+  // Drop any socket still attached (e.g. the same session open in another tab).
+  // Tell it it's been superseded FIRST so it stops instead of auto-reconnecting —
+  // otherwise two clients on one session ping-pong (each reattach kicks the other,
+  // the kicked one reconnects, …) into a storm.
   if (entry.ws && entry.ws !== ws && entry.ws.readyState === entry.ws.OPEN) {
+    try {
+      entry.ws.send(JSON.stringify({ type: "superseded" }));
+    } catch {
+      // socket already going away — closing below is enough
+    }
     entry.ws.close();
   }
   entry.ws = ws;
@@ -799,13 +875,19 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
   // honored: claude reads ~/.claude/skills + <cwd>/.claude/skills by cwd.)
   const mcp = mcpConfigJson(sessionId);
   const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--allowedTools", GUI_MCP_TOOLS];
-  const baseArgs = resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
+  // Only `--resume` when the session actually exists on disk. claude doesn't write
+  // a session's .jsonl until its first prompt, so a started-but-unused session has
+  // no record — resuming it would fail ("[session ended]"). In that case (no live
+  // pty either, since reattach already happened upstream) restart fresh, reusing
+  // the same id via --session-id, so a reload of an idle cell just reopens it.
+  const canResume = resume !== null && sessionExistsOnDisk(resume);
+  const baseArgs = canResume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
   // The initial prompt goes last as a positional arg (claude's initial-prompt
   // form). "--" ends option parsing so a prompt that happens to start with "-"
   // can't be reinterpreted as a flag.
   const args = initialPrompt ? [...baseArgs, "--", initialPrompt] : baseArgs;
 
-  console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
+  console.log(`[ws] client connected (${canResume ? "resume" : "new"} ${sessionId})`);
 
   const term = pty.spawn(CLAUDE_BIN, args, {
     name: "xterm-256color",
@@ -819,10 +901,10 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
   const entry: PtyEntry = { term, ws, buffer: "" };
   ptys.set(sessionId, entry);
 
-  if (!resume) {
-    // Brand-new session: surface it in the sidebar before it's persisted. A
-    // spawned session (initialPrompt) gets a title from its first message so it's
-    // recognizable in the sidebar before anyone opens it.
+  if (!canResume) {
+    // Brand-new (or restarted-idle) session: surface it in the sidebar before
+    // it's persisted. A spawned session (initialPrompt) gets a title from its
+    // first message so it's recognizable in the sidebar before anyone opens it.
     const title = initialPrompt ? initialPrompt.replace(/\s+/g, " ").trim().slice(0, 60) || "New session" : "New session";
     knownSessions.set(sessionId, { createdAt: Date.now(), title });
     pubsub?.publish(SESSIONS_CHANNEL, { id: sessionId, working: false, event: "created" });
@@ -865,7 +947,11 @@ function handleClientFrame(entry: PtyEntry, ws: WebSocket, raw: RawData, session
     return; // not JSON — never write arbitrary payloads to the PTY
   }
   try {
-    if (msg.type === "input" && typeof msg.data === "string") {
+    if (msg.type === "terminate") {
+      // Explicit close (the cell's ✕) — reap now instead of waiting out the
+      // disconnect grace window, so the session slot frees immediately.
+      reap(sessionId);
+    } else if (msg.type === "input" && typeof msg.data === "string") {
       entry.term.write(msg.data);
     } else if (
       msg.type === "resize" &&
@@ -893,8 +979,10 @@ function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   if (activity.get(sessionId)?.working) {
     console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
   } else {
-    console.log(`[ws] disconnected; killing idle session ${sessionId}`);
-    reap(sessionId);
+    // Don't reap now — a reload reconnects in a moment and should re-attach to
+    // this same live terminal. Reap only if nothing reattaches within the window.
+    console.log(`[ws] disconnected; idle session ${sessionId} reaped in ${REAP_GRACE_MS / 1000}s unless reattached`);
+    scheduleReap(sessionId);
   }
 }
 
@@ -902,21 +990,31 @@ wss.on("connection", (ws, req) => {
   // ?session=<id> resumes an existing conversation; absent => fresh session. For
   // new sessions we generate the id ourselves (--session-id) so the server always
   // knows the current session's id, even before any file exists.
-  const resume = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
-  if (resume && !SESSION_ID_RE.test(resume)) {
-    console.warn(`[ws] rejecting non-UUID session id: ${JSON.stringify(resume)}`);
+  const requested = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
+  if (requested && !SESSION_ID_RE.test(requested)) {
+    console.warn(`[ws] rejecting non-UUID session id: ${JSON.stringify(requested)}`);
     ws.close();
     return;
   }
-  const sessionId = resume || randomUUID();
+
+  // Decide the effective session id BEFORE telling the browser. A requested id
+  // is honored only if it can actually be served: a live pty (reattach) or an
+  // on-disk transcript (`--resume`). A requested id that's neither — e.g. a cell
+  // reloading an idle session claude never persisted — can't be reused: claude
+  // exits with "session id already in use" if we retry `--session-id <same>`.
+  // So mint a fresh id; the browser adopts it from this `session` message and
+  // re-persists, so the reload just reopens a working terminal seamlessly.
+  const reattachId = requested && ptys.has(requested) ? requested : null;
+  const resume = !reattachId && requested && sessionExistsOnDisk(requested) ? requested : null;
+  const sessionId = reattachId ?? resume ?? randomUUID();
+  const live = reattachId ? ptys.get(reattachId) : undefined;
 
   // Tell the browser which session this is (it learns the id of new sessions).
   ws.send(JSON.stringify({ type: "session", id: sessionId }));
 
-  const existing = ptys.get(sessionId);
   let entry: PtyEntry;
   try {
-    entry = existing ? reattachPty(existing, ws, sessionId) : spawnClaudePty(sessionId, resume, ws);
+    entry = live ? reattachPty(live, ws, sessionId) : spawnClaudePty(sessionId, resume, ws);
   } catch (err) {
     // A failed spawn (claude missing, or node-pty's spawn-helper not executable)
     // must close just this connection — never crash the whole server.
