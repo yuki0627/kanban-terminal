@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, watch, onMounted, onUnmounted, nextTick } from "vue";
 import type { CwdPreset } from "./presets";
 
 const props = defineProps<{ presets: CwdPreset[]; saving?: boolean; error?: string | null }>();
@@ -7,6 +7,15 @@ const emit = defineEmits<{ (e: "save", presets: CwdPreset[]): void; (e: "close")
 
 // Edit a local copy; commit on Save.
 const rows = ref<CwdPreset[]>(props.presets.map((p) => ({ ...p })));
+// Resync if the presets arrive/change after mount — e.g. the modal opened before
+// /api/config resolved (would otherwise edit empty data and Save could wipe the
+// real presets).
+watch(
+  () => props.presets,
+  (next) => {
+    rows.value = next.map((p) => ({ ...p }));
+  },
+);
 const modalEl = ref<HTMLElement>();
 
 function addRow() {
