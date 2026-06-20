@@ -53,15 +53,28 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-dir").text()).toBe("proj");
   });
 
-  it("launches in the dir typed in the form (emits cwd, mounts the terminal)", async () => {
+  it("launches in the dir typed in the form and sends it to the terminal", async () => {
     const w = mountCell(null, { defaultCwd: "/home/me/default" });
     await flushPromises();
     expect(w.find(".cell-launch").exists()).toBe(true);
     await w.find(".cell-dir-input").setValue("/home/me/picked");
     await w.find(".cell-start").trigger("click");
-    expect(w.emitted("cwd")?.[0]).toEqual(["/home/me/picked"]);
-    expect(w.findComponent({ name: "TerminalView" }).exists()).toBe(true);
-    expect(w.findComponent({ name: "TerminalView" }).props("cwd")).toBe("/home/me/picked");
+    const term = w.findComponent({ name: "TerminalView" });
+    expect(term.exists()).toBe(true);
+    expect(term.props("cwd")).toBe("/home/me/picked");
+  });
+
+  it("adopts the EFFECTIVE cwd the server reports (persists/shows that, not the typed one)", async () => {
+    const w = mountCell(null, { defaultCwd: "/home/me/default" });
+    await flushPromises();
+    await w.find(".cell-dir-input").setValue("relative/bad/path");
+    await w.find(".cell-start").trigger("click");
+    // Server rejected the bad path and fell back; it reports the real cwd.
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/default");
+    await nextTick();
+    // The cell persists + displays the effective cwd, not the typed one.
+    expect(w.emitted("cwd")?.at(-1)).toEqual(["/home/me/default"]);
+    expect(w.find(".cell-dir").text()).toBe("default");
   });
 
   it("reflects working/waiting/lastPrompt pushed for its own session", async () => {

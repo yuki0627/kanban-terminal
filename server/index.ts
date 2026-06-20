@@ -1031,8 +1031,10 @@ wss.on("connection", (ws, req) => {
   const sessionId = reattachId ?? resume ?? randomUUID();
   const live = reattachId ? ptys.get(reattachId) : undefined;
 
-  // Tell the browser which session this is (it learns the id of new sessions).
-  ws.send(JSON.stringify({ type: "session", id: sessionId }));
+  // Tell the browser which session this is (it learns the id of new sessions) and
+  // the EFFECTIVE cwd — which may differ from what was requested (resolveWorkspace
+  // falls back to CLAUDE_CWD), so the cell shows/persists where claude really runs.
+  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd }));
 
   let entry: PtyEntry;
   try {

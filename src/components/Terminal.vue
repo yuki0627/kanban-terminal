@@ -9,7 +9,7 @@ import "@xterm/xterm/css/xterm.css";
 // `connectKey` increments on every user action so re-selecting the same
 // session (or starting another fresh one) still forces a reconnect.
 const props = defineProps<{ sessionId: string | null; connectKey: number; cwd?: string | null }>();
-const emit = defineEmits<{ (e: "session", id: string): void }>();
+const emit = defineEmits<{ (e: "session" | "cwd", value: string): void }>();
 
 const terminalRef = ref<HTMLDivElement>();
 const status = ref<"connecting" | "connected" | "disconnected">("connecting");
@@ -80,9 +80,12 @@ function connect() {
       term.write(msg.data);
     } else if (msg.type === "session") {
       // Server reports the live session id — remember it so a later reconnect
-      // resumes THIS session (esp. for brand-new sessions that had no id yet).
+      // resumes THIS session (esp. for brand-new sessions that had no id yet) —
+      // and the EFFECTIVE cwd, which the cell adopts (the server may have fallen
+      // back from the requested dir).
       knownSessionId = msg.id;
       emit("session", msg.id);
+      if (typeof msg.cwd === "string") emit("cwd", msg.cwd);
     } else if (msg.type === "exit") {
       // claude itself exited — an intentional end; don't auto-reconnect.
       sawExit = true;

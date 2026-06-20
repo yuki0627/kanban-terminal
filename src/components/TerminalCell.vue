@@ -77,11 +77,19 @@ onMounted(() => {
 onUnmounted(() => unsubscribe?.());
 
 function launch() {
+  // Optimistic display only; the persisted/displayed truth is the EFFECTIVE cwd
+  // the server confirms (onServerCwd), since it may fall back from a bad path.
   cwd.value = dirInput.value.trim() || props.defaultCwd;
-  if (cwd.value) emit("cwd", cwd.value);
   sessionId.value = null; // new session — the server generates the id
   connectKey.value++;
   launched.value = true;
+}
+
+// The server reports where the PTY actually runs (it may have rejected the
+// requested dir). Adopt it as the truth — display and persist the effective cwd.
+function onServerCwd(c: string) {
+  cwd.value = c;
+  emit("cwd", c);
 }
 
 function close() {
@@ -145,7 +153,7 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
           <button class="cell-btn cell-close" title="Close terminal" aria-label="Close terminal" @click="close">✕</button>
         </span>
       </div>
-      <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" :cwd="cwd" @session="onSession" />
+      <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" :cwd="cwd" @session="onSession" @cwd="onServerCwd" />
     </template>
     <div v-else class="cell-launch">
       <label class="cell-launch-label">Working directory</label>
