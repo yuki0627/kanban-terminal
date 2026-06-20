@@ -126,12 +126,14 @@ function loadCwdPresets(): CwdPreset[] {
 
 let cwdPresets: CwdPreset[] = loadCwdPresets();
 
-function saveCwdPresets() {
+function saveCwdPresets(): boolean {
   try {
     mkdirSync(MULMOTERMINAL_HOME, { recursive: true });
     writeFileSync(CONFIG_FILE, JSON.stringify({ cwdPresets }, null, 2));
+    return true;
   } catch (e) {
     console.error(`[config] failed to save: ${messageOf(e)}`);
+    return false;
   }
 }
 
@@ -781,7 +783,9 @@ app.post("/api/config", (req, res) => {
     .map((p: CwdPreset) => ({ label: p.label.trim(), path: p.path.trim() }))
     .filter((p: CwdPreset) => p.label && p.path)
     .slice(0, MAX_PRESETS);
-  saveCwdPresets();
+  // Surface a persistence failure so the client doesn't report false success
+  // (the presets would otherwise be lost on restart).
+  if (!saveCwdPresets()) return res.status(500).json({ error: "failed to persist presets" });
   res.json({ cwd: CLAUDE_CWD, cwdPresets });
 });
 
