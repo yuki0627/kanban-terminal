@@ -19,7 +19,7 @@ vi.mock("../composables/usePubSub", () => ({
 vi.mock("./Terminal.vue", () => ({
   default: {
     name: "TerminalView",
-    props: ["sessionId", "connectKey"],
+    props: ["sessionId", "connectKey", "cwd"],
     emits: ["session"],
     template: '<div class="stub-term" />',
     methods: { terminate() {} },
@@ -34,8 +34,10 @@ beforeEach(() => {
   globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) })) as unknown as typeof fetch;
 });
 
-function mountCell(initialSessionId: string | null) {
-  return mount(TerminalCell, { props: { expanded: false, initialSessionId, cwd: "/home/me/my-project" } });
+function mountCell(initialSessionId: string | null, opts: { initialCwd?: string | null; defaultCwd?: string | null } = {}) {
+  return mount(TerminalCell, {
+    props: { expanded: false, initialSessionId, initialCwd: opts.initialCwd ?? null, defaultCwd: opts.defaultCwd ?? "/home/me/my-project" },
+  });
 }
 
 describe("TerminalCell", () => {
@@ -46,9 +48,44 @@ describe("TerminalCell", () => {
   });
 
   it("derives the basename from a Windows-style path too", async () => {
-    const w = mount(TerminalCell, { props: { expanded: false, initialSessionId: "55555555-5555-5555-5555-555555555555", cwd: "C:\\work\\proj" } });
+    const w = mountCell("55555555-5555-5555-5555-555555555555", { initialCwd: "C:\\work\\proj" });
     await flushPromises();
     expect(w.find(".cell-dir").text()).toBe("proj");
+  });
+
+  it("launches in the dir typed in the form and sends it to the terminal", async () => {
+    const w = mountCell(null, { defaultCwd: "/home/me/default" });
+    await flushPromises();
+    expect(w.find(".cell-launch").exists()).toBe(true);
+    await w.find(".cell-dir-input").setValue("/home/me/picked");
+    await w.find(".cell-start").trigger("click");
+    const term = w.findComponent({ name: "TerminalView" });
+    expect(term.exists()).toBe(true);
+    expect(term.props("cwd")).toBe("/home/me/picked");
+  });
+
+  it("resets the launch form to the default dir after close", async () => {
+    const w = mountCell(null, { defaultCwd: "/home/me/default" });
+    await flushPromises();
+    await w.find(".cell-dir-input").setValue("/home/me/picked");
+    await w.find(".cell-start").trigger("click");
+    await w.find(".cell-close").trigger("click");
+    await nextTick();
+    expect(w.find(".cell-launch").exists()).toBe(true);
+    expect((w.find(".cell-dir-input").element as HTMLInputElement).value).toBe("/home/me/default");
+  });
+
+  it("adopts the EFFECTIVE cwd the server reports (persists/shows that, not the typed one)", async () => {
+    const w = mountCell(null, { defaultCwd: "/home/me/default" });
+    await flushPromises();
+    await w.find(".cell-dir-input").setValue("relative/bad/path");
+    await w.find(".cell-start").trigger("click");
+    // Server rejected the bad path and fell back; it reports the real cwd.
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/default");
+    await nextTick();
+    // The cell persists + displays the effective cwd, not the typed one.
+    expect(w.emitted("cwd")?.at(-1)).toEqual(["/home/me/default"]);
+    expect(w.find(".cell-dir").text()).toBe("default");
   });
 
   it("reflects working/waiting/lastPrompt pushed for its own session", async () => {

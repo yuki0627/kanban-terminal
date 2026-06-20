@@ -7,7 +7,7 @@ import path from "path";
 import os from "os";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPubSub } from "./pubsub.js";
@@ -29,6 +29,7 @@ interface PtyEntry {
   term: IPty;
   ws: WebSocket | null;
   buffer: string;
+  cwd: string; // the dir the PTY actually runs in (reported on reattach)
 }
 
 interface KnownSession {
@@ -456,9 +457,23 @@ function projectSessionsDir(cwd: string) {
 }
 
 // Whether a session has an on-disk transcript (claude only writes it after the
-// first prompt). Determines whether `--resume <id>` will succeed.
-function sessionExistsOnDisk(id: string): boolean {
-  return existsSync(path.join(projectSessionsDir(CLAUDE_CWD), `${id}.jsonl`));
+// first prompt) in the given workspace. Determines whether `--resume` will work.
+function sessionExistsOnDisk(id: string, cwd: string): boolean {
+  return existsSync(path.join(projectSessionsDir(cwd), `${id}.jsonl`));
+}
+
+// Validate a client-supplied workspace dir: must be an absolute, existing
+// directory. Anything else (relative, missing, a file) falls back to CLAUDE_CWD,
+// so a cell can launch a terminal in a chosen dir without trusting raw input.
+function resolveWorkspace(cwd: string | null): string {
+  if (cwd && path.isAbsolute(cwd)) {
+    try {
+      if (statSync(cwd).isDirectory()) return cwd;
+    } catch {
+      // not a dir / doesn't exist — fall through
+    }
+  }
+  return CLAUDE_CWD;
 }
 
 // A real user prompt from a JSONL "user" line's content, or null if it's a
@@ -865,7 +880,7 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
 // a viewer yet (e.g. spawnBackgroundChat) — output just buffers until a client
 // reattaches. `initialPrompt`, when given, is passed to claude as the first turn
 // so the session starts working immediately, before anyone opens it.
-function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket | null, initialPrompt?: string): PtyEntry {
+function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket | null, initialPrompt?: string, cwd: string = CLAUDE_CWD): PtyEntry {
   const settings = hookSettingsJson();
   // Register the GUI MCP server and auto-allow its tools so the plugin tools run
   // without a permission prompt. We deliberately do NOT pass --strict-mcp-config:
@@ -880,7 +895,7 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
   // no record — resuming it would fail ("[session ended]"). In that case (no live
   // pty either, since reattach already happened upstream) restart fresh, reusing
   // the same id via --session-id, so a reload of an idle cell just reopens it.
-  const canResume = resume !== null && sessionExistsOnDisk(resume);
+  const canResume = resume !== null && sessionExistsOnDisk(resume, cwd);
   const baseArgs = canResume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
   // The initial prompt goes last as a positional arg (claude's initial-prompt
   // form). "--" ends option parsing so a prompt that happens to start with "-"
@@ -893,12 +908,12 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
     name: "xterm-256color",
     cols: 120,
     rows: 30,
-    cwd: CLAUDE_CWD,
+    cwd,
     env: process.env,
   });
-  console.log(`[pty] spawned claude (pid=${term.pid})`);
+  console.log(`[pty] spawned claude (pid=${term.pid}) in ${cwd}`);
 
-  const entry: PtyEntry = { term, ws, buffer: "" };
+  const entry: PtyEntry = { term, ws, buffer: "", cwd };
   ptys.set(sessionId, entry);
 
   if (!canResume) {
@@ -990,7 +1005,8 @@ wss.on("connection", (ws, req) => {
   // ?session=<id> resumes an existing conversation; absent => fresh session. For
   // new sessions we generate the id ourselves (--session-id) so the server always
   // knows the current session's id, even before any file exists.
-  const raw = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const raw = url.searchParams.get("session");
   // A non-UUID id is never used (it could smuggle path/flag fragments into
   // sessionExistsOnDisk / --resume). Treat it as "no session requested" rather
   // than closing the socket — closing without a replacement id makes the client
@@ -998,6 +1014,11 @@ wss.on("connection", (ws, req) => {
   // session and tells the browser the new id, so the cell self-recovers.
   const requested = raw && SESSION_ID_RE.test(raw) ? raw : null;
   if (raw && !requested) console.warn(`[ws] ignoring non-UUID session id: ${JSON.stringify(raw)} — starting fresh`);
+
+  // The cell may launch a terminal in a chosen directory (?cwd=<abs>). Validated
+  // (absolute, existing dir) and used as the PTY cwd + the project to resume from;
+  // falls back to CLAUDE_CWD.
+  const cwd = resolveWorkspace(url.searchParams.get("cwd"));
 
   // Decide the effective session id BEFORE telling the browser. A requested id
   // is honored only if it can actually be served: a live pty (reattach) or an
@@ -1007,16 +1028,20 @@ wss.on("connection", (ws, req) => {
   // So mint a fresh id; the browser adopts it from this `session` message and
   // re-persists, so the reload just reopens a working terminal seamlessly.
   const reattachId = requested && ptys.has(requested) ? requested : null;
-  const resume = !reattachId && requested && sessionExistsOnDisk(requested) ? requested : null;
+  const resume = !reattachId && requested && sessionExistsOnDisk(requested, cwd) ? requested : null;
   const sessionId = reattachId ?? resume ?? randomUUID();
   const live = reattachId ? ptys.get(reattachId) : undefined;
 
-  // Tell the browser which session this is (it learns the id of new sessions).
-  ws.send(JSON.stringify({ type: "session", id: sessionId }));
+  // Tell the browser which session this is (it learns the id of new sessions) and
+  // the EFFECTIVE cwd — where claude really runs. On reattach that's the live
+  // PTY's own cwd (NOT this request's ?cwd=, which it ignores); otherwise it's the
+  // resolved cwd the new PTY will spawn in.
+  const reportedCwd = live?.cwd ?? cwd;
+  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd: reportedCwd }));
 
   let entry: PtyEntry;
   try {
-    entry = live ? reattachPty(live, ws, sessionId) : spawnClaudePty(sessionId, resume, ws);
+    entry = live ? reattachPty(live, ws, sessionId) : spawnClaudePty(sessionId, resume, ws, undefined, cwd);
   } catch (err) {
     // A failed spawn (claude missing, or node-pty's spawn-helper not executable)
     // must close just this connection — never crash the whole server.
