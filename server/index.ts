@@ -840,9 +840,16 @@ server.on("upgrade", (req, socket, head) => {
 function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntry {
   cancelReap(sessionId); // a reattach within the grace window keeps the session
   console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
-  // Drop any socket still attached (e.g. the same session open in another tab)
-  // so it can't keep writing to this PTY.
+  // Drop any socket still attached (e.g. the same session open in another tab).
+  // Tell it it's been superseded FIRST so it stops instead of auto-reconnecting —
+  // otherwise two clients on one session ping-pong (each reattach kicks the other,
+  // the kicked one reconnects, …) into a storm.
   if (entry.ws && entry.ws !== ws && entry.ws.readyState === entry.ws.OPEN) {
+    try {
+      entry.ws.send(JSON.stringify({ type: "superseded" }));
+    } catch {
+      // socket already going away — closing below is enough
+    }
     entry.ws.close();
   }
   entry.ws = ws;

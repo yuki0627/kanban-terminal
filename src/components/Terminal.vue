@@ -84,6 +84,12 @@ function connect() {
       sawExit = true;
       term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
       status.value = "disconnected";
+    } else if (msg.type === "superseded") {
+      // Another client (e.g. this session open in another tab/window) took over.
+      // Stop — reconnecting would kick the other one off and ping-pong forever.
+      sawExit = true;
+      term.write("\r\n\x1b[33m[detached — this session is open in another window]\x1b[0m\r\n");
+      status.value = "disconnected";
     }
   };
 
