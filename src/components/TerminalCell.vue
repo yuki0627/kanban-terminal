@@ -1,22 +1,35 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, useTemplateRef } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, useTemplateRef } from "vue";
 import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
 
 const termRef = useTemplateRef<InstanceType<typeof TerminalView>>("termRef");
 
 // `expanded` reflects whether this cell is zoomed to fill the grid (parent owns
-// the state). `initialSessionId` is a persisted session to resume on mount, so a
-// page reload restores the terminals that were open (empty if null). `cwd` is the
-// workspace directory shown in the header.
-const props = defineProps<{ expanded: boolean; initialSessionId: string | null; cwd: string | null }>();
-const emit = defineEmits<{ (e: "toggle-expand" | "close"): void; (e: "session", id: string): void }>();
+// the state). `initialSessionId` resumes a session on mount (reload restore).
+// `initialCwd` is this cell's persisted working dir; `defaultCwd` is the server
+// default used to prefill the launch form for a fresh cell.
+const props = defineProps<{ expanded: boolean; initialSessionId: string | null; initialCwd: string | null; defaultCwd: string | null }>();
+const emit = defineEmits<{ (e: "toggle-expand" | "close"): void; (e: "session" | "cwd", value: string): void }>();
 
 // A cell with a persisted session relaunches (resumes) on mount; otherwise it
-// starts empty and lazy-launches when the user clicks "New terminal".
+// starts empty and lazy-launches when the user picks a dir and clicks Start.
 const launched = ref(props.initialSessionId !== null);
 const sessionId = ref<string | null>(props.initialSessionId);
 const connectKey = ref(0);
+
+// The directory this terminal runs in (shown in the header, sent to the server).
+const cwd = ref<string | null>(props.initialCwd ?? props.defaultCwd);
+// The launch form's editable dir; prefilled with the default once it's fetched.
+const dirInput = ref(props.initialCwd ?? props.defaultCwd ?? "");
+watch(
+  () => props.defaultCwd,
+  (d) => {
+    if (!d) return;
+    if (!dirInput.value) dirInput.value = d;
+    if (cwd.value === null) cwd.value = d;
+  },
+);
 
 // Live activity for this session, from the "sessions" pub/sub channel.
 const working = ref(false);
@@ -42,8 +55,6 @@ function applyActivity(d: ActivityMsg) {
   if (d.lastPrompt !== undefined) lastPrompt.value = d.lastPrompt;
 }
 
-// Pull the initial status + last prompt so the header is populated immediately;
-// live changes then arrive via pub/sub.
 async function loadInitial(id: string) {
   try {
     const res = await fetch(`/api/session/${id}`);
@@ -66,6 +77,8 @@ onMounted(() => {
 onUnmounted(() => unsubscribe?.());
 
 function launch() {
+  cwd.value = dirInput.value.trim() || props.defaultCwd;
+  if (cwd.value) emit("cwd", cwd.value);
   sessionId.value = null; // new session — the server generates the id
   connectKey.value++;
   launched.value = true;
@@ -92,11 +105,11 @@ function onSession(id: string) {
 }
 
 const dirBase = computed(() => {
-  if (!props.cwd) return "";
-  // Split on both separators so a Windows path (C:\work\proj) yields the basename
-  // too, not the whole path.
-  const parts = props.cwd.split(/[/\\]/).filter(Boolean);
-  return parts[parts.length - 1] || props.cwd;
+  const c = cwd.value;
+  if (!c) return "";
+  // Split on both separators so a Windows path (C:\work\proj) yields the basename.
+  const parts = c.split(/[/\\]/).filter(Boolean);
+  return parts[parts.length - 1] || c;
 });
 
 // Attention (waiting) wins over working wins over idle.
@@ -132,9 +145,13 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
           <button class="cell-btn cell-close" title="Close terminal" aria-label="Close terminal" @click="close">✕</button>
         </span>
       </div>
-      <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" @session="onSession" />
+      <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" :cwd="cwd" @session="onSession" />
     </template>
-    <button v-else class="cell-empty" @click="launch">＋ New terminal</button>
+    <div v-else class="cell-launch">
+      <label class="cell-launch-label">Working directory</label>
+      <input v-model="dirInput" class="cell-dir-input" type="text" placeholder="/path/to/project" spellcheck="false" @keydown.enter="launch" />
+      <button class="cell-start" @click="launch">＋ New terminal</button>
+    </div>
   </div>
 </template>
 
@@ -240,18 +257,52 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
   min-height: 0;
 }
 
-.cell-empty {
+/* Empty cell: pick a directory, then launch. */
+.cell-launch {
   flex: 1;
-  border: none;
-  background: transparent;
-  color: #8b93b8;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  font-size: 16px;
-  font-weight: 500;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
 }
-.cell-empty:hover {
+.cell-launch-label {
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  color: #6b7394;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.cell-dir-input {
+  width: 100%;
+  max-width: 360px;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  background: #11111f;
+  border: 1px solid #2a2a4e;
+  border-radius: 6px;
+  color: #e6e6f0;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+.cell-dir-input:focus {
+  outline: none;
+  border-color: #4a8cff;
+}
+.cell-start {
+  border: 1px solid #2a2a4e;
   background: #20203a;
   color: #c7cdf0;
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 7px 16px;
+  border-radius: 6px;
+}
+.cell-start:hover {
+  background: #2a3b66;
+  color: #fff;
 }
 </style>

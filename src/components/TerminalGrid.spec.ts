@@ -9,8 +9,8 @@ import type { Layout } from "./gridLayout";
 vi.mock("./TerminalCell.vue", () => ({
   default: {
     name: "TerminalCell",
-    props: ["expanded", "initialSessionId", "cwd"],
-    emits: ["toggle-expand", "session", "close"],
+    props: ["expanded", "initialSessionId", "initialCwd", "defaultCwd"],
+    emits: ["toggle-expand", "session", "cwd", "close"],
     template: '<div class="stub-cell" />',
   },
 }));
@@ -62,10 +62,22 @@ describe("TerminalGrid", () => {
     expect(cells[2].props("expanded")).toBe(true);
   });
 
-  it("passes the fetched cwd to cells", async () => {
+  it("passes the fetched cwd to cells as defaultCwd", async () => {
     const w = mountGrid();
     await flushPromises();
-    expect(cellsOf(w)[0].props("cwd")).toBe("/work/proj");
+    expect(cellsOf(w)[0].props("defaultCwd")).toBe("/work/proj");
+  });
+
+  it("persists a cell's chosen cwd and restores it as initialCwd", async () => {
+    const w = mountGrid();
+    await flushPromises();
+    cellsOf(w)[2].vm.$emit("cwd", "/work/proj/sub");
+    await nextTick();
+    expect(saved().cwds[2]).toBe("/work/proj/sub");
+
+    const w2 = mountGrid();
+    await flushPromises();
+    expect(cellsOf(w2)[2].props("initialCwd")).toBe("/work/proj/sub");
   });
 
   it("persists a cell's session id when it emits 'session'", async () => {

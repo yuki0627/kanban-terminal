@@ -33,30 +33,36 @@ const STORE_KEY = "grid_state_v1";
 // terminal reconnecting forever).
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function loadState(): { sessions: (string | null)[]; expanded: number | null } {
+function loadState(): { sessions: (string | null)[]; cwds: (string | null)[]; expanded: number | null } {
   const sessions = Array<string | null>(MAX_CELLS).fill(null);
+  const cwds = Array<string | null>(MAX_CELLS).fill(null);
   let expanded: number | null = null;
   try {
     const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "");
     for (let i = 0; i < MAX_CELLS; i++) {
       const v = parsed?.sessions?.[i];
       if (typeof v === "string" && UUID_RE.test(v)) sessions[i] = v;
+      const c = parsed?.cwds?.[i];
+      if (typeof c === "string") cwds[i] = c;
     }
     const e = parsed?.expanded;
     if (typeof e === "number" && e >= 0 && e < MAX_CELLS) expanded = e;
   } catch {
     // no/invalid state — defaults
   }
-  return { sessions, expanded };
+  return { sessions, cwds, expanded };
 }
 
 const initial = loadState();
 const cellSessions = ref<(string | null)[]>(initial.sessions);
+const cellCwds = ref<(string | null)[]>(initial.cwds);
 const expanded = ref<number | null>(initial.expanded);
 
-watch([cellSessions, expanded], () => localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: cellSessions.value, expanded: expanded.value })), {
-  deep: true,
-});
+watch(
+  [cellSessions, cellCwds, expanded],
+  () => localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: cellSessions.value, cwds: cellCwds.value, expanded: expanded.value })),
+  { deep: true },
+);
 
 // A zoomed cell that's no longer visible (layout shrank) can't stay zoomed.
 watch(cellCount, (n) => {
@@ -72,6 +78,12 @@ function setSession(i: number, id: string | null) {
   if (id === null && expanded.value === i) expanded.value = null; // a closed cell can't stay zoomed
 }
 
+function onClose(i: number) {
+  cellSessions.value[i] = null;
+  cellCwds.value[i] = null;
+  if (expanded.value === i) expanded.value = null;
+}
+
 const gridStyle = computed(() => trackStyle(props.layout, expanded.value));
 </script>
 
@@ -82,10 +94,12 @@ const gridStyle = computed(() => trackStyle(props.layout, expanded.value));
       :key="i"
       :expanded="expanded === i"
       :initial-session-id="cellSessions[i]"
-      :cwd="cwd"
+      :initial-cwd="cellCwds[i]"
+      :default-cwd="cwd"
       @toggle-expand="toggleExpand(i)"
       @session="(id) => setSession(i, id)"
-      @close="() => setSession(i, null)"
+      @cwd="(c) => (cellCwds[i] = c)"
+      @close="() => onClose(i)"
     />
   </div>
 </template>

@@ -8,7 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 // `null` => start a fresh session; otherwise resume the given session id.
 // `connectKey` increments on every user action so re-selecting the same
 // session (or starting another fresh one) still forces a reconnect.
-const props = defineProps<{ sessionId: string | null; connectKey: number }>();
+const props = defineProps<{ sessionId: string | null; connectKey: number; cwd?: string | null }>();
 const emit = defineEmits<{ (e: "session", id: string): void }>();
 
 const terminalRef = ref<HTMLDivElement>();
@@ -58,8 +58,12 @@ function connect() {
   // Resume the known id (learned from the server, or the prop) so a reconnect
   // re-attaches the same session instead of spawning a fresh one each retry.
   const resumeId = knownSessionId ?? props.sessionId;
-  const query = resumeId ? `?session=${encodeURIComponent(resumeId)}` : "";
-  const sock = new WebSocket(`${proto}//${location.host}/ws${query}`);
+  const params = new URLSearchParams();
+  if (resumeId) params.set("session", resumeId);
+  if (props.cwd) params.set("cwd", props.cwd); // launch this terminal in the chosen dir
+  const qs = params.toString();
+  const suffix = qs ? `?${qs}` : "";
+  const sock = new WebSocket(`${proto}//${location.host}/ws${suffix}`);
   ws = sock;
 
   sock.onopen = () => {
