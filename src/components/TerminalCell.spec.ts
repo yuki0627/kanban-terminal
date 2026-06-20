@@ -29,9 +29,17 @@ vi.mock("./Terminal.vue", () => ({
 const promptText = (w: ReturnType<typeof mount>) => w.find(".cell-prompt").text();
 const dotClass = (w: ReturnType<typeof mount>) => w.find(".cell-dot").classes();
 
+// Route by URL: /api/sessions (resume list) vs /api/session/:id (activity).
+function mockFetch(sessions: { id: string; title: string; mtime: number }[] = []) {
+  globalThis.fetch = vi.fn(async (url: string) => {
+    if (String(url).includes("/api/sessions")) return { ok: true, json: async () => ({ sessions }) };
+    return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+  }) as unknown as typeof fetch;
+}
+
 beforeEach(() => {
   captured = null;
-  globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) })) as unknown as typeof fetch;
+  mockFetch();
 });
 
 function mountCell(
@@ -72,6 +80,26 @@ describe("TerminalCell", () => {
     const term = w.findComponent({ name: "TerminalView" });
     expect(term.exists()).toBe(true);
     expect(term.props("cwd")).toBe("/home/me/picked");
+  });
+
+  it("lists existing sessions for the dir and resumes one on click", async () => {
+    mockFetch([{ id: "77777777-7777-7777-7777-777777777777", title: "fix the parser", mtime: Date.now() }]);
+    const w = mountCell(null, { defaultCwd: "/home/me/proj" });
+    await flushPromises();
+    const item = w.find(".cell-resume-item");
+    expect(item.exists()).toBe(true);
+    expect(item.find(".ri-title").text()).toBe("fix the parser");
+    await item.trigger("click");
+    const term = w.findComponent({ name: "TerminalView" });
+    expect(term.exists()).toBe(true);
+    expect(term.props("sessionId")).toBe("77777777-7777-7777-7777-777777777777");
+    expect(term.props("cwd")).toBe("/home/me/proj");
+  });
+
+  it("shows no resume list when the dir has no sessions", async () => {
+    const w = mountCell(null);
+    await flushPromises();
+    expect(w.find(".cell-resume").exists()).toBe(false);
   });
 
   it("launches in a preset dir on one click", async () => {
