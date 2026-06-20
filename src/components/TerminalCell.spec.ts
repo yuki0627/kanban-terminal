@@ -37,6 +37,12 @@ function mockFetch(sessions: { id: string; title: string; mtime: number }[] = []
   }) as unknown as typeof fetch;
 }
 
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   captured = null;
   mockFetch();
@@ -100,6 +106,42 @@ describe("TerminalCell", () => {
     const w = mountCell(null);
     await flushPromises();
     expect(w.find(".cell-resume").exists()).toBe(false);
+  });
+
+  it("ignores an out-of-order session-list response (keeps the latest dir's rows)", async () => {
+    const first = deferred<unknown>(); // mount fetch (dir A) — resolves LAST
+    const second = deferred<unknown>(); // preset fetch (dir B) — resolves first
+    let n = 0;
+    globalThis.fetch = vi.fn((url: string) => {
+      if (String(url).includes("/api/sessions")) return n++ === 0 ? first.promise : second.promise;
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell(null, { defaultCwd: "/A", presets: [{ label: "B", path: "/B" }] });
+    await nextTick(); // mount → fetch #1 (dir A) in flight
+    const presetB = w.findAll(".cell-preset").find((b) => b.text() === "B");
+    if (!presetB) throw new Error("preset B not found");
+    await presetB.trigger("click"); // selectPreset → fetch #2 (dir B)
+
+    second.resolve({ ok: true, json: async () => ({ cwd: "/B", sessions: [{ id: "b-id", title: "B-sess", mtime: 1 }] }) });
+    await flushPromises();
+    first.resolve({ ok: true, json: async () => ({ cwd: "/A", sessions: [{ id: "a-id", title: "A-sess", mtime: 1 }] }) });
+    await flushPromises();
+
+    expect(w.findAll(".ri-title").map((x) => x.text())).toEqual(["B-sess"]);
+  });
+
+  it("resumes with the resolved cwd from the API, not the typed input", async () => {
+    globalThis.fetch = vi.fn((url: string) => {
+      if (String(url).includes("/api/sessions"))
+        return Promise.resolve({ ok: true, json: async () => ({ cwd: "/resolved", sessions: [{ id: "id1", title: "t", mtime: Date.now() }] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell(null, { defaultCwd: "/typed" });
+    await flushPromises();
+    await w.find(".cell-resume-item").trigger("click");
+    expect(w.findComponent({ name: "TerminalView" }).props("cwd")).toBe("/resolved");
   });
 
   it("selecting a preset sets the dir (doesn't launch); New then launches in it", async () => {

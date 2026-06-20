@@ -114,19 +114,33 @@ interface ResumableSession {
   mtime: number;
 }
 const resumable = ref<ResumableSession[]>([]);
+// The resolved cwd the listed sessions belong to (the server may resolve/fallback
+// the requested dir). resume() uses THIS — not the live input — so the session id
+// and cwd always match the row that was clicked.
+const resumableCwd = ref<string | null>(null);
 let resumableTimer: ReturnType<typeof setTimeout> | null = null;
+let resumableReq = 0; // request token: drop out-of-order responses
 
 async function loadResumable() {
   const dir = dirInput.value.trim() || props.defaultCwd;
+  const reqId = ++resumableReq;
   if (launched.value || !dir) {
     resumable.value = [];
+    resumableCwd.value = null;
     return;
   }
   try {
     const res = await fetch(`/api/sessions?cwd=${encodeURIComponent(dir)}`);
-    resumable.value = res.ok ? ((await res.json()).sessions ?? []) : [];
+    if (reqId !== resumableReq) return; // a newer request superseded this one
+    const data = res.ok ? await res.json() : { sessions: [], cwd: dir };
+    if (reqId !== resumableReq) return; // re-check after awaiting the body
+    resumable.value = data.sessions ?? [];
+    resumableCwd.value = data.cwd ?? dir;
   } catch {
-    resumable.value = [];
+    if (reqId === resumableReq) {
+      resumable.value = [];
+      resumableCwd.value = null;
+    }
   }
 }
 
@@ -137,7 +151,8 @@ watch([dirInput, () => props.defaultCwd], () => {
 });
 
 function resume(s: ResumableSession) {
-  cwd.value = dirInput.value.trim() || props.defaultCwd;
+  // Use the cwd those rows were fetched for, not the (possibly-changed) input.
+  cwd.value = resumableCwd.value ?? (dirInput.value.trim() || props.defaultCwd);
   sessionId.value = s.id;
   connectKey.value++;
   launched.value = true;
