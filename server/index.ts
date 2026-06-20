@@ -355,6 +355,7 @@ function reap(id: string) {
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
+  lastPrompts.delete(id); // don't leak prompt text for torn-down sessions
   const a = activity.get(id);
   if (!a || (!a.working && !a.waiting)) activity.delete(id);
   try {

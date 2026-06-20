@@ -37,7 +37,9 @@ const isActivityMsg = (d: unknown): d is ActivityMsg => typeof d === "object" &&
 function applyActivity(d: ActivityMsg) {
   working.value = d.working ?? false;
   waiting.value = d.waiting ?? false;
-  if (d.lastPrompt !== undefined && d.lastPrompt !== null) lastPrompt.value = d.lastPrompt;
+  // Apply lastPrompt whenever the field is present — including an explicit null,
+  // so a cleared/new session doesn't keep showing the previous prompt.
+  if (d.lastPrompt !== undefined) lastPrompt.value = d.lastPrompt;
 }
 
 // Pull the initial status + last prompt so the header is populated immediately;
@@ -45,7 +47,11 @@ function applyActivity(d: ActivityMsg) {
 async function loadInitial(id: string) {
   try {
     const res = await fetch(`/api/session/${id}`);
-    if (res.ok) applyActivity(await res.json());
+    if (!res.ok) return;
+    const data = await res.json();
+    // Guard against a stale response: the cell may have closed / switched session
+    // while the fetch was in flight — don't leak old status into the new state.
+    if (id === sessionId.value) applyActivity(data);
   } catch {
     // best-effort — pub/sub will fill it in on the next event
   }
@@ -113,8 +119,15 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
         <span v-if="dirBase" class="cell-dir" :title="cwd ?? ''">{{ dirBase }}</span>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
         <span class="cell-actions">
-          <button class="cell-btn" :title="expanded ? 'Restore' : 'Expand'" @click="emit('toggle-expand')">{{ expanded ? "⤡" : "⤢" }}</button>
-          <button class="cell-btn cell-close" title="Close terminal" @click="close">✕</button>
+          <button
+            class="cell-btn"
+            :title="expanded ? 'Restore' : 'Expand'"
+            :aria-label="expanded ? 'Restore terminal' : 'Expand terminal'"
+            @click="emit('toggle-expand')"
+          >
+            {{ expanded ? "⤡" : "⤢" }}
+          </button>
+          <button class="cell-btn cell-close" title="Close terminal" aria-label="Close terminal" @click="close">✕</button>
         </span>
       </div>
       <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" @session="onSession" />
