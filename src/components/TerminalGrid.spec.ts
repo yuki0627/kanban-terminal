@@ -20,7 +20,7 @@ const saved = () => JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
 
 beforeEach(() => {
   localStorage.clear();
-  globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ cwd: "/tmp/proj" }) })) as unknown as typeof fetch;
+  globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ cwd: "/work/proj" }) })) as unknown as typeof fetch;
 });
 
 describe("TerminalGrid", () => {
@@ -48,7 +48,7 @@ describe("TerminalGrid", () => {
   it("passes the fetched cwd to cells", async () => {
     const w = mount(TerminalGrid);
     await flushPromises();
-    expect(cellsOf(w)[0].props("cwd")).toBe("/tmp/proj");
+    expect(cellsOf(w)[0].props("cwd")).toBe("/work/proj");
   });
 
   it("persists a cell's session id when it emits 'session'", async () => {
