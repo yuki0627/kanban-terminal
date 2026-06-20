@@ -93,7 +93,9 @@ function onSession(id: string) {
 
 const dirBase = computed(() => {
   if (!props.cwd) return "";
-  const parts = props.cwd.split("/").filter(Boolean);
+  // Split on both separators so a Windows path (C:\work\proj) yields the basename
+  // too, not the whole path.
+  const parts = props.cwd.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] || props.cwd;
 });
 

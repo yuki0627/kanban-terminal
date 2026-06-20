@@ -45,6 +45,12 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-dir").text()).toBe("my-project");
   });
 
+  it("derives the basename from a Windows-style path too", async () => {
+    const w = mount(TerminalCell, { props: { expanded: false, initialSessionId: "55555555-5555-5555-5555-555555555555", cwd: "C:\\work\\proj" } });
+    await flushPromises();
+    expect(w.find(".cell-dir").text()).toBe("proj");
+  });
+
   it("reflects working/waiting/lastPrompt pushed for its own session", async () => {
     const id = "22222222-2222-2222-2222-222222222222";
     const w = mountCell(id);
