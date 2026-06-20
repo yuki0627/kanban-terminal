@@ -160,8 +160,10 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
       <TerminalView ref="termRef" class="cell-term" :session-id="sessionId" :connect-key="connectKey" :cwd="cwd" @session="onSession" @cwd="onServerCwd" />
     </template>
     <div v-else class="cell-launch">
-      <label class="cell-launch-label">Working directory</label>
-      <input v-model="dirInput" class="cell-dir-input" type="text" placeholder="/path/to/project" spellcheck="false" @keydown.enter="launch" />
+      <label class="cell-launch-label">
+        <span class="cell-launch-caption">Working directory</span>
+        <input v-model="dirInput" class="cell-dir-input" type="text" placeholder="/path/to/project" spellcheck="false" @keydown.enter="launch" />
+      </label>
       <button class="cell-start" @click="launch">＋ New terminal</button>
     </div>
   </div>
@@ -280,6 +282,14 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
   padding: 16px;
 }
 .cell-launch-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 360px;
+}
+.cell-launch-caption {
   font-family: system-ui, sans-serif;
   font-size: 11px;
   color: #6b7394;
@@ -288,7 +298,6 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 }
 .cell-dir-input {
   width: 100%;
-  max-width: 360px;
   box-sizing: border-box;
   padding: 7px 10px;
   background: #11111f;
