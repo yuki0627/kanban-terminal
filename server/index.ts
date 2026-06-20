@@ -7,7 +7,7 @@ import path from "path";
 import os from "os";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPubSub } from "./pubsub.js";
@@ -102,6 +102,38 @@ await fs.mkdir(CLAUDE_CWD, { recursive: true });
 // history) lives here, keyed by sessionId (a global UUID) — NOT under the
 // workspace dir, so it stays valid regardless of which directory is active.
 const MULMOTERMINAL_HOME = path.join(os.homedir(), ".mulmoterminal");
+
+// User config (currently just directory presets the launch form offers),
+// persisted at ~/.mulmoterminal/config.json.
+interface CwdPreset {
+  label: string;
+  path: string;
+}
+const CONFIG_FILE = path.join(MULMOTERMINAL_HOME, "config.json");
+const MAX_PRESETS = 50;
+
+const isPreset = (v: unknown): v is CwdPreset => isRecord(v) && typeof v.label === "string" && typeof v.path === "string";
+
+function loadCwdPresets(): CwdPreset[] {
+  try {
+    const parsed = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+    if (Array.isArray(parsed?.cwdPresets)) return parsed.cwdPresets.filter(isPreset);
+  } catch {
+    // no/invalid config — none
+  }
+  return [];
+}
+
+let cwdPresets: CwdPreset[] = loadCwdPresets();
+
+function saveCwdPresets() {
+  try {
+    mkdirSync(MULMOTERMINAL_HOME, { recursive: true });
+    writeFileSync(CONFIG_FILE, JSON.stringify({ cwdPresets }, null, 2));
+  } catch (e) {
+    console.error(`[config] failed to save: ${messageOf(e)}`);
+  }
+}
 
 // A session id is always a UUID (server-generated, or a .jsonl basename). Reject
 // anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
@@ -734,9 +766,23 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
   res.json({ sessionId, toolCalls: await toolCallsStore.get(sessionId) });
 });
 
-// Server-wide config the UI shows (currently just the active workspace dir).
+// Server-wide config the UI shows: the default workspace dir + the user's saved
+// directory presets (offered in the cell launch form).
 app.get("/api/config", (_req, res) => {
-  res.json({ cwd: CLAUDE_CWD });
+  res.json({ cwd: CLAUDE_CWD, cwdPresets });
+});
+
+// Update the directory presets (from the settings screen) and persist them.
+app.post("/api/config", (req, res) => {
+  const body = req.body || {};
+  if (!Array.isArray(body.cwdPresets)) return res.status(400).json({ error: "cwdPresets must be an array" });
+  cwdPresets = body.cwdPresets
+    .filter(isPreset)
+    .map((p: CwdPreset) => ({ label: p.label.trim(), path: p.path.trim() }))
+    .filter((p: CwdPreset) => p.label && p.path)
+    .slice(0, MAX_PRESETS);
+  saveCwdPresets();
+  res.json({ cwd: CLAUDE_CWD, cwdPresets });
 });
 
 // Initial per-session status + last prompt, so a cell can render its header

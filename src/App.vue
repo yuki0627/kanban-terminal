@@ -1,12 +1,46 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, onMounted } from "vue";
 import TerminalGrid from "./components/TerminalGrid.vue";
+import SettingsModal from "./components/SettingsModal.vue";
 import { LAYOUTS, isLayout, type Layout } from "./components/gridLayout";
+import type { CwdPreset } from "./components/presets";
 
 // Grid layout (cell arrangement), chosen in the toolbar and persisted.
 const stored = localStorage.getItem("grid_layout");
 const layout = ref<Layout>(isLayout(stored) ? stored : "2x2");
 watch(layout, (v) => localStorage.setItem("grid_layout", v));
+
+// Server config: the default workspace dir + the user's directory presets.
+const defaultCwd = ref<string | null>(null);
+const presets = ref<CwdPreset[]>([]);
+const showSettings = ref(false);
+
+async function loadConfig() {
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) return;
+    const c = await res.json();
+    defaultCwd.value = c.cwd ?? null;
+    presets.value = Array.isArray(c.cwdPresets) ? c.cwdPresets : [];
+  } catch {
+    // grid still works; presets just unavailable
+  }
+}
+onMounted(loadConfig);
+
+async function savePresets(next: CwdPreset[]) {
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwdPresets: next }),
+    });
+    if (res.ok) presets.value = (await res.json()).cwdPresets ?? [];
+  } catch {
+    // keep the modal's intent; leave existing presets on failure
+  }
+  showSettings.value = false;
+}
 </script>
 
 <template>
@@ -18,8 +52,10 @@ watch(layout, (v) => localStorage.setItem("grid_layout", v));
           {{ l }}
         </button>
       </span>
+      <button class="settings-btn" title="Settings" aria-label="Settings" @click="showSettings = true">⚙</button>
     </header>
-    <TerminalGrid class="main" :layout="layout" />
+    <TerminalGrid class="main" :layout="layout" :default-cwd="defaultCwd" :presets="presets" />
+    <SettingsModal v-if="showSettings" :presets="presets" @save="savePresets" @close="showSettings = false" />
   </div>
 </template>
 
@@ -32,7 +68,7 @@ watch(layout, (v) => localStorage.setItem("grid_layout", v));
   overflow: hidden;
 }
 
-/* Top toolbar with the app title + layout picker. */
+/* Top toolbar with the app title + layout picker + settings. */
 .toolbar {
   flex: 0 0 auto;
   display: flex;
@@ -74,6 +110,21 @@ watch(layout, (v) => localStorage.setItem("grid_layout", v));
   background: #2a3b66;
   color: #fff;
   border-color: #4a8cff;
+}
+
+.settings-btn {
+  border: 1px solid #2a2a4e;
+  background: #1a1a2e;
+  color: #c7cdf0;
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.settings-btn:hover {
+  background: #2a3b66;
+  color: #fff;
 }
 
 /* The grid fills everything under the toolbar. */
