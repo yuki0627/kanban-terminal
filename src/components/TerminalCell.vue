@@ -101,6 +101,10 @@ function close() {
   working.value = false;
   waiting.value = false;
   lastPrompt.value = null;
+  // The cell isn't remounted (stable key), so reset the dir state too — otherwise
+  // the empty launch form would still show the closed session's directory.
+  cwd.value = props.defaultCwd;
+  dirInput.value = props.defaultCwd ?? "";
   emit("close");
 }
 

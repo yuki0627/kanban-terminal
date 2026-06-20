@@ -29,6 +29,7 @@ interface PtyEntry {
   term: IPty;
   ws: WebSocket | null;
   buffer: string;
+  cwd: string; // the dir the PTY actually runs in (reported on reattach)
 }
 
 interface KnownSession {
@@ -912,7 +913,7 @@ function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket 
   });
   console.log(`[pty] spawned claude (pid=${term.pid}) in ${cwd}`);
 
-  const entry: PtyEntry = { term, ws, buffer: "" };
+  const entry: PtyEntry = { term, ws, buffer: "", cwd };
   ptys.set(sessionId, entry);
 
   if (!canResume) {
@@ -1032,9 +1033,11 @@ wss.on("connection", (ws, req) => {
   const live = reattachId ? ptys.get(reattachId) : undefined;
 
   // Tell the browser which session this is (it learns the id of new sessions) and
-  // the EFFECTIVE cwd — which may differ from what was requested (resolveWorkspace
-  // falls back to CLAUDE_CWD), so the cell shows/persists where claude really runs.
-  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd }));
+  // the EFFECTIVE cwd — where claude really runs. On reattach that's the live
+  // PTY's own cwd (NOT this request's ?cwd=, which it ignores); otherwise it's the
+  // resolved cwd the new PTY will spawn in.
+  const reportedCwd = live?.cwd ?? cwd;
+  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd: reportedCwd }));
 
   let entry: PtyEntry;
   try {

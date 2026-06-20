@@ -64,6 +64,17 @@ describe("TerminalCell", () => {
     expect(term.props("cwd")).toBe("/home/me/picked");
   });
 
+  it("resets the launch form to the default dir after close", async () => {
+    const w = mountCell(null, { defaultCwd: "/home/me/default" });
+    await flushPromises();
+    await w.find(".cell-dir-input").setValue("/home/me/picked");
+    await w.find(".cell-start").trigger("click");
+    await w.find(".cell-close").trigger("click");
+    await nextTick();
+    expect(w.find(".cell-launch").exists()).toBe(true);
+    expect((w.find(".cell-dir-input").element as HTMLInputElement).value).toBe("/home/me/default");
+  });
+
   it("adopts the EFFECTIVE cwd the server reports (persists/shows that, not the typed one)", async () => {
     const w = mountCell(null, { defaultCwd: "/home/me/default" });
     await flushPromises();
