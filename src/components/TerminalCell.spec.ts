@@ -71,6 +71,24 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-dir").text()).toBe("~/ss/my-project");
   });
 
+  it("clicking the header dir asks the server to open that folder", async () => {
+    const urls: string[] = [];
+    const bodies: string[] = [];
+    globalThis.fetch = vi.fn((url: string, init?: { body?: string }) => {
+      urls.push(String(url));
+      if (init?.body) bodies.push(init.body);
+      if (String(url).includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell("11111111-1111-1111-1111-111111111111", { initialCwd: "/home/me/ss/proj" });
+    await flushPromises();
+    await w.find(".cell-dir").trigger("click");
+
+    expect(urls).toContain("/api/open-dir");
+    expect(bodies.some((b) => b.includes("/home/me/ss/proj"))).toBe(true);
+  });
+
   it("shows a non-home path in full", async () => {
     const w = mountCell("55555555-5555-5555-5555-555555555555", { initialCwd: "/var/data/proj" });
     await flushPromises();
@@ -100,6 +118,22 @@ describe("TerminalCell", () => {
     expect(term.exists()).toBe(true);
     expect(term.props("sessionId")).toBe("77777777-7777-7777-7777-777777777777");
     expect(term.props("cwd")).toBe("/home/me/proj");
+  });
+
+  it("shows the resumed session's latest prompt from /api/session (with cwd), not the bare id", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn((url: string) => {
+      urls.push(String(url));
+      if (String(url).includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: "refactor the parser" }) });
+    }) as unknown as typeof fetch;
+
+    const id = "11111111-1111-1111-1111-111111111111";
+    const w = mountCell(id, { initialCwd: "/home/me/proj" });
+    await flushPromises();
+
+    expect(w.find(".cell-prompt").text()).toBe("refactor the parser");
+    expect(urls.some((u) => u.includes(`/api/session/${id}`) && u.includes("cwd=%2Fhome%2Fme%2Fproj"))).toBe(true);
   });
 
   it("shows no resume list when the dir has no sessions", async () => {

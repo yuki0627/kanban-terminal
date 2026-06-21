@@ -67,7 +67,10 @@ function applyActivity(d: ActivityMsg) {
 
 async function loadInitial(id: string) {
   try {
-    const res = await fetch(`/api/session/${id}`);
+    // Pass the cell's dir so the server can read the transcript and report the
+    // session's most recent prompt (not just the bare id) after a resume.
+    const q = cwd.value ? `?cwd=${encodeURIComponent(cwd.value)}` : "";
+    const res = await fetch(`/api/session/${id}${q}`);
     if (!res.ok) return;
     const data = await res.json();
     // Guard against a stale response: the cell may have closed / switched session
@@ -167,6 +170,21 @@ function relativeTime(ms: number): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
+// Reveal this cell's working directory in the OS file manager. The browser can't
+// open a folder, but the local server can (POST /api/open-dir).
+async function openDir() {
+  if (!cwd.value) return;
+  try {
+    await fetch("/api/open-dir", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: cwd.value }),
+    });
+  } catch {
+    // best-effort — opening a folder is non-critical
+  }
+}
+
 // The server reports where the PTY actually runs (it may have rejected the
 // requested dir). Adopt it as the truth — display and persist the effective cwd.
 function onServerCwd(c: string) {
@@ -221,7 +239,7 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
     <template v-if="launched">
       <div class="cell-header">
         <span class="cell-dot" :class="statusClass" :title="statusLabel" />
-        <span v-if="dirDisplay" class="cell-dir" :title="cwd ?? ''">{{ dirDisplay }}</span>
+        <button v-if="dirDisplay" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">{{ dirDisplay }}</button>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
         <span class="cell-actions">
           <button
@@ -321,12 +339,21 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 .cell-dir {
   flex: 0 1 auto;
   max-width: 60%;
+  border: none;
+  background: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
   font-family: ui-monospace, "JetBrains Mono", monospace;
   font-size: 11px;
   color: #7f88ad;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cell-dir:hover {
+  color: #aeb6dd;
+  text-decoration: underline;
 }
 .cell-prompt {
   flex: 1 1 auto;
@@ -375,12 +402,17 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 /* Empty cell: pick a directory, then launch. */
 .cell-launch {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* `safe` centers when it fits but falls back to top-aligned (so nothing is
+     clipped past the scroll origin) when the form is taller than a short cell —
+     e.g. a 3x3 cell with a long resume list. overflow-y makes it reachable. */
+  justify-content: safe center;
   gap: 8px;
   padding: 16px;
+  overflow-y: auto;
 }
 .cell-presets {
   display: flex;
@@ -468,8 +500,6 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  max-height: 160px;
-  overflow-y: auto;
 }
 .cell-resume-item {
   display: flex;
