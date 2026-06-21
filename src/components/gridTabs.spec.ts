@@ -9,6 +9,7 @@ import {
   closeCell,
   toggleExpand,
   switchPage,
+  runCommand,
   parseGridState,
   migrateLegacy,
   initialState,
@@ -109,6 +110,30 @@ describe("switchPage", () => {
     expect(after.cells).toHaveLength(9); // launch cell trimmed
     expect(after.expanded).toBeNull();
     expect(after.page).toBe(0);
+  });
+});
+
+describe("runCommand (script command cells)", () => {
+  const CMD = { index: 0, label: "Build", cwd: "/x" };
+  const cmdCell = (uid: number): Cell => ({ uid, session: null, cwd: null, command: CMD });
+
+  it("attaches a command to a launch cell, turning it into a command cell", () => {
+    const s = runCommand(make([cell(0)]), 0, CMD);
+    expect(s.cells[0].command).toEqual(CMD);
+    expect(s.cells[0].session).toBeNull();
+  });
+  it("counts a command cell as running (toward the cap)", () => {
+    expect(runningCount([cell(0, U(0)), cmdCell(1), cell(2)])).toBe(2);
+  });
+  it("a trailing command cell is not a cancellable launch cell — '+' appends", () => {
+    const s = addCell(make([...running(2), cmdCell(2)]));
+    expect(s.cells).toHaveLength(4); // appended a launch cell, kept the command cell
+    expect(s.cells[3].session).toBeNull();
+    expect(s.cells[3].command).toBeUndefined();
+  });
+  it("switchPage keeps a trailing command cell (only abandons an empty launcher)", () => {
+    const after = switchPage(make([...running(9), cmdCell(9)], { page: 1 }), 0);
+    expect(after.cells).toHaveLength(10);
   });
 });
 

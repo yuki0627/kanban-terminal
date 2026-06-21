@@ -10,6 +10,7 @@ import {
   closeCell,
   toggleExpand,
   switchPage,
+  runCommand,
   pageCount,
   pageSlice,
   runningCount,
@@ -48,10 +49,11 @@ const pageCells = computed(() => pageSlice(state.value.cells, state.value.page))
 const pageExpanded = computed(() =>
   state.value.expanded !== null && pageCells.value.some((c) => c.uid === state.value.expanded) ? state.value.expanded : null,
 );
-// A launch cell is open beyond the sole entry cell (so "+ Terminal" cancels it).
+// A launch cell is open beyond the sole entry cell (so "+ Terminal" cancels it). A
+// trailing command cell is occupied, not an open launcher.
 const launchOpen = computed(() => {
   const last = state.value.cells[state.value.cells.length - 1];
-  return !!last && last.session === null && state.value.cells.length > 1;
+  return !!last && last.session === null && last.command == null && state.value.cells.length > 1;
 });
 
 function onAddTerminal() {
@@ -62,6 +64,7 @@ const onSession = (uid: number, id: string) => (state.value = setSession(state.v
 const onCwd = (uid: number, cwd: string) => (state.value = setCwd(state.value, uid, cwd));
 const onClose = (uid: number) => (state.value = closeCell(state.value, uid));
 const onToggleExpand = (uid: number) => (state.value = toggleExpand(state.value, uid));
+const onRun = (uid: number, command: { index: number; label: string; cwd: string | null }) => (state.value = runCommand(state.value, uid, command));
 const switchTo = (page: number) => (state.value = switchPage(state.value, page));
 
 // Server config: the default workspace dir + the user's directory presets.
@@ -120,6 +123,7 @@ function closeSettings() {
       @cwd="onCwd"
       @close="onClose"
       @toggle-expand="onToggleExpand"
+      @run="onRun"
     />
     <SettingsModal v-if="showSettings" :presets="presets" :saving="savingSettings" :error="settingsError" @save="savePresets" @close="closeSettings" />
   </div>

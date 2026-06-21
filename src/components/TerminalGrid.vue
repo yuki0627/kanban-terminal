@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import TerminalCell from "./TerminalCell.vue";
+import CommandCell from "./CommandCell.vue";
 import { trackStyle, layoutForCount } from "./gridLayout";
 import type { Cell } from "./gridTabs";
 import type { CwdPreset } from "./presets";
@@ -10,10 +11,13 @@ import type { CwdPreset } from "./presets";
 // the zoomed cell (if it is on this page); every change is emitted up by uid.
 // Expanding a cell switches to a filmstrip — the zoomed cell (teleported to the
 // overlay) fills the top, the rest line up in a scrollable strip below.
+// A cell carrying a `command` renders as a CommandCell (a running script.json
+// command) instead of the Claude launcher/terminal.
 const props = defineProps<{ cells: Cell[]; expandedUid: number | null; defaultCwd: string | null; presets: CwdPreset[]; home: string | null }>();
 const emit = defineEmits<{
   (e: "session" | "cwd", uid: number, value: string): void;
   (e: "close" | "toggle-expand", uid: number): void;
+  (e: "run", uid: number, command: { index: number; label: string; cwd: string | null }): void;
 }>();
 
 const gridStyle = computed(() => trackStyle(layoutForCount(props.cells.length), null));
@@ -31,7 +35,16 @@ const zoomed = computed(() => props.expandedUid !== null && mounted.value);
     <div ref="zoomMain" class="zoom-main" />
     <div class="grid" :style="gridStyle">
       <Teleport v-for="cell in cells" :key="cell.uid" :to="zoomMain" :disabled="!(zoomed && cell.uid === expandedUid)">
+        <CommandCell
+          v-if="cell.command"
+          :expanded="cell.uid === expandedUid"
+          :command="cell.command"
+          :home="home"
+          @toggle-expand="emit('toggle-expand', cell.uid)"
+          @close="emit('close', cell.uid)"
+        />
         <TerminalCell
+          v-else
           :expanded="cell.uid === expandedUid"
           :initial-session-id="cell.session"
           :initial-cwd="cell.cwd"
@@ -41,7 +54,8 @@ const zoomed = computed(() => props.expandedUid !== null && mounted.value);
           @toggle-expand="emit('toggle-expand', cell.uid)"
           @session="(id) => emit('session', cell.uid, id)"
           @cwd="(c) => emit('cwd', cell.uid, c)"
-          @close="() => emit('close', cell.uid)"
+          @run="(cmd) => emit('run', cell.uid, cmd)"
+          @close="emit('close', cell.uid)"
         />
       </Teleport>
     </div>

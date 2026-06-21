@@ -20,3 +20,21 @@ export function buildTerminalWsUrl({ host, secure, sessionId, cwd, devTerminal }
   const proto = secure ? "wss:" : "ws:";
   return `${proto}//${host}/ws${suffix}`;
 }
+
+export interface RunWsUrlInput {
+  host: string; // location.host
+  secure: boolean; // location.protocol === "https:"
+  index: number; // position in the directory's script.json (the server resolves it)
+  cwd?: string | null; // the directory whose script.json the index refers to
+}
+
+// The command-terminal endpoint (a cell's launcher Run). The browser sends only the
+// script INDEX + its directory — the server reads <cwd>/script.json (the run
+// allowlist), resolves the command, and runs it in <cwd>.
+export function buildRunWsUrl({ host, secure, index, cwd }: RunWsUrlInput): string {
+  const params = new URLSearchParams();
+  params.set("index", String(index));
+  if (cwd) params.set("cwd", cwd);
+  const proto = secure ? "wss:" : "ws:";
+  return `${proto}//${host}/ws/run?${params.toString()}`;
+}

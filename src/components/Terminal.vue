@@ -4,7 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { buildTerminalWsUrl } from "./wsUrl";
+import { buildTerminalWsUrl, buildRunWsUrl } from "./wsUrl";
 import { dropTextFromUriList, toInsertText } from "./dropPaths";
 import { useTheme, currentTermTheme } from "../composables/useTheme";
 
@@ -15,8 +15,11 @@ import { useTheme, currentTermTheme } from "../composables/useTheme";
 // and NO --strict-mcp-config, so the user's (~/.claude.json) + project's (.mcp.json)
 // MCP servers load normally. Default (false, the single view) keeps main's behavior:
 // the in-process GUI MCP attached and isolated with --strict-mcp-config.
-const props = defineProps<{ sessionId: string | null; connectKey: number; cwd?: string | null; devTerminal?: boolean }>();
-const emit = defineEmits<{ (e: "session" | "cwd", value: string): void }>();
+// `command` switches the terminal to a plain shell command (the grid's Run menu):
+// it connects to /ws/run with the script index instead of resuming a Claude
+// session, and never auto-reconnects (the ephemeral process can't be resumed).
+const props = defineProps<{ sessionId: string | null; connectKey: number; cwd?: string | null; devTerminal?: boolean; command?: { index: number } | null }>();
+const emit = defineEmits<{ (e: "session" | "cwd", value: string): void; (e: "exit"): void }>();
 
 const terminalRef = ref<HTMLDivElement>();
 const status = ref<"connecting" | "connected" | "disconnected">("connecting");
@@ -41,7 +44,8 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 5000;
 
 function scheduleReconnect() {
-  if (disposed || sawExit || reconnectTimer) return;
+  // A command terminal's process is unique and unresumable — never reconnect it.
+  if (disposed || sawExit || reconnectTimer || props.command) return;
   const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempts, RECONNECT_MAX_MS);
   reconnectAttempts++;
   reconnectTimer = setTimeout(() => {
@@ -66,15 +70,16 @@ function connect() {
   // Resume the known id (learned from the server, or the prop) so a reconnect
   // re-attaches the same session instead of spawning a fresh one each retry.
   const resumeId = knownSessionId ?? props.sessionId;
-  const sock = new WebSocket(
-    buildTerminalWsUrl({
-      host: location.host,
-      secure: location.protocol === "https:",
-      sessionId: resumeId,
-      cwd: props.cwd,
-      devTerminal: props.devTerminal,
-    }),
-  );
+  const url = props.command
+    ? buildRunWsUrl({ host: location.host, secure: location.protocol === "https:", index: props.command.index, cwd: props.cwd })
+    : buildTerminalWsUrl({
+        host: location.host,
+        secure: location.protocol === "https:",
+        sessionId: resumeId,
+        cwd: props.cwd,
+        devTerminal: props.devTerminal,
+      });
+  const sock = new WebSocket(url);
   ws = sock;
 
   sock.onopen = () => {
@@ -98,10 +103,12 @@ function connect() {
       emit("session", msg.id);
       if (typeof msg.cwd === "string") emit("cwd", msg.cwd);
     } else if (msg.type === "exit") {
-      // claude itself exited — an intentional end; don't auto-reconnect.
+      // The process exited (claude, or a Run-menu command) — an intentional end;
+      // don't auto-reconnect. The cell uses `exit` to offer a re-run.
       sawExit = true;
-      term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
+      term.write(props.command ? "\r\n\x1b[33m[finished]\x1b[0m\r\n" : "\r\n\x1b[33m[session ended]\x1b[0m\r\n");
       status.value = "disconnected";
+      emit("exit");
     } else if (msg.type === "superseded") {
       // Another client (e.g. this session open in another tab/window) took over.
       // Stop — reconnecting would kick the other one off and ping-pong forever.
@@ -109,13 +116,16 @@ function connect() {
       term.write("\r\n\x1b[33m[detached — this session is open in another window]\x1b[0m\r\n");
       status.value = "disconnected";
     } else if (msg.type === "error") {
-      // Server-declared terminal failure (e.g. the `claude` CLI isn't installed).
-      // Not transient — reconnecting would just re-trigger the failed spawn, so
-      // stop and surface a stable error instead of looping.
+      // Server-declared terminal failure (e.g. the `claude` CLI isn't installed, or
+      // a Run command couldn't be resolved). Not transient — reconnecting would just
+      // re-trigger the failed spawn, so stop and surface a stable error instead of
+      // looping. Emit `exit` too: it's a terminal-end, so a CommandCell can offer a
+      // re-run instead of staying stuck in a non-rerunnable "running" state.
       sawExit = true;
       const detail = typeof msg.message === "string" ? msg.message : "failed to start";
       term.write(`\r\n\x1b[31m[${detail}]\x1b[0m\r\n`);
       status.value = "disconnected";
+      emit("exit");
     }
   };
 

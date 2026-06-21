@@ -57,10 +57,13 @@ server, and opens the browser. For local development from a clone, see
 - [Tech stack](#tech-stack)
 - [Configuration](#configuration)
 - [Running](#running)
+- [Scripts (Run menu)](#scripts-run-menu)
 - [Server API specification](#server-api-specification)
   - [HTTP: `GET /api/sessions`](#http-get-apisessions)
+  - [HTTP: `GET /api/scripts`](#http-get-apiscripts)
   - [HTTP: `POST /api/hook`](#http-post-apihook)
   - [WebSocket: `/ws` (terminal)](#websocket-ws-terminal)
+  - [WebSocket: `/ws/run` (command terminal)](#websocket-wsrun-command-terminal)
   - [Socket.IO: `/ws/pubsub` (activity pub/sub)](#socketio-wspubsub-activity-pubsub)
 - [Session model](#session-model)
 - [Session lifecycle](#session-lifecycle)
@@ -90,8 +93,11 @@ server, and opens the browser. For local development from a clone, see
 - **Session list** is fetched over HTTP (`/api/sessions`).
 - **Live activity** is pushed over a Socket.IO pub/sub channel (`/ws/pubsub`);
   the server learns of activity from **Claude hooks** that POST to `/api/hook`.
-- The Vite dev server proxies `/ws`, `/ws/pubsub`, and `/api` to the backend;
-  in production the backend serves the built client from `dist/`.
+- **Script commands** (`yarn dev`, tests, …), launched from a cell's directory
+  picker, run in their own ephemeral PTY over a separate WebSocket (`/ws/run`);
+  they are not Claude sessions. See [Scripts (Run menu)](#scripts-run-menu).
+- The Vite dev server proxies `/ws` (covers `/ws/run`), `/ws/pubsub`, and `/api` to
+  the backend; in production the backend serves the built client from `dist/`.
 
 ---
 
@@ -171,6 +177,46 @@ In dev, open the Vite URL; its proxy forwards `/ws`, `/ws/pubsub`, and `/api` to
 
 ---
 
+## Scripts (Run menu)
+
+An empty grid cell's launcher (the directory picker) offers a **run a script** row
+that launches project scripts (a dev server, tests, a build, …) **in that cell, in
+the directory the cell is pointed at** — so a whole workflow lives in one window
+alongside the Claude sessions. Scripts are **per-directory**: the cell reads the
+`script.json` of whatever directory you select, so different cells can offer
+different projects' scripts.
+
+The list is populated from a **`script.json`** at the chosen directory's root. It's
+optional; a directory without one simply shows no scripts.
+
+```jsonc
+// <dir>/script.json
+{
+  "scripts": [
+    { "label": "Dev server", "command": "yarn dev" },
+    { "label": "Unit tests", "command": "yarn test" },
+    { "label": "Build", "command": "yarn build" },
+    // optional per-script working dir (relative to this file, or absolute):
+    { "label": "Sub server", "command": "yarn serve", "cwd": "packages/server" }
+  ]
+}
+```
+
+| Field     | Required | Meaning |
+| --------- | -------- | ------- |
+| `label`   | yes      | What the launcher shows. |
+| `command` | yes      | Shell command, run via the login shell (`$SHELL -lc "<command>"`). |
+| `cwd`     | no       | Working dir, relative to `script.json` or absolute. Defaults to the cell's directory. |
+
+A command terminal is **not** a Claude session: it has no session id, no hooks, no
+transcript, and **isn't persisted** — it's ephemeral, so a page reload drops it and
+closing the cell (or reloading) kills the process. When the command exits, the cell
+offers a **↻ re-run**. The browser only ever sends the script's **index** + its
+directory; the server reads that directory's `script.json` and resolves the
+command, so the file is the allowlist of what can run.
+
+---
+
 ## Server API specification
 
 Base URL: `http://localhost:$PORT` (default `http://localhost:3456`).
@@ -206,6 +252,28 @@ newest first, including freshly-created sessions that aren't yet written to disk
   titles, so the endpoint stays cheap regardless of how many sessions exist.
 - `500 { "error": string }` on an unexpected filesystem error. A missing project
   directory is **not** an error — it yields an empty `sessions` array.
+
+### HTTP: `GET /api/scripts`
+
+The runnable entries from `<cwd>/script.json` for a cell's chosen directory
+(`?cwd=<dir>`, falling back to `CLAUDE_CWD`); see
+[Scripts (Run menu)](#scripts-run-menu). The resolved `cwd` is echoed back (the
+server may fall back from a bad path), and each entry carries its `index` (the
+position the client sends back to `/ws/run`).
+
+```jsonc
+// GET /api/scripts?cwd=/Users/me/proj
+{
+  "cwd": "/Users/me/proj",
+  "scripts": [
+    { "index": 0, "label": "Dev server", "command": "yarn dev" },
+    { "index": 1, "label": "Sub server", "command": "yarn serve", "cwd": "packages/server" }
+  ]
+}
+```
+
+A missing or invalid `script.json` is **not** an error — it yields an empty
+`scripts` array.
 
 ### HTTP: `POST /api/hook`
 
@@ -268,6 +336,27 @@ A non-JSON frame is written to the PTY verbatim (fallback).
 **Disconnect** — when the socket closes, if Claude is still `working` the PTY is
 **kept alive** in the background; otherwise it's killed. See
 [Session lifecycle](#session-lifecycle).
+
+### WebSocket: `/ws/run` (command terminal)
+
+A raw WebSocket carrying a one-off **Run-menu command** (see
+[Scripts (Run menu)](#scripts-run-menu)) — a plain shell PTY, **not** a Claude
+session, so there's no `session` message, no hooks, and no reattach.
+
+**Connect**
+
+- `ws://host/ws/run?index=<n>&cwd=<dir>` — run the script at position `<n>` in
+  `<dir>/script.json` (cwd falls back to `CLAUDE_CWD`). The server reads that
+  file and spawns `$SHELL -lc "<command>"` in the script's `cwd`. An out-of-range
+  index (or a missing/invalid `script.json`) yields
+  `{ "type": "error", "message": string }` and the socket closes.
+
+The **output / input / resize / exit** frames are identical to `/ws`. There is no
+`session` frame.
+
+**Disconnect** — the terminal is **ephemeral**: when the socket closes (cell
+closed, or page reloaded) the process is **killed**. There is no background
+survival and no resume.
 
 ### Socket.IO: `/ws/pubsub` (activity pub/sub)
 
@@ -408,7 +497,9 @@ appears, at which point the on-disk title takes over.
 ```
 server/
   index.js        Express app, /api routes, terminal WebSocket, PTY lifecycle,
-                  session state, hook injection, session discovery
+                  session state, hook injection, session discovery; also
+                  /api/scripts + the /ws/run command-terminal relay
+  scripts.ts      Loads/validates script.json; resolves a Run-menu command by index
   pubsub.js       createPubSub(server) — socket.io pub/sub at /ws/pubsub
   fix-pty-perms.js  postinstall: fixes node-pty prebuilt binary permissions
 src/
@@ -416,10 +507,14 @@ src/
   components/
     Sidebar.vue       Session list; working dot + waiting bold; pub/sub driven
     Sidebar.spec.ts   Vitest component tests
-    Terminal.vue      xterm.js terminal; /ws connection, reconnect on switch
+    Terminal.vue      xterm.js terminal; /ws (or /ws/run) connection, reconnect
+    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal)
+    TerminalCell.vue  A cell: Claude launcher (dir picker + resume + run-a-script)
+    TerminalGrid.vue  Grid of cells; auto-sizes by occupied count
+    CommandCell.vue   A grid cell that runs a script.json command (ephemeral)
   composables/
     usePubSub.ts      socket.io-client pub/sub composable (subscribe/unsubscribe)
-vite.config.ts    Dev proxy for /ws, /ws/pubsub, /api
+vite.config.ts    Dev proxy for /ws (covers /ws/run), /ws/pubsub, /api
 vitest.config.ts  jsdom test environment
 ```
 

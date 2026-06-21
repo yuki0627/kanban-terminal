@@ -9,6 +9,9 @@ export interface Cell {
   uid: number;
   session: string | null;
   cwd: string | null;
+  // A running script.json command (from the cell launcher's "run a script"), with
+  // the directory it runs in. Ephemeral — command cells are never persisted.
+  command?: { index: number; label: string; cwd: string | null } | null;
 }
 export interface GridState {
   cells: Cell[];
@@ -25,7 +28,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export const pageCount = (cellCount: number) => Math.max(1, Math.ceil(cellCount / PAGE_SIZE));
 export const pageSlice = <T>(cells: T[], page: number) => cells.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-export const runningCount = (cells: Cell[]) => cells.filter((c) => c.session !== null).length;
+// A cell occupies a slot when it runs a Claude session OR a command; only those
+// count toward the cap. A launch cell is empty: no session AND no command.
+const isOccupied = (c: Cell) => c.session !== null || c.command != null;
+const isLaunchCell = (c: Cell | undefined) => !!c && c.session === null && c.command == null;
+export const runningCount = (cells: Cell[]) => cells.filter(isOccupied).length;
 
 const clampPage = (s: GridState): GridState => ({ ...s, page: Math.min(Math.max(0, Math.floor(s.page)), pageCount(s.cells.length) - 1) });
 
@@ -37,7 +44,7 @@ const ensureEntry = (s: GridState): GridState =>
 // cancel an already-open launch cell. The sole entry cell is never removed.
 export function addCell(state: GridState): GridState {
   const last = state.cells[state.cells.length - 1];
-  if (last && last.session === null) {
+  if (isLaunchCell(last)) {
     if (state.cells.length <= 1) return state; // the entry cell — nothing to add or cancel
     return clampPage({ ...state, cells: state.cells.slice(0, -1) }); // cancel the open launch cell
   }
@@ -54,6 +61,12 @@ export function setSession(state: GridState, uid: number, id: string | null): Gr
 
 export function setCwd(state: GridState, uid: number, cwd: string): GridState {
   return { ...state, cells: state.cells.map((c) => (c.uid === uid ? { ...c, cwd } : c)) };
+}
+
+// A cell's launcher ran a script.json command: attach it, turning the launch cell
+// into a command terminal. Ephemeral — command cells aren't persisted.
+export function runCommand(state: GridState, uid: number, command: Cell["command"]): GridState {
+  return { ...state, cells: state.cells.map((c) => (c.uid === uid ? { ...c, command } : c)) };
 }
 
 // Close a cell: drop it and reflow the list (later cells pack forward across
@@ -74,7 +87,7 @@ export function toggleExpand(state: GridState, uid: number): GridState {
 export function switchPage(state: GridState, page: number): GridState {
   if (page === state.page) return state;
   const last = state.cells[state.cells.length - 1];
-  const cells = last && last.session === null && state.cells.length > 1 ? state.cells.slice(0, -1) : state.cells;
+  const cells = isLaunchCell(last) && state.cells.length > 1 ? state.cells.slice(0, -1) : state.cells;
   return clampPage({ ...state, cells, expanded: null, page });
 }
 
