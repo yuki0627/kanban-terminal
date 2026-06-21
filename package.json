@@ -1,6 +1,6 @@
 {
   "name": "mulmoterminal",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MulmoTerminal — browser terminal + GUI panel for Claude Code. One command to start.",
   "type": "module",
   "license": "MIT",
@@ -30,8 +30,8 @@
     "node": ">=22.9"
   },
   "scripts": {
-    "dev": "concurrently -n server,vite -c blue,green \"node --import tsx --env-file-if-exists=.env server/index.ts\" \"vite\"",
-    "dev:server": "node --import tsx --env-file-if-exists=.env server/index.ts",
+    "dev": "concurrently -n server,vite -c blue,green \"node --watch --import tsx --env-file-if-exists=.env server/index.ts\" \"vite\"",
+    "dev:server": "node --watch --import tsx --env-file-if-exists=.env server/index.ts",
     "dev:client": "vite",
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b",

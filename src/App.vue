@@ -6,11 +6,18 @@ import TerminalView from "./components/Terminal.vue";
 import GuiPanel from "./components/GuiPanel.vue";
 import ToolsPane from "./components/ToolsPane.vue";
 import CollectionsBrowseOverlay from "./components/CollectionsBrowseOverlay.vue";
+import GridView from "./components/GridView.vue";
 import { useSessions, type Filter } from "./composables/useSessions";
 import { useShortcuts } from "./composables/useShortcuts";
 import { useCollectionBrowse, browseGotoIndex, browseGotoDetail, browseClose } from "./composables/useCollectionBrowse";
 import { registerChatOpener } from "./composables/useChatLauncher";
 import type { Shortcut } from "./types/shortcuts";
+
+// View mode: the classic single-terminal view (default) or the multi-terminal
+// grid. Persisted so a reload keeps the chosen view.
+type ViewMode = "single" | "grid";
+const viewMode = ref<ViewMode>(localStorage.getItem("view_mode") === "grid" ? "grid" : "single");
+watch(viewMode, (v) => localStorage.setItem("view_mode", v));
 
 // Shared launcher favorites (pinned collections / feeds), backing the toolbar.
 const { shortcuts } = useShortcuts();
@@ -155,12 +162,16 @@ function onSession(id: string) {
 </script>
 
 <template>
-  <div class="shell">
+  <GridView v-if="viewMode === 'grid'" @exit="viewMode = 'single'" />
+  <div v-else class="shell">
     <header class="toolbar">
       <span class="toolbar-title">MulmoTerminal</span>
       <nav class="launcher" aria-label="Views">
         <button type="button" class="launcher-btn" :class="{ active: !browseOpen }" title="Chat" aria-label="Chat" @click="browseClose">
           <span class="material-symbols-outlined">chat</span>
+        </button>
+        <button type="button" class="launcher-btn" title="Grid (multiple terminals)" aria-label="Grid view" @click="viewMode = 'grid'">
+          <span class="material-symbols-outlined">grid_view</span>
         </button>
         <button
           type="button"

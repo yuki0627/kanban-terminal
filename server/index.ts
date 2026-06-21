@@ -7,6 +7,7 @@ import path from "path";
 import os from "os";
 import fs from "fs/promises";
 import { randomUUID } from "crypto";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createPubSub } from "./pubsub.js";
@@ -14,6 +15,10 @@ import { mountAllRoutes, allowedToolNames, toolSummaries } from "./plugins-regis
 import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 import { initArtifactsBackend } from "./backends/artifacts.js";
+import { mountConfigRoutes } from "./config-routes.js";
+import { buildClaudeArgs } from "./claude-args.js";
+import { isRecord, parseJsonl, userPromptText, latestUserPromptFromJsonl } from "./transcript.js";
+import { mountOpenDirRoute } from "./open-dir.js";
 import { initCollectionsBackend, mountCollectionRoutes } from "./backends/collections.js";
 import { mountFilesRoutes } from "./backends/files.js";
 import { mountShortcutsRoutes } from "./backends/shortcuts.js";
@@ -32,6 +37,7 @@ interface PtyEntry {
   term: IPty;
   ws: WebSocket | null;
   buffer: string;
+  cwd: string; // the dir the PTY actually runs in (reported on reattach)
 }
 
 interface KnownSession {
@@ -87,8 +93,6 @@ const hasErrnoCode = (e: unknown): e is { code?: string } => typeof e === "objec
 
 // Error message extracted defensively from an unknown thrown value.
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -297,6 +301,11 @@ const SESSION_LIST_LIMIT = 50;
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
 const activity = new Map<string, Activity>(); // id -> { working, event, at }
 
+// Latest user prompt per session (from the UserPromptSubmit hook), shown on the
+// grid cell header so you can tell at a glance what each terminal is doing.
+const lastPrompts = new Map<string, string>(); // id -> prompt text
+const LAST_PROMPT_CAP = 200;
+
 // Live ptys keyed by session id. A pty outlives its WebSocket while the session
 // is still "working", so switching away doesn't interrupt Claude mid-turn; it
 // is reaped once the session goes idle (Stop hook) or the process exits. `ws`
@@ -327,13 +336,43 @@ let pubsub: ReturnType<typeof createPubSub> | null = null;
 // what keeps a finished/needs-attention background session bold (via its
 // on-disk record) until the user opens it. This keeps `activity` from growing
 // unbounded while preserving the bold-until-viewed behavior.
+// On disconnect we don't kill an idle session immediately — a page reload is a
+// brief disconnect, and reaping then would throw away a perfectly good live
+// terminal (and its scrollback). Instead we keep the pty for a grace window; a
+// reattach within it cancels the reap, so a reload just re-attaches to the same
+// running terminal. Only after the window with no reattach do we reap.
+const REAP_GRACE_MS = 30_000;
+const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelReap(id: string) {
+  const t = reapTimers.get(id);
+  if (t) {
+    clearTimeout(t);
+    reapTimers.delete(id);
+  }
+}
+
+function scheduleReap(id: string) {
+  if (reapTimers.has(id)) return;
+  reapTimers.set(
+    id,
+    setTimeout(() => {
+      reapTimers.delete(id);
+      const entry = ptys.get(id);
+      if (entry && !entry.ws) reap(id); // still detached after the grace window
+    }, REAP_GRACE_MS),
+  );
+}
+
 function reap(id: string) {
+  cancelReap(id);
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
   ptys.delete(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
+  lastPrompts.delete(id); // don't leak prompt text for torn-down sessions
   const a = activity.get(id);
   if (!a || (!a.working && !a.waiting)) {
     activity.delete(id);
@@ -357,6 +396,7 @@ function publishActivity(id: string) {
     working: a.working ?? false,
     waiting: a.waiting ?? false,
     event: a.event ?? null,
+    lastPrompt: lastPrompts.get(id) ?? null,
   });
 }
 
@@ -437,30 +477,36 @@ function projectSessionsDir(cwd: string) {
   return path.join(os.homedir(), ".claude", "projects", encoded);
 }
 
-// A real user prompt from a JSONL "user" line's content, or null if it's a
-// slash-/local-command wrapper rather than a typed prompt. Content may be a
-// plain string or an array of blocks (guard against null elements).
-function userPromptText(content: unknown): string | null {
-  const text = Array.isArray(content) ? content.map((x) => (isRecord(x) ? String(x.text ?? "") : String(x ?? ""))).join(" ") : content;
-  if (typeof text === "string" && text.trim() && !/^\s*<(local-command|command-|bash-)/.test(text)) {
-    return text.trim();
-  }
-  return null;
+// Whether a session has an on-disk transcript (claude only writes it after the
+// first prompt) in the given workspace. Determines whether `--resume` will work.
+function sessionExistsOnDisk(id: string, cwd: string): boolean {
+  return existsSync(path.join(projectSessionsDir(cwd), `${id}.jsonl`));
 }
 
-// Parse a JSONL file into the objects on each non-blank, valid line.
-function parseJsonl(raw: string): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
+// Validate a client-supplied workspace dir: must be an absolute, existing
+// directory. Anything else (relative, missing, a file) falls back to CLAUDE_CWD,
+// so a cell can launch a terminal in a chosen dir without trusting raw input.
+function resolveWorkspace(cwd: string | null): string {
+  if (cwd && path.isAbsolute(cwd)) {
     try {
-      const o: unknown = JSON.parse(line);
-      if (isRecord(o)) out.push(o);
+      if (statSync(cwd).isDirectory()) return cwd;
     } catch {
-      // Skip malformed lines.
+      // not a dir / doesn't exist — fall through
     }
   }
-  return out;
+  return CLAUDE_CWD;
+}
+
+// The most recent user prompt from a resumed session's on-disk transcript, so a
+// freshly-resumed cell can show its last prompt instead of just the id. null if
+// there's no transcript yet (a never-prompted session) or it can't be read.
+async function latestUserPrompt(cwd: string, id: string): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(path.join(projectSessionsDir(cwd), `${id}.jsonl`), "utf8");
+    return latestUserPromptFromJsonl(raw);
+  } catch {
+    return null;
+  }
 }
 
 // Scan a session JSONL for a human-friendly title and last activity.
@@ -639,6 +685,11 @@ app.post("/api/hook", async (req, res) => {
   if (sessionId) {
     const entry = ptys.get(sessionId);
     const foreground = !!(entry && entry.ws);
+    // Capture the prompt BEFORE handleActivityHook so the activity publish it
+    // triggers already carries the new lastPrompt.
+    if (event === "UserPromptSubmit" && typeof body.prompt === "string" && body.prompt.trim()) {
+      lastPrompts.set(sessionId, body.prompt.trim().slice(0, LAST_PROMPT_CAP));
+    }
     handleActivityHook(sessionId, event, foreground);
     await handleToolHook(sessionId, event, body);
     console.log(`[hook] ${event} for ${sessionId}`);
@@ -716,11 +767,46 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
   res.json({ sessionId, toolCalls: await toolCallsStore.get(sessionId) });
 });
 
+// GET/POST /api/config (workspace dir + directory presets) — in its own module.
+// GRID-ONLY (dev_tool): backs the grid launcher's default dir + the settings
+// modal's directory presets. The single view never calls it.
+mountConfigRoutes(app, CLAUDE_CWD);
+
+// GRID-ONLY (dev_tool): POST /api/open-dir reveals a cell's working directory in the
+// OS file manager (a browser tab can't, but this local server can).
+mountOpenDirRoute(app, { isAllowedOrigin });
+
+// GRID-ONLY (dev_tool): initial per-session status + last prompt, so a grid cell
+// can render its header immediately (live updates then arrive via the "sessions"
+// pub/sub channel). The single view reads activity straight from that channel.
+// ?cwd= locates the transcript so a freshly-resumed session shows its most recent
+// prompt; the live in-memory prompt (this process run) takes precedence.
+app.get("/api/session/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!SESSION_ID_RE.test(id)) return res.status(400).json({ error: "invalid session id" });
+  const cwd = resolveWorkspace(typeof req.query.cwd === "string" ? req.query.cwd : null);
+  const a = activity.get(id) || {};
+  const lastPrompt = lastPrompts.get(id) ?? (await latestUserPrompt(cwd, id));
+  res.json({
+    id,
+    cwd,
+    working: a.working ?? false,
+    waiting: a.waiting ?? false,
+    lastPrompt,
+  });
+});
+
 // List the chat sessions for the current project (CLAUDE_CWD), including
 // newly-created sessions that aren't persisted to disk yet.
-app.get("/api/sessions", async (_req, res) => {
+app.get("/api/sessions", async (req, res) => {
   try {
-    const dir = projectSessionsDir(CLAUDE_CWD);
+    // Optional ?cwd= scopes the list to that project's on-disk sessions (the grid
+    // cell's resume picker). Without it, the classic single view's behavior is
+    // unchanged: CLAUDE_CWD + in-memory pending sessions.
+    const cwdParam = typeof req.query.cwd === "string" ? req.query.cwd : null;
+    const cwd = cwdParam ? resolveWorkspace(cwdParam) : CLAUDE_CWD;
+    const includePending = !cwdParam;
+    const dir = projectSessionsDir(cwd);
     let files: string[] = [];
     try {
       files = (await fs.readdir(dir)).filter((f) => f.endsWith(".jsonl"));
@@ -745,9 +831,10 @@ app.get("/api/sessions", async (_req, res) => {
     const onDisk = new Set(onDiskStats.map((s) => s.id));
 
     // In-memory sessions not yet written to disk. Prune any that have since
-    // been persisted — the on-disk record (with its real title) wins.
+    // been persisted — the on-disk record (with its real title) wins. Skipped for
+    // a cwd-scoped query (pending sessions aren't tracked per directory).
     const pending: PendingSession[] = [];
-    for (const [id, meta] of knownSessions) {
+    for (const [id, meta] of includePending ? knownSessions : []) {
       if (onDisk.has(id)) {
         knownSessions.delete(id);
         continue;
@@ -778,7 +865,7 @@ app.get("/api/sessions", async (_req, res) => {
       .filter((s): s is SessionMeta => s !== null)
       .sort((a, b) => b.mtime - a.mtime);
 
-    res.json({ cwd: CLAUDE_CWD, sessions });
+    res.json({ cwd, sessions });
   } catch (err) {
     console.error("[api] /api/sessions failed:", err);
     res.status(500).json({ error: String(err) });
@@ -821,10 +908,18 @@ server.on("upgrade", (req, socket, head) => {
 // Reattach a live background PTY to a new socket: drop any stale socket, swap in
 // the new one, and replay the buffered tail for context.
 function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntry {
+  cancelReap(sessionId); // a reattach within the grace window keeps the session
   console.log(`[ws] reattach ${sessionId} (pid=${entry.term.pid})`);
-  // Drop any socket still attached (e.g. the same session open in another tab)
-  // so it can't keep writing to this PTY.
+  // Drop any socket still attached (e.g. the same session open in another tab).
+  // Tell it it's been superseded FIRST so it stops instead of auto-reconnecting —
+  // otherwise two clients on one session ping-pong (each reattach kicks the other,
+  // the kicked one reconnects, …) into a storm.
   if (entry.ws && entry.ws !== ws && entry.ws.readyState === entry.ws.OPEN) {
+    try {
+      entry.ws.send(JSON.stringify({ type: "superseded" }));
+    } catch {
+      // socket already going away — closing below is enough
+    }
     entry.ws.close();
   }
   entry.ws = ws;
@@ -839,37 +934,51 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
 // a viewer yet (e.g. spawnBackgroundChat) — output just buffers until a client
 // reattaches. `initialPrompt`, when given, is passed to claude as the first turn
 // so the session starts working immediately, before anyone opens it.
-function spawnClaudePty(sessionId: string, resume: string | null, ws: WebSocket | null, initialPrompt?: string): PtyEntry {
-  const settings = hookSettingsJson();
-  // Register the GUI MCP broker and auto-allow its tools so the plugin tools run
-  // without a permission prompt (--strict-mcp-config keeps the user's other MCP
-  // servers out of the spike).
-  const mcp = mcpConfigJson(sessionId);
-  const guiArgs = ["--permission-mode", CLAUDE_PERMISSION_MODE, "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
-  const baseArgs = resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
-  // The initial prompt goes last as a positional arg (claude's initial-prompt
-  // form). "--" ends option parsing so a prompt that happens to start with "-"
-  // can't be reinterpreted as a flag.
-  const args = initialPrompt ? [...baseArgs, "--", initialPrompt] : baseArgs;
+function spawnClaudePty(
+  sessionId: string,
+  resume: string | null,
+  ws: WebSocket | null,
+  initialPrompt?: string,
+  cwd: string = CLAUDE_CWD,
+  attachGuiMcp: boolean = true,
+): PtyEntry {
+  // attachGuiMcp picks the MCP mode (see buildClaudeArgs): the single view (default)
+  // attaches the GUI MCP + --strict-mcp-config (main's classic behavior); the grid's
+  // dev terminals attach neither, so the user's + project's MCP servers load normally.
+  // Only --resume when the session has an on-disk transcript — claude doesn't write
+  // a session's .jsonl until its first prompt, so a started-but-unused session can't
+  // be resumed; we restart fresh (reusing the id via --session-id) instead.
+  const canResume = resume !== null && sessionExistsOnDisk(resume, cwd);
+  const args = buildClaudeArgs({
+    sessionId,
+    resume,
+    canResume,
+    settings: hookSettingsJson(),
+    permissionMode: CLAUDE_PERMISSION_MODE,
+    attachGuiMcp,
+    mcpConfig: mcpConfigJson(sessionId),
+    guiMcpTools: GUI_MCP_TOOLS,
+    initialPrompt,
+  });
 
-  console.log(`[ws] client connected (${resume ? "resume" : "new"} ${sessionId})`);
+  console.log(`[ws] client connected (${canResume ? "resume" : "new"} ${sessionId})`);
 
   const term = pty.spawn(CLAUDE_BIN, args, {
     name: "xterm-256color",
     cols: 120,
     rows: 30,
-    cwd: CLAUDE_CWD,
+    cwd,
     env: process.env,
   });
-  console.log(`[pty] spawned claude (pid=${term.pid})`);
+  console.log(`[pty] spawned claude (pid=${term.pid}) in ${cwd}`);
 
-  const entry: PtyEntry = { term, ws, buffer: "" };
+  const entry: PtyEntry = { term, ws, buffer: "", cwd };
   ptys.set(sessionId, entry);
 
-  if (!resume) {
-    // Brand-new session: surface it in the sidebar before it's persisted. A
-    // spawned session (initialPrompt) gets a title from its first message so it's
-    // recognizable in the sidebar before anyone opens it.
+  if (!canResume) {
+    // Brand-new (or restarted-idle) session: surface it in the sidebar before
+    // it's persisted. A spawned session (initialPrompt) gets a title from its
+    // first message so it's recognizable in the sidebar before anyone opens it.
     const title = initialPrompt ? initialPrompt.replace(/\s+/g, " ").trim().slice(0, 60) || "New session" : "New session";
     knownSessions.set(sessionId, { createdAt: Date.now(), title });
     pubsub?.publish(SESSIONS_CHANNEL, { id: sessionId, working: false, event: "created" });
@@ -912,7 +1021,11 @@ function handleClientFrame(entry: PtyEntry, ws: WebSocket, raw: RawData, session
     return; // not JSON — never write arbitrary payloads to the PTY
   }
   try {
-    if (msg.type === "input" && typeof msg.data === "string") {
+    if (msg.type === "terminate") {
+      // Explicit close (the cell's ✕) — reap now instead of waiting out the
+      // disconnect grace window, so the session slot frees immediately.
+      reap(sessionId);
+    } else if (msg.type === "input" && typeof msg.data === "string") {
       entry.term.write(msg.data);
     } else if (
       msg.type === "resize" &&
@@ -940,8 +1053,10 @@ function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   if (activity.get(sessionId)?.working) {
     console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
   } else {
-    console.log(`[ws] disconnected; killing idle session ${sessionId}`);
-    reap(sessionId);
+    // Don't reap now — a reload reconnects in a moment and should re-attach to
+    // this same live terminal. Reap only if nothing reattaches within the window.
+    console.log(`[ws] disconnected; idle session ${sessionId} reaped in ${REAP_GRACE_MS / 1000}s unless reattached`);
+    scheduleReap(sessionId);
   }
 }
 
@@ -949,21 +1064,48 @@ wss.on("connection", (ws, req) => {
   // ?session=<id> resumes an existing conversation; absent => fresh session. For
   // new sessions we generate the id ourselves (--session-id) so the server always
   // knows the current session's id, even before any file exists.
-  const resume = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
-  if (resume && !SESSION_ID_RE.test(resume)) {
-    console.warn(`[ws] rejecting non-UUID session id: ${JSON.stringify(resume)}`);
-    ws.close();
-    return;
-  }
-  const sessionId = resume || randomUUID();
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const raw = url.searchParams.get("session");
+  // A non-UUID id is never used (it could smuggle path/flag fragments into
+  // sessionExistsOnDisk / --resume). Treat it as "no session requested" rather
+  // than closing the socket — closing without a replacement id makes the client
+  // auto-reconnect with the same bad id forever. Falling through mints a fresh
+  // session and tells the browser the new id, so the cell self-recovers.
+  const requested = raw && SESSION_ID_RE.test(raw) ? raw : null;
+  if (raw && !requested) console.warn(`[ws] ignoring non-UUID session id: ${JSON.stringify(raw)} — starting fresh`);
 
-  // Tell the browser which session this is (it learns the id of new sessions).
-  ws.send(JSON.stringify({ type: "session", id: sessionId }));
+  // The cell may launch a terminal in a chosen directory (?cwd=<abs>). Validated
+  // (absolute, existing dir) and used as the PTY cwd + the project to resume from;
+  // falls back to CLAUDE_CWD.
+  const cwd = resolveWorkspace(url.searchParams.get("cwd"));
 
-  const existing = ptys.get(sessionId);
+  // ?gui=0 (the grid's dev terminals) spawns claude WITHOUT the GUI plugin MCP /
+  // --strict-mcp-config, so the user's + project's MCP servers load normally. Absent
+  // (the single view) keeps main's behavior: GUI MCP attached + strict.
+  const attachGuiMcp = url.searchParams.get("gui") !== "0";
+
+  // Decide the effective session id BEFORE telling the browser. A requested id
+  // is honored only if it can actually be served: a live pty (reattach) or an
+  // on-disk transcript (`--resume`). A requested id that's neither — e.g. a cell
+  // reloading an idle session claude never persisted — can't be reused: claude
+  // exits with "session id already in use" if we retry `--session-id <same>`.
+  // So mint a fresh id; the browser adopts it from this `session` message and
+  // re-persists, so the reload just reopens a working terminal seamlessly.
+  const reattachId = requested && ptys.has(requested) ? requested : null;
+  const resume = !reattachId && requested && sessionExistsOnDisk(requested, cwd) ? requested : null;
+  const sessionId = reattachId ?? resume ?? randomUUID();
+  const live = reattachId ? ptys.get(reattachId) : undefined;
+
+  // Tell the browser which session this is (it learns the id of new sessions) and
+  // the EFFECTIVE cwd — where claude really runs. On reattach that's the live
+  // PTY's own cwd (NOT this request's ?cwd=, which it ignores); otherwise it's the
+  // resolved cwd the new PTY will spawn in.
+  const reportedCwd = live?.cwd ?? cwd;
+  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd: reportedCwd }));
+
   let entry: PtyEntry;
   try {
-    entry = existing ? reattachPty(existing, ws, sessionId) : spawnClaudePty(sessionId, resume, ws);
+    entry = live ? reattachPty(live, ws, sessionId) : spawnClaudePty(sessionId, resume, ws, undefined, cwd, attachGuiMcp);
   } catch (err) {
     // A failed spawn (claude missing, or node-pty's spawn-helper not executable)
     // must close just this connection — never crash the whole server.
