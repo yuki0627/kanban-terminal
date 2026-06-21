@@ -1,17 +1,16 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import TerminalGrid from "./TerminalGrid.vue";
 import SettingsModal from "./SettingsModal.vue";
-import { LAYOUTS, isLayout, type Layout } from "./gridLayout";
 import type { CwdPreset } from "./presets";
 
 // The multi-terminal grid view. Toggled with the classic single view from App.vue.
 const emit = defineEmits<{ (e: "exit"): void }>();
 
-// Grid layout (cell arrangement), chosen in the toolbar and persisted.
-const stored = localStorage.getItem("grid_layout");
-const layout = ref<Layout>(isLayout(stored) ? stored : "2x2");
-watch(layout, (v) => localStorage.setItem("grid_layout", v));
+// The grid arranges itself by the running-terminal count; the toolbar "+" (wired to
+// TerminalGrid via this ref) adds one launch cell, and add-state drives its button.
+const gridRef = ref<InstanceType<typeof TerminalGrid> | null>(null);
+const addState = ref<{ canAdd: boolean; adding: boolean }>({ canAdd: true, adding: false });
 
 // Server config: the default workspace dir + the user's directory presets.
 const defaultCwd = ref<string | null>(null);
@@ -64,15 +63,19 @@ function closeSettings() {
   <div class="shell">
     <header class="toolbar">
       <span class="toolbar-title">MulmoTerminal</span>
-      <span class="layout-picker" role="group" aria-label="Grid layout">
-        <button v-for="l in LAYOUTS" :key="l" :class="['layout-btn', { active: layout === l }]" :aria-pressed="layout === l" @click="layout = l">
-          {{ l }}
-        </button>
-      </span>
+      <button
+        class="tb-btn tb-add"
+        :class="{ active: addState.adding }"
+        :disabled="!addState.canAdd && !addState.adding"
+        :title="addState.adding ? 'Cancel adding a terminal' : 'New terminal'"
+        @click="gridRef?.addCell()"
+      >
+        ＋ Terminal
+      </button>
       <button class="tb-btn" title="Single view" aria-label="Switch to single view" @click="emit('exit')">▢ Single</button>
       <button class="tb-btn" title="Settings" aria-label="Settings" @click="showSettings = true">⚙</button>
     </header>
-    <TerminalGrid class="main" :layout="layout" :default-cwd="defaultCwd" :presets="presets" :home="home" />
+    <TerminalGrid ref="gridRef" class="main" :default-cwd="defaultCwd" :presets="presets" :home="home" @add-state="addState = $event" />
     <SettingsModal v-if="showSettings" :presets="presets" :saving="savingSettings" :error="settingsError" @save="savePresets" @close="closeSettings" />
   </div>
 </template>
@@ -104,26 +107,14 @@ function closeSettings() {
   letter-spacing: 0.02em;
 }
 
-.layout-picker {
+.tb-add {
   margin-left: auto;
-  display: flex;
-  gap: 4px;
 }
-.layout-btn {
-  border: 1px solid #2a2a4e;
-  background: #1a1a2e;
-  color: #9aa3c0;
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  cursor: pointer;
+.tb-add:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
-.layout-btn:hover {
-  background: #2a3b66;
-  color: #e6e6f0;
-}
-.layout-btn.active {
+.tb-add.active {
   background: #2a3b66;
   color: #fff;
   border-color: #4a8cff;

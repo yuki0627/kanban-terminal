@@ -2,10 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
 import TerminalGrid from "./TerminalGrid.vue";
-import type { Layout } from "./gridLayout";
 
-// Stub the cell so the grid's own state (localStorage persist/restore + zoom +
-// layout) can be tested without pulling in Terminal/xterm/pub-sub.
+// Stub the cell so the grid's own state (persist/restore + zoom + auto-layout) can
+// be tested without pulling in Terminal/xterm/pub-sub.
 vi.mock("./TerminalCell.vue", () => ({
   default: {
     name: "TerminalCell",
@@ -16,50 +15,79 @@ vi.mock("./TerminalCell.vue", () => ({
 }));
 
 const STORE_KEY = "grid_state_v1";
-const mountGrid = (layout: Layout = "2x2") => mount(TerminalGrid, { props: { layout, defaultCwd: "/work/proj", presets: [], home: "/work" } });
+const mountGrid = () => mount(TerminalGrid, { props: { defaultCwd: "/work/proj", presets: [], home: "/work" } });
 const cellsOf = (w: ReturnType<typeof mount>) => w.findAllComponents({ name: "TerminalCell" });
 const saved = () => JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+const lastAddState = (w: ReturnType<typeof mount>) => w.emitted("add-state")?.at(-1)?.[0];
+
+const A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+const C = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+const D = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 
 beforeEach(() => {
   localStorage.clear();
   globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ cwd: "/work/proj" }) })) as unknown as typeof fetch;
 });
 
-describe("TerminalGrid", () => {
-  it("renders cellCount cells per layout", () => {
-    expect(cellsOf(mountGrid("2x2"))).toHaveLength(4);
-    expect(cellsOf(mountGrid("3x2"))).toHaveLength(6);
-    expect(cellsOf(mountGrid("4x2"))).toHaveLength(8);
-    expect(cellsOf(mountGrid("3x3"))).toHaveLength(9);
-  });
-
-  it("re-renders the cell count when the layout prop changes", async () => {
-    const w = mountGrid("2x2");
-    expect(cellsOf(w)).toHaveLength(4);
-    await w.setProps({ layout: "3x3" });
-    expect(cellsOf(w)).toHaveLength(9);
-  });
-
-  it("un-zooms when the layout shrinks below the expanded cell", async () => {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [], expanded: 8 }));
-    const w = mountGrid("3x3");
+describe("TerminalGrid auto-layout", () => {
+  it("shows a single launch cell on an empty grid", async () => {
+    const w = mountGrid();
     await flushPromises();
-    expect(cellsOf(w)[8].props("expanded")).toBe(true);
-    await w.setProps({ layout: "2x2" });
-    expect(cellsOf(w).every((c) => c.props("expanded") === false)).toBe(true);
-    expect(saved().expanded).toBe(null);
+    expect(cellsOf(w)).toHaveLength(1);
   });
 
-  it("restores each cell's session id and the zoom from localStorage", async () => {
-    const idA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    const idC = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [idA, null, idC, null], expanded: 2 }));
-    const w = mountGrid("2x2");
+  it("shows exactly the running terminals, packed (interleaved state is compacted on load)", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, C, null], cwds: ["/a", null, "/c", null], expanded: null }));
+    const w = mountGrid();
     await flushPromises();
     const cells = cellsOf(w);
-    expect(cells[0].props("initialSessionId")).toBe(idA);
-    expect(cells[2].props("initialSessionId")).toBe(idC);
-    expect(cells[2].props("expanded")).toBe(true);
+    expect(cells).toHaveLength(2); // 2 running, no empty filler, no add cell
+    expect(cells[0].props("initialSessionId")).toBe(A);
+    expect(cells[1].props("initialSessionId")).toBe(C);
+    expect(cells[1].props("initialCwd")).toBe("/c");
+  });
+
+  it("addCell toggles one trailing launch cell and reports add-state", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], cwds: [], expanded: null }));
+    const w = mountGrid();
+    await flushPromises();
+    expect(cellsOf(w)).toHaveLength(1);
+
+    w.vm.addCell();
+    await nextTick();
+    expect(cellsOf(w)).toHaveLength(2);
+    expect(cellsOf(w)[1].props("initialSessionId")).toBe(null);
+    expect(lastAddState(w)).toEqual({ canAdd: true, adding: true });
+
+    w.vm.addCell(); // toggle off (cancel)
+    await nextTick();
+    expect(cellsOf(w)).toHaveLength(1);
+    expect(lastAddState(w)).toEqual({ canAdd: true, adding: false });
+  });
+
+  it("launching the add cell promotes it to a running terminal and stops adding", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], cwds: [], expanded: null }));
+    const w = mountGrid();
+    await flushPromises();
+    w.vm.addCell();
+    await nextTick();
+    cellsOf(w)[1].vm.$emit("session", B);
+    await nextTick();
+    expect(cellsOf(w)).toHaveLength(2); // both running now, add cell consumed
+    expect(saved().sessions.slice(0, 2)).toEqual([A, B]);
+    expect(lastAddState(w)).toEqual({ canAdd: true, adding: false });
+  });
+
+  it("caps the grid at 9 running (no 10th cell)", async () => {
+    const ids = Array.from({ length: 9 }, (_, i) => `${String(i).repeat(8)}-aaaa-aaaa-aaaa-aaaaaaaaaaaa`);
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: ids, cwds: [], expanded: null }));
+    const w = mountGrid();
+    await flushPromises();
+    expect(cellsOf(w)).toHaveLength(9);
+    w.vm.addCell();
+    await nextTick();
+    expect(cellsOf(w)).toHaveLength(9);
   });
 
   it("forwards defaultCwd to cells", async () => {
@@ -68,104 +96,82 @@ describe("TerminalGrid", () => {
     expect(cellsOf(w)[0].props("defaultCwd")).toBe("/work/proj");
   });
 
-  it("persists a cell's chosen cwd and restores it as initialCwd", async () => {
+  it("persists a cell's chosen cwd", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], cwds: ["/a", null, null, null], expanded: null }));
     const w = mountGrid();
     await flushPromises();
-    cellsOf(w)[2].vm.$emit("cwd", "/work/proj/sub");
+    cellsOf(w)[0].vm.$emit("cwd", "/work/proj/sub");
     await nextTick();
-    expect(saved().cwds[2]).toBe("/work/proj/sub");
-
-    const w2 = mountGrid();
-    await flushPromises();
-    expect(cellsOf(w2)[2].props("initialCwd")).toBe("/work/proj/sub");
+    expect(saved().cwds[0]).toBe("/work/proj/sub");
   });
 
-  it("persists a cell's session id when it emits 'session'", async () => {
+  it("persists a session id when a cell emits 'session'", async () => {
     const w = mountGrid();
     await flushPromises();
-    cellsOf(w)[1].vm.$emit("session", "new-id");
+    cellsOf(w)[0].vm.$emit("session", A);
     await nextTick();
-    expect(saved().sessions[1]).toBe("new-id");
+    expect(saved().sessions[0]).toBe(A);
   });
 
-  it("clears the slot (and un-zooms) when a cell emits 'close'", async () => {
-    const idA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [idA, null, null, null], expanded: 0 }));
-    const w = mountGrid("2x2");
+  it("clears the slot, un-zooms, and shrinks on close", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, B, C, D], cwds: ["/a", "/b", "/c", "/d"], expanded: 1 }));
+    const w = mountGrid();
     await flushPromises();
-    cellsOf(w)[0].vm.$emit("close");
+    expect(cellsOf(w)).toHaveLength(4);
+    cellsOf(w)[1].vm.$emit("close"); // close B (zoomed)
     await nextTick();
-    expect(saved().sessions[0]).toBe(null);
+    expect(saved().sessions.slice(0, 4)).toEqual([A, C, D, null]); // gap filled
+    expect(saved().cwds.slice(0, 4)).toEqual(["/a", "/c", "/d", null]);
+    expect(saved().expanded).toBe(null);
+    expect(cellsOf(w)).toHaveLength(3); // 3 running now
+    expect(cellsOf(w)[1].props("initialSessionId")).toBe(C);
+  });
+
+  it("toggles zoom on 'toggle-expand' and back off again", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, B, null, null], cwds: [], expanded: null }));
+    const w = mountGrid();
+    await flushPromises();
+    cellsOf(w)[1].vm.$emit("toggle-expand");
+    await nextTick();
+    expect(cellsOf(w)[1].props("expanded")).toBe(true);
+    expect(saved().expanded).toBe(1);
+    cellsOf(w)[1].vm.$emit("toggle-expand");
+    await nextTick();
     expect(saved().expanded).toBe(null);
   });
 
-  it("toggles zoom on 'toggle-expand' and back off when emitted again", async () => {
+  it("restores running sessions and the zoom from localStorage", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, C, null, null], expanded: 1 }));
     const w = mountGrid();
     await flushPromises();
-    cellsOf(w)[3].vm.$emit("toggle-expand");
-    await nextTick();
-    expect(cellsOf(w)[3].props("expanded")).toBe(true);
-    expect(saved().expanded).toBe(3);
-    cellsOf(w)[3].vm.$emit("toggle-expand");
-    await nextTick();
-    expect(saved().expanded).toBe(null);
+    const cells = cellsOf(w);
+    expect(cells).toHaveLength(2);
+    expect(cells[0].props("initialSessionId")).toBe(A);
+    expect(cells[1].props("initialSessionId")).toBe(C);
+    expect(cells[1].props("expanded")).toBe(true);
+  });
+
+  it("drops a restored zoom that no longer lands on a running cell", async () => {
+    // Only A is valid; the stored expanded position points past the running cell.
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], expanded: 2 }));
+    const w = mountGrid();
+    await flushPromises();
+    expect(cellsOf(w).every((c) => c.props("expanded") === false)).toBe(true);
   });
 
   it("drops non-UUID persisted session ids", async () => {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: ["not-a-uuid", "../etc/passwd", "id-a", null], expanded: null }));
-    const w = mountGrid("2x2");
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: ["not-a-uuid", "../etc/passwd", A, null], expanded: null }));
+    const w = mountGrid();
     await flushPromises();
-    expect(cellsOf(w).every((c) => c.props("initialSessionId") === null)).toBe(true);
-  });
-
-  it("keeps a valid UUID persisted id", async () => {
-    const uuid = "abcdef01-2345-6789-abcd-ef0123456789";
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [uuid, null, null, null], expanded: null }));
-    const w = mountGrid("2x2");
-    await flushPromises();
-    expect(cellsOf(w)[0].props("initialSessionId")).toBe(uuid);
+    const cells = cellsOf(w);
+    expect(cells).toHaveLength(1); // only A survives
+    expect(cells[0].props("initialSessionId")).toBe(A);
   });
 
   it("ignores a corrupt localStorage payload", async () => {
     localStorage.setItem(STORE_KEY, "not json{");
-    const w = mountGrid("2x2");
+    const w = mountGrid();
     await flushPromises();
-    expect(cellsOf(w)).toHaveLength(4);
-    expect(cellsOf(w).every((c) => c.props("initialSessionId") === null)).toBe(true);
-  });
-
-  const A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-  const B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-  const C = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-  const D = "dddddddd-dddd-dddd-dddd-dddddddddddd";
-  const E = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
-
-  it("close fills the gap and keeps each session paired with its cwd (compaction)", async () => {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, B, C, D], cwds: ["/a", "/b", "/c", "/d"], expanded: null }));
-    const w = mountGrid("2x2");
-    await flushPromises();
-    cellsOf(w)[1].vm.$emit("close"); // close B (position 1)
-    await nextTick();
-
-    // B's slot is emptied and the rest pack forward, cwds following their session.
-    expect(saved().sessions.slice(0, 4)).toEqual([A, C, D, null]);
-    expect(saved().cwds.slice(0, 4)).toEqual(["/a", "/c", "/d", null]);
-    const cells = cellsOf(w);
-    expect(cells[1].props("initialSessionId")).toBe(C);
-    expect(cells[1].props("initialCwd")).toBe("/c");
-  });
-
-  it("packs running terminals to the top-left on layout shrink, preserving session/cwd pairing", async () => {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, C, null, E], cwds: ["/a", null, "/c", null, "/e"], expanded: null }));
-    const w = mountGrid("3x3");
-    await flushPromises();
-    await w.setProps({ layout: "2x2" });
-    await nextTick();
-
-    expect(saved().sessions.slice(0, 3)).toEqual([A, C, E]);
-    expect(saved().cwds.slice(0, 3)).toEqual(["/a", "/c", "/e"]);
-    const cells = cellsOf(w); // 2x2 → 4 visible
-    expect(cells.map((c) => c.props("initialSessionId")).slice(0, 3)).toEqual([A, C, E]);
-    expect(cells[1].props("initialCwd")).toBe("/c");
+    expect(cellsOf(w)).toHaveLength(1);
   });
 });
