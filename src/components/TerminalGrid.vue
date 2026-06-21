@@ -21,14 +21,15 @@ const emit = defineEmits<{ (e: "add-state", v: { canAdd: boolean; adding: boolea
 // the display order; the visible cells are the first `cellCount`. v-for keys by
 // uid, so reordering the array (compaction) MOVES the cell instances — the running
 // terminals follow their slot instead of reconnecting.
-// A slot holds either a Claude session (`session`/`cwd`) or a Run-menu command
-// (`command`), or is empty. Command terminals are ephemeral — never persisted —
-// so a reload drops them; only `session`/`cwd` are saved.
+// A slot holds either a Claude session (`session`/`cwd`) or a script command from a
+// cell's chosen directory (`command`, carrying its own cwd), or is empty. Command
+// terminals are ephemeral — never persisted — so a reload drops them; only
+// `session`/`cwd` are saved.
 interface Slot {
   uid: number;
   session: string | null;
   cwd: string | null;
-  command: { index: number; label: string } | null;
+  command: { index: number; label: string; cwd: string | null } | null;
 }
 
 // A slot is occupied when it runs a Claude session OR a command. The auto-sized
@@ -153,17 +154,16 @@ function addCell() {
   else if (occupiedCount.value < MAX_CELLS) adding.value = true;
 }
 
-// Run a script.json command (the Run menu) in a fresh cell. Occupying a slot grows
-// the auto-sized grid by one; capped at MAX_CELLS. Replaces any pending launch cell.
-function runScript(index: number, label: string) {
-  if (occupiedCount.value >= MAX_CELLS) return;
-  const slot = slots.value.find((s) => !isOccupied(s));
-  if (!slot) return;
-  slot.command = { index, label };
+// A cell's launcher picked a script.json command for its directory: turn that slot
+// into a running command terminal (it's already an occupied, visible cell, so no
+// resize is needed — just stop "adding" if this consumed the trailing launch cell).
+function onRun(uid: number, command: { index: number; label: string; cwd: string | null }) {
+  const s = slotByUid(uid);
+  if (!s) return;
+  s.command = command;
   adding.value = false;
-  compact();
 }
-defineExpose({ addCell, runScript });
+defineExpose({ addCell });
 
 // Tell the toolbar whether "+" can add and whether a launch cell is already open.
 watch([occupiedCount, adding], () => emit("add-state", { canAdd: occupiedCount.value < MAX_CELLS, adding: adding.value }), { immediate: true });
@@ -200,6 +200,7 @@ const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.val
           :style="stripOrder(slot)"
           :expanded="slot.uid === expandedUid"
           :command="slot.command"
+          :home="home"
           @toggle-expand="toggleExpand(slot.uid)"
           @close="() => onClose(slot.uid)"
         />
@@ -215,6 +216,7 @@ const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.val
           @toggle-expand="toggleExpand(slot.uid)"
           @session="(id) => setSession(slot.uid, id)"
           @cwd="(c) => setCwd(slot.uid, c)"
+          @run="(cmd) => onRun(slot.uid, cmd)"
           @close="() => onClose(slot.uid)"
         />
       </Teleport>

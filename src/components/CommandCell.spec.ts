@@ -8,20 +8,23 @@ import CommandCell from "./CommandCell.vue";
 vi.mock("./Terminal.vue", () => ({
   default: {
     name: "TerminalView",
-    props: ["sessionId", "connectKey", "command"],
+    props: ["sessionId", "connectKey", "cwd", "command"],
     emits: ["exit"],
     template: '<div class="stub-term" />',
   },
 }));
 
-const mountCell = () => mount(CommandCell, { props: { expanded: false, command: { index: 2, label: "Dev server" } } });
+const COMMAND = { index: 2, label: "Dev server", cwd: "/work/proj" };
+const mountCell = () => mount(CommandCell, { props: { expanded: false, command: COMMAND, home: "/work" } });
 const term = (w: ReturnType<typeof mount>) => w.findComponent({ name: "TerminalView" });
 
 describe("CommandCell", () => {
-  it("shows the label and runs the command in command mode", () => {
+  it("shows the label + dir and runs the command in its directory", () => {
     const w = mountCell();
     expect(w.find(".cell-cmd").text()).toContain("Dev server");
-    expect(term(w).props("command")).toEqual({ index: 2, label: "Dev server" });
+    expect(w.find(".cell-dir").text()).toBe("~/proj"); // ~-anchored to home
+    expect(term(w).props("command")).toEqual(COMMAND);
+    expect(term(w).props("cwd")).toBe("/work/proj"); // runs in the cell's dir
     expect(term(w).props("sessionId")).toBe(null); // not a Claude session
   });
 

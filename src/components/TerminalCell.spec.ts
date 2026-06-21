@@ -29,10 +29,13 @@ vi.mock("./Terminal.vue", () => ({
 const promptText = (w: ReturnType<typeof mount>) => w.find(".cell-prompt").text();
 const dotClass = (w: ReturnType<typeof mount>) => w.find(".cell-dot").classes();
 
-// Route by URL: /api/sessions (resume list) vs /api/session/:id (activity).
-function mockFetch(sessions: { id: string; title: string; mtime: number }[] = []) {
+// Route by URL: /api/scripts (run list), /api/sessions (resume list), or
+// /api/session/:id (activity).
+function mockFetch(sessions: { id: string; title: string; mtime: number }[] = [], scripts: { index: number; label: string; command: string }[] = []) {
   globalThis.fetch = vi.fn(async (url: string) => {
-    if (String(url).includes("/api/sessions")) return { ok: true, json: async () => ({ sessions }) };
+    const u = String(url);
+    if (u.includes("/api/scripts")) return { ok: true, json: async () => ({ cwd: "/home/me/proj", scripts }) };
+    if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions }) };
     return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
   }) as unknown as typeof fetch;
 }
@@ -118,6 +121,23 @@ describe("TerminalCell", () => {
     expect(term.exists()).toBe(true);
     expect(term.props("sessionId")).toBe("77777777-7777-7777-7777-777777777777");
     expect(term.props("cwd")).toBe("/home/me/proj");
+  });
+
+  it("lists script.json scripts for the dir and emits run with the resolved cwd", async () => {
+    mockFetch(
+      [],
+      [
+        { index: 0, label: "Build", command: "yarn build" },
+        { index: 1, label: "Test", command: "yarn test" },
+      ],
+    );
+    const w = mountCell(null, { defaultCwd: "/home/me/proj" });
+    await flushPromises();
+    const items = w.findAll(".cell-script-item");
+    expect(items).toHaveLength(2);
+    expect(items[0].text()).toContain("Build");
+    await items[0].trigger("click");
+    expect(w.emitted("run")?.[0]?.[0]).toEqual({ index: 0, label: "Build", cwd: "/home/me/proj" });
   });
 
   it("shows the resumed session's latest prompt from /api/session (with cwd), not the bare id", async () => {

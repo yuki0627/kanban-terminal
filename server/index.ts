@@ -774,11 +774,14 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
 // modal's directory presets. The single view never calls it.
 mountConfigRoutes(app, CLAUDE_CWD);
 
-// GRID-ONLY (dev_tool): the workspace's `script.json` entries the grid's Run menu
-// offers. The browser shows these and sends back only an INDEX (see /ws/run), so
-// the file is the allowlist of what can run.
-app.get("/api/scripts", (_req, res) => {
-  res.json({ scripts: loadScripts(CLAUDE_CWD).map((s, index) => ({ index, label: s.label, command: s.command, cwd: s.cwd })) });
+// GRID-ONLY (dev_tool): the `script.json` entries a cell's launcher offers for its
+// chosen directory (?cwd=<dir>, falling back to CLAUDE_CWD). The browser shows
+// these and sends back only an INDEX + the cwd (see /ws/run), so the file is the
+// allowlist of what can run. The resolved `cwd` is returned so the cell runs the
+// script in the same dir it listed scripts for.
+app.get("/api/scripts", (req, res) => {
+  const cwd = resolveWorkspace(typeof req.query.cwd === "string" ? req.query.cwd : null);
+  res.json({ cwd, scripts: loadScripts(cwd).map((s, index) => ({ index, label: s.label, command: s.command, cwd: s.cwd })) });
 });
 
 // GRID-ONLY (dev_tool): POST /api/open-dir reveals a cell's working directory in the
@@ -1198,13 +1201,15 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => handleClientClose(entry, ws, sessionId));
 });
 
-// Command terminal (?index=<n>): resolve the script from the workspace's
-// script.json by index (the browser never sends a raw command) and run it in a
-// plain PTY. Ephemeral — when the socket closes, the process is killed.
+// Command terminal (?index=<n>&cwd=<dir>): resolve the script from <dir>'s
+// script.json by index (the browser never sends a raw command) and run it there in
+// a plain PTY. Ephemeral — when the socket closes, the process is killed.
 runWss.on("connection", (ws, req) => {
-  const indexRaw = new URL(req.url ?? "/", "http://localhost").searchParams.get("index");
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const indexRaw = url.searchParams.get("index");
   const index = indexRaw !== null && /^\d+$/.test(indexRaw) ? Number(indexRaw) : NaN;
-  const resolved = resolveScript(CLAUDE_CWD, index);
+  const cwd = resolveWorkspace(url.searchParams.get("cwd"));
+  const resolved = resolveScript(cwd, index);
   if (!resolved) {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: "error", message: "Script not found — check script.json." }));

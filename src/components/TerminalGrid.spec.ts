@@ -9,7 +9,7 @@ vi.mock("./TerminalCell.vue", () => ({
   default: {
     name: "TerminalCell",
     props: ["expanded", "initialSessionId", "initialCwd", "defaultCwd", "presets", "home"],
-    emits: ["toggle-expand", "session", "cwd", "close"],
+    emits: ["toggle-expand", "session", "cwd", "run", "close"],
     template: '<div class="stub-cell" />',
   },
 }));
@@ -18,7 +18,7 @@ vi.mock("./TerminalCell.vue", () => ({
 vi.mock("./CommandCell.vue", () => ({
   default: {
     name: "CommandCell",
-    props: ["expanded", "command"],
+    props: ["expanded", "command", "home"],
     emits: ["toggle-expand", "close"],
     template: '<div class="stub-command-cell" />',
   },
@@ -188,22 +188,25 @@ describe("TerminalGrid auto-layout", () => {
 });
 
 describe("TerminalGrid run scripts", () => {
-  it("runs a script in a fresh command cell and does not persist it (ephemeral)", async () => {
+  const CMD = { index: 1, label: "Dev server", cwd: "/work/proj" };
+
+  it("turns a cell into a command cell when it emits 'run', not persisted (ephemeral)", async () => {
     const w = mountGrid();
     await flushPromises();
-    w.vm.runScript(1, "Dev server");
+    cellsOf(w)[0].vm.$emit("run", CMD);
     await nextTick();
     expect(commandCellsOf(w)).toHaveLength(1);
-    expect(commandCellsOf(w)[0].props("command")).toEqual({ index: 1, label: "Dev server" });
+    expect(commandCellsOf(w)[0].props("command")).toEqual(CMD);
     expect(saved().sessions[0]).toBe(null); // command isn't written to localStorage
   });
 
-  it("grows the grid: a command cell sits beside a running session", async () => {
+  it("a command cell sits beside a running session", async () => {
     localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], cwds: [], expanded: null }));
     const w = mountGrid();
     await flushPromises();
-    expect(cellsOf(w)).toHaveLength(1);
-    w.vm.runScript(0, "Build");
+    w.vm.addCell(); // open a launch cell next to A
+    await nextTick();
+    cellsOf(w)[1].vm.$emit("run", CMD); // the launch cell runs a script
     await nextTick();
     expect(cellsOf(w)).toHaveLength(1); // the session cell
     expect(commandCellsOf(w)).toHaveLength(1); // + the command cell
@@ -212,7 +215,7 @@ describe("TerminalGrid run scripts", () => {
   it("closes a command cell and shrinks back to a single launch cell", async () => {
     const w = mountGrid();
     await flushPromises();
-    w.vm.runScript(0, "Build");
+    cellsOf(w)[0].vm.$emit("run", CMD);
     await nextTick();
     expect(commandCellsOf(w)).toHaveLength(1);
     commandCellsOf(w)[0].vm.$emit("close");
@@ -221,14 +224,17 @@ describe("TerminalGrid run scripts", () => {
     expect(cellsOf(w)).toHaveLength(1);
   });
 
-  it("counts command cells toward the 9-cell cap", async () => {
-    const ids = Array.from({ length: 9 }, (_, i) => `${String(i).repeat(8)}-aaaa-aaaa-aaaa-aaaaaaaaaaaa`);
+  it("counts a command cell toward the 9-cell cap (add-state)", async () => {
+    const ids = Array.from({ length: 8 }, (_, i) => `${String(i).repeat(8)}-aaaa-aaaa-aaaa-aaaaaaaaaaaa`);
     localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: ids, cwds: [], expanded: null }));
     const w = mountGrid();
     await flushPromises();
-    expect(cellsOf(w)).toHaveLength(9);
-    w.vm.runScript(0, "Build"); // grid full — no-op
+    expect(lastAddState(w)).toEqual({ canAdd: true, adding: false }); // 8 occupied
+    w.vm.addCell();
     await nextTick();
-    expect(commandCellsOf(w)).toHaveLength(0);
+    cellsOf(w)[8].vm.$emit("run", CMD);
+    await nextTick();
+    expect(commandCellsOf(w)).toHaveLength(1);
+    expect(lastAddState(w)).toEqual({ canAdd: false, adding: false }); // 9 occupied now
   });
 });

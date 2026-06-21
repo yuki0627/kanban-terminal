@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import TerminalView from "./Terminal.vue";
+import { formatCwd } from "./cwdDisplay";
 
-// A grid cell that runs a `script.json` command (the Run menu) instead of a Claude
-// session. Ephemeral: it has no session id and isn't persisted — a reload drops it.
-// `command.index` is the script's position in script.json (the server resolves it).
-defineProps<{ expanded: boolean; command: { index: number; label: string } }>();
+// A grid cell that runs a `script.json` command (a cell launcher's Run) instead of
+// a Claude session. Ephemeral: it has no session id and isn't persisted — a reload
+// drops it. `command.index` is the script's position in `<command.cwd>/script.json`
+// (the server resolves it); the command runs in `command.cwd`.
+const props = defineProps<{ expanded: boolean; command: { index: number; label: string; cwd: string | null }; home: string | null }>();
 const emit = defineEmits<{ (e: "toggle-expand" | "close"): void }>();
 
 // connectKey forces Terminal.vue to (re)connect — bumped to re-run after exit.
 const connectKey = ref(0);
 const finished = ref(false);
+
+const dirDisplay = computed(() => formatCwd(props.command.cwd, props.home));
 
 function onExit() {
   finished.value = true;
@@ -26,6 +30,7 @@ function rerun() {
   <div class="cell">
     <div class="cell-header">
       <span class="cell-dot" :class="finished ? 'is-idle' : 'is-working'" :title="finished ? 'Finished' : 'Running…'" />
+      <span v-if="dirDisplay" class="cell-dir" :title="command.cwd ?? ''">{{ dirDisplay }}</span>
       <span class="cell-cmd">▶ {{ command.label }}</span>
       <span class="cell-actions">
         <button v-if="finished" class="cell-btn" title="Re-run" aria-label="Re-run command" @click="rerun">↻</button>
@@ -40,7 +45,7 @@ function rerun() {
         <button class="cell-btn cell-close" title="Close terminal" aria-label="Close terminal" @click="emit('close')">✕</button>
       </span>
     </div>
-    <TerminalView class="cell-term" :session-id="null" :connect-key="connectKey" :command="command" @exit="onExit" />
+    <TerminalView class="cell-term" :session-id="null" :connect-key="connectKey" :cwd="command.cwd" :command="command" @exit="onExit" />
   </div>
 </template>
 
@@ -88,6 +93,16 @@ function rerun() {
   }
 }
 
+.cell-dir {
+  flex: 0 1 auto;
+  max-width: 45%;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: #7f88ad;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .cell-cmd {
   flex: 1 1 auto;
   min-width: 0;

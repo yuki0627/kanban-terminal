@@ -69,7 +69,7 @@ function connect() {
   // re-attaches the same session instead of spawning a fresh one each retry.
   const resumeId = knownSessionId ?? props.sessionId;
   const url = props.command
-    ? buildRunWsUrl({ host: location.host, secure: location.protocol === "https:", index: props.command.index })
+    ? buildRunWsUrl({ host: location.host, secure: location.protocol === "https:", index: props.command.index, cwd: props.cwd })
     : buildTerminalWsUrl({
         host: location.host,
         secure: location.protocol === "https:",

@@ -37,6 +37,13 @@ describe("buildRunWsUrl", () => {
     expect(url).toBe("ws://localhost:3456/ws/run?index=2");
   });
 
+  it("includes the directory the index refers to", () => {
+    const url = buildRunWsUrl({ host: "h", secure: false, index: 1, cwd: "/work/proj" });
+    const q = new URL(url).searchParams;
+    expect(q.get("index")).toBe("1");
+    expect(q.get("cwd")).toBe("/work/proj");
+  });
+
   it("uses wss when secure", () => {
     const url = buildRunWsUrl({ host: "h", secure: true, index: 0 });
     expect(url.startsWith("wss://")).toBe(true);

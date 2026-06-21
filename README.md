@@ -93,9 +93,9 @@ server, and opens the browser. For local development from a clone, see
 - **Session list** is fetched over HTTP (`/api/sessions`).
 - **Live activity** is pushed over a Socket.IO pub/sub channel (`/ws/pubsub`);
   the server learns of activity from **Claude hooks** that POST to `/api/hook`.
-- **Run-menu commands** (`yarn dev`, tests, …) run in their own ephemeral PTY over
-  a separate WebSocket (`/ws/run`); they are not Claude sessions. See
-  [Scripts (Run menu)](#scripts-run-menu).
+- **Script commands** (`yarn dev`, tests, …), launched from a cell's directory
+  picker, run in their own ephemeral PTY over a separate WebSocket (`/ws/run`);
+  they are not Claude sessions. See [Scripts (Run menu)](#scripts-run-menu).
 - The Vite dev server proxies `/ws` (covers `/ws/run`), `/ws/pubsub`, and `/api` to
   the backend; in production the backend serves the built client from `dist/`.
 
@@ -179,15 +179,18 @@ In dev, open the Vite URL; its proxy forwards `/ws`, `/ws/pubsub`, and `/api` to
 
 ## Scripts (Run menu)
 
-The grid's toolbar has a **▶ Run** menu that launches project scripts (a dev
-server, tests, a build, …) in a spare terminal cell — so a whole workflow lives in
-one window alongside the Claude sessions.
+An empty grid cell's launcher (the directory picker) offers a **run a script** row
+that launches project scripts (a dev server, tests, a build, …) **in that cell, in
+the directory the cell is pointed at** — so a whole workflow lives in one window
+alongside the Claude sessions. Scripts are **per-directory**: the cell reads the
+`script.json` of whatever directory you select, so different cells can offer
+different projects' scripts.
 
-The menu is populated from a **`script.json`** at the workspace root
-(`CLAUDE_CWD`). It's optional; without it the menu just says so.
+The list is populated from a **`script.json`** at the chosen directory's root. It's
+optional; a directory without one simply shows no scripts.
 
 ```jsonc
-// <CLAUDE_CWD>/script.json
+// <dir>/script.json
 {
   "scripts": [
     { "label": "Dev server", "command": "yarn dev" },
@@ -201,16 +204,16 @@ The menu is populated from a **`script.json`** at the workspace root
 
 | Field     | Required | Meaning |
 | --------- | -------- | ------- |
-| `label`   | yes      | What the menu shows. |
+| `label`   | yes      | What the launcher shows. |
 | `command` | yes      | Shell command, run via the login shell (`$SHELL -lc "<command>"`). |
-| `cwd`     | no       | Working dir, relative to `script.json` or absolute. Defaults to the workspace root. |
+| `cwd`     | no       | Working dir, relative to `script.json` or absolute. Defaults to the cell's directory. |
 
 A command terminal is **not** a Claude session: it has no session id, no hooks, no
 transcript, and **isn't persisted** — it's ephemeral, so a page reload drops it and
 closing the cell (or reloading) kills the process. When the command exits, the cell
-offers a **↻ re-run**. The browser only ever sends the script's **index**; the
-server re-reads `script.json` and resolves the command, so the file is the
-allowlist of what can run.
+offers a **↻ re-run**. The browser only ever sends the script's **index** + its
+directory; the server reads that directory's `script.json` and resolves the
+command, so the file is the allowlist of what can run.
 
 ---
 
@@ -252,12 +255,16 @@ newest first, including freshly-created sessions that aren't yet written to disk
 
 ### HTTP: `GET /api/scripts`
 
-The Run-menu entries from `<CLAUDE_CWD>/script.json` (see
-[Scripts (Run menu)](#scripts-run-menu)). Each entry carries its `index` (the
+The runnable entries from `<cwd>/script.json` for a cell's chosen directory
+(`?cwd=<dir>`, falling back to `CLAUDE_CWD`); see
+[Scripts (Run menu)](#scripts-run-menu). The resolved `cwd` is echoed back (the
+server may fall back from a bad path), and each entry carries its `index` (the
 position the client sends back to `/ws/run`).
 
 ```jsonc
+// GET /api/scripts?cwd=/Users/me/proj
 {
+  "cwd": "/Users/me/proj",
   "scripts": [
     { "index": 0, "label": "Dev server", "command": "yarn dev" },
     { "index": 1, "label": "Sub server", "command": "yarn serve", "cwd": "packages/server" }
@@ -338,11 +345,11 @@ session, so there's no `session` message, no hooks, and no reattach.
 
 **Connect**
 
-- `ws://host/ws/run?index=<n>` — run the script at position `<n>` in the
-  workspace's `script.json`. The server re-reads the file and spawns
-  `$SHELL -lc "<command>"` in the script's `cwd`. An out-of-range index (or a
-  missing/invalid `script.json`) yields `{ "type": "error", "message": string }`
-  and the socket closes.
+- `ws://host/ws/run?index=<n>&cwd=<dir>` — run the script at position `<n>` in
+  `<dir>/script.json` (cwd falls back to `CLAUDE_CWD`). The server reads that
+  file and spawns `$SHELL -lc "<command>"` in the script's `cwd`. An out-of-range
+  index (or a missing/invalid `script.json`) yields
+  `{ "type": "error", "message": string }` and the socket closes.
 
 The **output / input / resize / exit** frames are identical to `/ws`. There is no
 `session` frame.
@@ -501,8 +508,9 @@ src/
     Sidebar.vue       Session list; working dot + waiting bold; pub/sub driven
     Sidebar.spec.ts   Vitest component tests
     Terminal.vue      xterm.js terminal; /ws (or /ws/run) connection, reconnect
-    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal, ▶ Run menu)
-    TerminalGrid.vue  Grid of cells; auto-sizes by occupied count; runScript()
+    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal)
+    TerminalCell.vue  A cell: Claude launcher (dir picker + resume + run-a-script)
+    TerminalGrid.vue  Grid of cells; auto-sizes by occupied count
     CommandCell.vue   A grid cell that runs a script.json command (ephemeral)
   composables/
     usePubSub.ts      socket.io-client pub/sub composable (subscribe/unsubscribe)

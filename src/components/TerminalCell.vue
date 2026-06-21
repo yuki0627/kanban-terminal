@@ -20,7 +20,11 @@ const props = defineProps<{
   presets: CwdPreset[];
   home: string | null;
 }>();
-const emit = defineEmits<{ (e: "toggle-expand" | "close"): void; (e: "session" | "cwd", value: string): void }>();
+const emit = defineEmits<{
+  (e: "toggle-expand" | "close"): void;
+  (e: "session" | "cwd", value: string): void;
+  (e: "run", value: { index: number; label: string; cwd: string | null }): void;
+}>();
 
 // A cell with a persisted session relaunches (resumes) on mount; otherwise it
 // starts empty and lazy-launches when the user picks a dir and clicks Start.
@@ -86,7 +90,10 @@ onMounted(() => {
     if (isActivityMsg(d) && d.id === sessionId.value) applyActivity(d);
   });
   if (sessionId.value) loadInitial(sessionId.value);
-  else loadResumable();
+  else {
+    loadResumable();
+    loadScripts();
+  }
 });
 onUnmounted(() => {
   unsubscribe?.();
@@ -107,6 +114,7 @@ function launch() {
 function selectPreset(p: CwdPreset) {
   dirInput.value = p.path;
   loadResumable();
+  loadScripts();
 }
 
 // Existing sessions for the dir in the form, so an empty cell can resume one
@@ -147,10 +155,55 @@ async function loadResumable() {
   }
 }
 
-// Refresh the resume list when the target dir changes (debounced).
+// The runnable scripts (script.json) for the dir in the form, so an empty cell can
+// run one in that directory instead of starting a Claude session.
+interface RunnableScript {
+  index: number;
+  label: string;
+  command: string;
+  cwd?: string;
+}
+const scripts = ref<RunnableScript[]>([]);
+// The resolved cwd the listed scripts belong to (the server may resolve/fallback the
+// requested dir). runScript() uses THIS so the command runs in the dir the list was
+// fetched for.
+const scriptsCwd = ref<string | null>(null);
+let scriptsReq = 0; // request token: drop out-of-order responses
+
+async function loadScripts() {
+  const dir = dirInput.value.trim() || props.defaultCwd;
+  const reqId = ++scriptsReq;
+  if (launched.value || !dir) {
+    scripts.value = [];
+    scriptsCwd.value = null;
+    return;
+  }
+  try {
+    const res = await fetch(`/api/scripts?cwd=${encodeURIComponent(dir)}`);
+    if (reqId !== scriptsReq) return;
+    const data = res.ok ? await res.json() : { scripts: [], cwd: dir };
+    if (reqId !== scriptsReq) return;
+    scripts.value = Array.isArray(data.scripts) ? data.scripts : [];
+    scriptsCwd.value = data.cwd ?? dir;
+  } catch {
+    if (reqId === scriptsReq) {
+      scripts.value = [];
+      scriptsCwd.value = null;
+    }
+  }
+}
+
+function runScript(s: RunnableScript) {
+  emit("run", { index: s.index, label: s.label, cwd: scriptsCwd.value ?? (dirInput.value.trim() || props.defaultCwd) });
+}
+
+// Refresh the resume list and the runnable scripts when the target dir changes.
 watch([dirInput, () => props.defaultCwd], () => {
   if (resumableTimer) clearTimeout(resumableTimer);
-  resumableTimer = setTimeout(loadResumable, 300);
+  resumableTimer = setTimeout(() => {
+    loadResumable();
+    loadScripts();
+  }, 300);
 });
 
 function resume(s: ResumableSession) {
@@ -207,6 +260,7 @@ function close() {
   dirInput.value = props.defaultCwd ?? "";
   emit("close");
   loadResumable();
+  loadScripts();
 }
 
 // Adopt the server-assigned id (esp. for new sessions), bubble it up for
@@ -275,6 +329,12 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
         <input v-model="dirInput" class="cell-dir-input" type="text" placeholder="/path/to/project" spellcheck="false" @keydown.enter="launch" />
       </label>
       <button class="cell-start" @click="launch">＋ New terminal</button>
+      <div v-if="scripts.length" class="cell-scripts">
+        <span class="cell-launch-caption">or run a script</span>
+        <div class="cell-script-list">
+          <button v-for="s in scripts" :key="s.index" class="cell-script-item" :title="s.command" @click="runScript(s)">▶ {{ s.label }}</button>
+        </div>
+      </div>
       <div v-if="resumable.length" class="cell-resume">
         <span class="cell-launch-caption">or resume here</span>
         <div class="cell-resume-list">
@@ -483,6 +543,37 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 }
 .cell-start:hover {
   background: #2a3b66;
+  color: #fff;
+}
+
+.cell-scripts {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 360px;
+}
+.cell-script-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+.cell-script-item {
+  border: 1px solid #2a4e3a;
+  background: #16271d;
+  color: #b6e3c7;
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 14px;
+}
+.cell-script-item:hover {
+  background: #1f3a2a;
+  border-color: #3fae6b;
   color: #fff;
 }
 
