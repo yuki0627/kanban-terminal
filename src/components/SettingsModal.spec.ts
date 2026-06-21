@@ -89,4 +89,23 @@ describe("SettingsModal", () => {
     await clickBtn(w, (t) => t.includes("Add"));
     expect(presets).toHaveLength(1); // edits are on a local copy
   });
+
+  it("theme picker honors the radiogroup keyboard contract (arrows + roving tabindex)", async () => {
+    const w = mountModal();
+    const cards = () => w.findAll(".theme-card");
+    const n = cards().length;
+    expect(n).toBeGreaterThanOrEqual(2);
+    const checked = () => cards().findIndex((c) => c.attributes("aria-checked") === "true");
+
+    const start = checked();
+    // roving tabindex: only the checked radio is tabbable
+    expect(cards()[start].attributes("tabindex")).toBe("0");
+    expect(cards()[(start + 1) % n].attributes("tabindex")).toBe("-1");
+
+    await cards()[start].trigger("keydown", { key: "ArrowRight" });
+    expect(checked()).toBe((start + 1) % n); // advances, wrapping at the end
+
+    await cards()[checked()].trigger("keydown", { key: "ArrowLeft" });
+    expect(checked()).toBe(start); // back to where we started
+  });
 });

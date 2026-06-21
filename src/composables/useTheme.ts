@@ -91,8 +91,16 @@ function isThemeId(value: string | null): value is ThemeId {
   return value !== null && THEMES.some((t) => t.id === value);
 }
 
+// Storage access can throw (private mode / sandboxed contexts with storage
+// blocked), so persistence is best-effort: a failure falls back to the default
+// rather than crashing app startup.
 function loadThemeId(): ThemeId {
-  return isThemeId(localStorage.getItem(STORAGE_KEY)) ? (localStorage.getItem(STORAGE_KEY) as ThemeId) : DEFAULT_THEME;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return isThemeId(stored) ? stored : DEFAULT_THEME;
+  } catch {
+    return DEFAULT_THEME;
+  }
 }
 
 const themeId = ref<ThemeId>(loadThemeId());
@@ -116,7 +124,11 @@ export function initTheme() {
 export function useTheme() {
   function setTheme(id: ThemeId) {
     themeId.value = id;
-    localStorage.setItem(STORAGE_KEY, id);
+    try {
+      localStorage.setItem(STORAGE_KEY, id);
+    } catch {
+      // storage blocked: the theme still applies for this session, just isn't persisted
+    }
     applyTheme(id);
   }
   return { themeId, themes: THEMES, setTheme };

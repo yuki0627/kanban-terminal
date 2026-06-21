@@ -9,6 +9,20 @@ const emit = defineEmits<{ (e: "save", presets: CwdPreset[]): void; (e: "close")
 // Theme is applied immediately on click (independent of the Save button, which
 // only commits the directory presets).
 const { themeId, themes, setTheme } = useTheme();
+const themesEl = ref<HTMLElement>();
+
+// ARIA radiogroup keyboard contract: arrows move selection (and focus) within
+// the group, wrapping at the ends; only the checked radio is tabbable (roving
+// tabindex), so Tab enters/leaves the group as one stop.
+function onThemeKey(e: KeyboardEvent, index: number) {
+  const forward = e.key === "ArrowRight" || e.key === "ArrowDown";
+  const backward = e.key === "ArrowLeft" || e.key === "ArrowUp";
+  if (!forward && !backward) return;
+  e.preventDefault();
+  const next = (index + (forward ? 1 : themes.length - 1)) % themes.length;
+  setTheme(themes[next].id);
+  themesEl.value?.querySelectorAll<HTMLElement>(".theme-card")[next]?.focus();
+}
 
 // Edit a local copy; commit on Save.
 const rows = ref<CwdPreset[]>(props.presets.map((p) => ({ ...p })));
@@ -76,17 +90,19 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       </div>
 
       <h3 class="section-title">Theme</h3>
-      <div class="themes" role="radiogroup" aria-label="Theme">
+      <div ref="themesEl" class="themes" role="radiogroup" aria-label="Theme">
         <button
-          v-for="t in themes"
+          v-for="(t, i) in themes"
           :key="t.id"
           type="button"
           class="theme-card"
           :class="{ active: themeId === t.id }"
           role="radio"
           :aria-checked="themeId === t.id"
+          :tabindex="themeId === t.id ? 0 : -1"
           :title="t.label"
           @click="setTheme(t.id)"
+          @keydown="onThemeKey($event, i)"
         >
           <span class="swatch" :style="{ background: t.swatch.base }">
             <span class="swatch-dot" :style="{ background: t.swatch.panel }" />
