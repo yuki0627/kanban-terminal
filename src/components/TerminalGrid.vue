@@ -5,12 +5,13 @@ import { MAX_CELLS, dims, trackStyle, type Layout } from "./gridLayout";
 import type { CwdPreset } from "./presets";
 
 // Zooming interface: the grid is the base view; expanding a cell switches to a
-// filmstrip layout — the zoomed cell fills the top, the other cells line up in a
+// filmstrip — the zoomed cell fills the top, the others line up in a
 // horizontally-scrolling strip below (click any cell's ⤢ to swap which is zoomed).
-// Cells stay MOUNTED across the switch (moved with <Teleport>, not re-created), so
-// their terminals keep running instead of reconnecting. The layout (cell
-// arrangement) is chosen in the toolbar. `defaultCwd` prefills the launch form;
-// `presets` are the quick-pick dirs; `home` anchors the cell header path on ~.
+// Only the ZOOMED cell is moved (with <Teleport>) up to the overlay; every other
+// cell stays put in the grid, which is just restyled into the strip. Nothing else
+// is relocated or re-created, so terminals keep running and headers never flicker.
+// `defaultCwd` prefills the launch form; `presets` are the quick-pick dirs; `home`
+// anchors the cell header path on ~.
 const props = defineProps<{ layout: Layout; defaultCwd: string | null; presets: CwdPreset[]; home: string | null }>();
 
 const cellCount = computed(() => dims(props.layout).cellCount);
@@ -97,19 +98,8 @@ watch(cellCount, () => {
 });
 
 function toggleExpand(uid: number) {
-  const next = expandedUid.value === uid ? null : uid;
-  expandedUid.value = next;
-  // Restoring → pack the grid so the running terminals are top-left and easy to
-  // find. We compact on RESTORE (grid mode), not on zoom: reordering cells while
-  // they're teleported into the filmstrip is unreliable, so the strip is sorted
-  // purely with CSS `order` (stripOrder) instead — no DOM move.
-  if (next === null) compact();
+  expandedUid.value = expandedUid.value === uid ? null : uid;
 }
-
-// While zoomed, push empty cells to the end of the filmstrip strip so the open
-// terminals line up on the left. Pure CSS order — never reorders the DOM (which
-// would fight the <Teleport>).
-const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.value && slot.session === null ? { order: 1 } : undefined);
 
 function setSession(uid: number, id: string | null) {
   const s = slotByUid(uid);
@@ -135,27 +125,28 @@ function onClose(uid: number) {
   compact();
 }
 
-// The grid (non-zoomed) always uses full equal tracks; the zoom layout is handled
-// by the filmstrip scaffold below, not by collapsing grid tracks.
+// The grid (non-zoomed) always uses full equal tracks; zoom restyles the grid into
+// the bottom strip via CSS, so no track collapsing is needed.
 const gridStyle = computed(() => trackStyle(props.layout, null));
 
-// Teleport targets for the filmstrip. They must be in the document before a cell
-// relocates, so hold off until mounted (covers a page reload that restores a zoom).
+// The zoomed cell is teleported up here; the target must exist before it moves, so
+// hold off until mounted (covers a page reload that restores a zoom).
 const zoomMain = ref<HTMLElement | null>(null);
-const zoomStrip = ref<HTMLElement | null>(null);
 const mounted = ref(false);
 onMounted(() => (mounted.value = true));
 
 const zoomed = computed(() => expandedUid.value !== null && mounted.value);
-const cellTarget = (slot: Slot) => (expandedUid.value === slot.uid ? zoomMain.value : zoomStrip.value);
+
+// While zoomed, push empty cells to the end of the strip so the open terminals line
+// up on the left. Pure CSS order — never reorders the DOM.
+const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.value && slot.session === null ? { order: 1 } : undefined);
 </script>
 
 <template>
   <div class="stage" :class="{ zoomed }">
     <div ref="zoomMain" class="zoom-main" />
-    <div ref="zoomStrip" class="zoom-strip" />
     <div class="grid" :style="gridStyle">
-      <Teleport v-for="slot in visibleSlots" :key="slot.uid" :to="cellTarget(slot)" :disabled="!zoomed">
+      <Teleport v-for="slot in visibleSlots" :key="slot.uid" :to="zoomMain" :disabled="!(zoomed && slot.uid === expandedUid)">
         <TerminalCell
           :style="stripOrder(slot)"
           :expanded="slot.uid === expandedUid"
@@ -194,16 +185,11 @@ const cellTarget = (slot: Slot) => (expandedUid.value === slot.uid ? zoomMain.va
 }
 
 /* Inert until a cell is zoomed. */
-.zoom-main,
-.zoom-strip {
+.zoom-main {
   display: none;
 }
 
-.stage.zoomed .grid {
-  display: none;
-}
-
-/* Filmstrip: the zoomed cell fills the top. */
+/* Filmstrip: the zoomed cell (teleported here) fills the top. */
 .stage.zoomed .zoom-main {
   display: flex;
   flex: 1;
@@ -217,17 +203,16 @@ const cellTarget = (slot: Slot) => (expandedUid.value === slot.uid ? zoomMain.va
   min-height: 0;
 }
 
-/* The other cells line up below and scroll horizontally when they overflow. */
-.stage.zoomed .zoom-strip {
+/* The grid itself becomes the bottom strip: the remaining cells in a single row
+   that scrolls horizontally when they overflow. */
+.stage.zoomed .grid {
+  flex: 0 0 150px;
   display: flex;
-  flex: 0 0 auto;
   gap: 6px;
-  height: 150px;
-  padding: 6px;
   overflow-x: auto;
   overflow-y: hidden;
 }
-.zoom-strip > * {
+.stage.zoomed .grid > * {
   flex: 0 0 260px;
   height: 100%;
   min-width: 0;
