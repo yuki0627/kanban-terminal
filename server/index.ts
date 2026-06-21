@@ -16,6 +16,7 @@ import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes } from "./config-routes.js";
+import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
 import { isRecord, parseJsonl, userPromptText, latestUserPromptFromJsonl } from "./transcript.js";
 import { mountOpenDirRoute } from "./open-dir.js";
@@ -773,6 +774,13 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
 // modal's directory presets. The single view never calls it.
 mountConfigRoutes(app, CLAUDE_CWD);
 
+// GRID-ONLY (dev_tool): the workspace's `script.json` entries the grid's Run menu
+// offers. The browser shows these and sends back only an INDEX (see /ws/run), so
+// the file is the allowlist of what can run.
+app.get("/api/scripts", (_req, res) => {
+  res.json({ scripts: loadScripts(CLAUDE_CWD).map((s, index) => ({ index, label: s.label, command: s.command, cwd: s.cwd })) });
+});
+
 // GRID-ONLY (dev_tool): POST /api/open-dir reveals a cell's working directory in the
 // OS file manager (a browser tab can't, but this local server can).
 mountOpenDirRoute(app, { isAllowedOrigin });
@@ -898,17 +906,24 @@ initCollectionsBackend({ workspace: CLAUDE_CWD });
 // HTTP server with socket.io (the pub/sub at /ws/pubsub) without the two
 // libraries fighting over the "upgrade" event.
 const wss = new WebSocketServer({ noServer: true });
+// Command terminals (the grid's Run menu) get their own WS so the plain-command
+// PTY relay stays clear of the session/hook/transcript machinery on /ws.
+const runWss = new WebSocketServer({ noServer: true });
+function wssForPath(pathname: string): WebSocketServer | null {
+  if (pathname === "/ws") return wss;
+  if (pathname === "/ws/run") return runWss;
+  return null; // e.g. /ws/pubsub — left to socket.io's own upgrade handler
+}
 server.on("upgrade", (req, socket, head) => {
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
-  if (pathname === "/ws") {
-    if (!isAllowedOrigin(req.headers.origin)) {
-      console.warn(`[ws] rejected cross-origin upgrade from ${req.headers.origin}`);
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  const target = wssForPath(pathname);
+  if (!target) return;
+  if (!isAllowedOrigin(req.headers.origin)) {
+    console.warn(`[ws] rejected cross-origin upgrade from ${req.headers.origin}`);
+    socket.destroy();
+    return;
   }
-  // Other paths (e.g. /ws/pubsub) are left to socket.io's own upgrade handler.
+  target.handleUpgrade(req, socket, head, (ws) => target.emit("connection", ws, req));
 });
 
 // Reattach a live background PTY to a new socket: drop any stale socket, swap in
@@ -1050,6 +1065,58 @@ function handleClientFrame(entry: PtyEntry, ws: WebSocket, raw: RawData, session
   }
 }
 
+// Run an arbitrary shell command in a PTY and relay its I/O to the browser. Unlike
+// spawnClaudePty this is NOT a Claude session — no id, no hooks, no transcript, no
+// reap/grace. It's an ephemeral grid terminal (the Run menu); the caller kills it
+// when the viewer's socket closes.
+function spawnCommandPty(command: string, cwd: string, ws: WebSocket): IPty {
+  const isWindows = process.platform === "win32";
+  const shell = isWindows ? "powershell.exe" : process.env.SHELL || "/bin/bash";
+  const args = isWindows ? ["-NoLogo", "-Command", command] : ["-lc", command];
+  const term = pty.spawn(shell, args, { name: "xterm-256color", cols: 120, rows: 30, cwd, env: process.env });
+  console.log(`[pty] spawned command (pid=${term.pid}) in ${cwd}: ${command}`);
+
+  term.onData((data) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "output", data }));
+  });
+  term.onExit(({ exitCode, signal }) => {
+    console.log(`[pty] command exited code=${exitCode} signal=${signal}`);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
+      ws.close();
+    }
+  });
+  return term;
+}
+
+// browser -> command PTY. Like handleClientFrame but for the session-less command
+// terminal: only input/resize (no terminate/session machinery).
+function handleCommandFrame(term: IPty, raw: RawData) {
+  let msg;
+  try {
+    msg = JSON.parse(raw.toString());
+  } catch {
+    return; // not JSON — never write arbitrary payloads to the PTY
+  }
+  try {
+    if (msg.type === "input" && typeof msg.data === "string") {
+      term.write(msg.data);
+    } else if (
+      msg.type === "resize" &&
+      Number.isInteger(msg.cols) &&
+      Number.isInteger(msg.rows) &&
+      msg.cols >= 2 &&
+      msg.cols <= 500 &&
+      msg.rows >= 1 &&
+      msg.rows <= 200
+    ) {
+      term.resize(msg.cols, msg.rows);
+    }
+  } catch (err) {
+    console.warn(`[ws/run] dropped message: ${messageOf(err)}`);
+  }
+}
+
 // Socket closed: detach it; keep the PTY alive if Claude is mid-turn (reaped on
 // the Stop hook), otherwise reap now.
 function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
@@ -1129,6 +1196,44 @@ wss.on("connection", (ws, req) => {
 
   ws.on("message", (raw) => handleClientFrame(entry, ws, raw, sessionId));
   ws.on("close", () => handleClientClose(entry, ws, sessionId));
+});
+
+// Command terminal (?index=<n>): resolve the script from the workspace's
+// script.json by index (the browser never sends a raw command) and run it in a
+// plain PTY. Ephemeral — when the socket closes, the process is killed.
+runWss.on("connection", (ws, req) => {
+  const indexRaw = new URL(req.url ?? "/", "http://localhost").searchParams.get("index");
+  const index = indexRaw !== null && /^\d+$/.test(indexRaw) ? Number(indexRaw) : NaN;
+  const resolved = resolveScript(CLAUDE_CWD, index);
+  if (!resolved) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: "error", message: "Script not found — check script.json." }));
+      ws.close();
+    }
+    return;
+  }
+
+  let term: IPty;
+  try {
+    term = spawnCommandPty(resolved.command, resolved.cwd, ws);
+  } catch (err) {
+    console.error(`[ws/run] failed to start command: ${messageOf(err)}`);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ type: "error", message: "Failed to start the command." }));
+      ws.close();
+    }
+    return;
+  }
+
+  ws.on("message", (raw) => handleCommandFrame(term, raw));
+  ws.on("close", () => {
+    // Ephemeral: no reattach/grace window — the viewer is gone, so end the process.
+    try {
+      term.kill();
+    } catch {
+      // already exited — nothing to kill
+    }
+  });
 });
 
 // Exit code the launcher (bin/mulmoterminal.js) treats as "port was taken at

@@ -14,9 +14,20 @@ vi.mock("./TerminalCell.vue", () => ({
   },
 }));
 
+// Stub the command cell too: the grid only needs its props/emits, not the PTY relay.
+vi.mock("./CommandCell.vue", () => ({
+  default: {
+    name: "CommandCell",
+    props: ["expanded", "command"],
+    emits: ["toggle-expand", "close"],
+    template: '<div class="stub-command-cell" />',
+  },
+}));
+
 const STORE_KEY = "grid_state_v1";
 const mountGrid = () => mount(TerminalGrid, { props: { defaultCwd: "/work/proj", presets: [], home: "/work" } });
 const cellsOf = (w: ReturnType<typeof mount>) => w.findAllComponents({ name: "TerminalCell" });
+const commandCellsOf = (w: ReturnType<typeof mount>) => w.findAllComponents({ name: "CommandCell" });
 const saved = () => JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
 const lastAddState = (w: ReturnType<typeof mount>) => w.emitted("add-state")?.at(-1)?.[0];
 
@@ -173,5 +184,51 @@ describe("TerminalGrid auto-layout", () => {
     const w = mountGrid();
     await flushPromises();
     expect(cellsOf(w)).toHaveLength(1);
+  });
+});
+
+describe("TerminalGrid run scripts", () => {
+  it("runs a script in a fresh command cell and does not persist it (ephemeral)", async () => {
+    const w = mountGrid();
+    await flushPromises();
+    w.vm.runScript(1, "Dev server");
+    await nextTick();
+    expect(commandCellsOf(w)).toHaveLength(1);
+    expect(commandCellsOf(w)[0].props("command")).toEqual({ index: 1, label: "Dev server" });
+    expect(saved().sessions[0]).toBe(null); // command isn't written to localStorage
+  });
+
+  it("grows the grid: a command cell sits beside a running session", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], cwds: [], expanded: null }));
+    const w = mountGrid();
+    await flushPromises();
+    expect(cellsOf(w)).toHaveLength(1);
+    w.vm.runScript(0, "Build");
+    await nextTick();
+    expect(cellsOf(w)).toHaveLength(1); // the session cell
+    expect(commandCellsOf(w)).toHaveLength(1); // + the command cell
+  });
+
+  it("closes a command cell and shrinks back to a single launch cell", async () => {
+    const w = mountGrid();
+    await flushPromises();
+    w.vm.runScript(0, "Build");
+    await nextTick();
+    expect(commandCellsOf(w)).toHaveLength(1);
+    commandCellsOf(w)[0].vm.$emit("close");
+    await nextTick();
+    expect(commandCellsOf(w)).toHaveLength(0);
+    expect(cellsOf(w)).toHaveLength(1);
+  });
+
+  it("counts command cells toward the 9-cell cap", async () => {
+    const ids = Array.from({ length: 9 }, (_, i) => `${String(i).repeat(8)}-aaaa-aaaa-aaaa-aaaaaaaaaaaa`);
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: ids, cwds: [], expanded: null }));
+    const w = mountGrid();
+    await flushPromises();
+    expect(cellsOf(w)).toHaveLength(9);
+    w.vm.runScript(0, "Build"); // grid full — no-op
+    await nextTick();
+    expect(commandCellsOf(w)).toHaveLength(0);
   });
 });

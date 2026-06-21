@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import TerminalGrid from "./TerminalGrid.vue";
 import SettingsModal from "./SettingsModal.vue";
 import type { CwdPreset } from "./presets";
@@ -11,6 +11,38 @@ const emit = defineEmits<{ (e: "exit"): void }>();
 // TerminalGrid via this ref) adds one launch cell, and add-state drives its button.
 const gridRef = ref<InstanceType<typeof TerminalGrid> | null>(null);
 const addState = ref<{ canAdd: boolean; adding: boolean }>({ canAdd: true, adding: false });
+
+// Run menu: the workspace's script.json entries, launched in a fresh command cell.
+interface ScriptItem {
+  index: number;
+  label: string;
+  command: string;
+  cwd?: string;
+}
+const scripts = ref<ScriptItem[]>([]);
+const showRunMenu = ref(false);
+const runMenuRef = ref<HTMLElement | null>(null);
+
+async function loadScripts() {
+  try {
+    const res = await fetch("/api/scripts");
+    if (!res.ok) return;
+    const data = await res.json();
+    scripts.value = Array.isArray(data.scripts) ? data.scripts : [];
+  } catch {
+    // grid still works; the Run menu is just empty
+  }
+}
+
+function runScript(item: ScriptItem) {
+  gridRef.value?.runScript(item.index, item.label);
+  showRunMenu.value = false;
+}
+
+// Close the dropdown on any click outside it.
+function onDocMouseDown(e: MouseEvent) {
+  if (showRunMenu.value && runMenuRef.value && !runMenuRef.value.contains(e.target as Node)) showRunMenu.value = false;
+}
 
 // Server config: the default workspace dir + the user's directory presets.
 const defaultCwd = ref<string | null>(null);
@@ -32,7 +64,12 @@ async function loadConfig() {
     // grid still works; presets just unavailable
   }
 }
-onMounted(loadConfig);
+onMounted(() => {
+  loadConfig();
+  loadScripts();
+  document.addEventListener("mousedown", onDocMouseDown);
+});
+onUnmounted(() => document.removeEventListener("mousedown", onDocMouseDown));
 
 async function savePresets(next: CwdPreset[]) {
   savingSettings.value = true;
@@ -63,6 +100,23 @@ function closeSettings() {
   <div class="shell">
     <header class="toolbar">
       <span class="toolbar-title">MulmoTerminal</span>
+      <div ref="runMenuRef" class="run-menu">
+        <button
+          class="tb-btn tb-run"
+          :class="{ active: showRunMenu }"
+          :disabled="!addState.canAdd"
+          title="Run a script from script.json"
+          @click="showRunMenu = !showRunMenu"
+        >
+          ▶ Run ▾
+        </button>
+        <ul v-if="showRunMenu" class="run-list">
+          <li v-for="s in scripts" :key="s.index">
+            <button class="run-item" :title="s.command" @click="runScript(s)">{{ s.label }}</button>
+          </li>
+          <li v-if="!scripts.length" class="run-empty">No scripts — add a <code>script.json</code> to the workspace.</li>
+        </ul>
+      </div>
       <button
         class="tb-btn tb-add"
         :class="{ active: addState.adding }"
@@ -107,9 +161,63 @@ function closeSettings() {
   letter-spacing: 0.02em;
 }
 
-.tb-add {
+.run-menu {
+  position: relative;
   margin-left: auto;
 }
+.tb-run:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.tb-run.active {
+  background: #2a3b66;
+  color: #fff;
+  border-color: #4a8cff;
+}
+.run-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: #16213e;
+  border: 1px solid #2a2a4e;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.run-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #c7cdf0;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.run-item:hover {
+  background: #2a3b66;
+  color: #fff;
+}
+.run-empty {
+  padding: 6px 10px;
+  color: #6b7394;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.run-empty code {
+  font-family: ui-monospace, monospace;
+  color: #9aa3c0;
+}
+
 .tb-add:disabled {
   opacity: 0.4;
   cursor: default;

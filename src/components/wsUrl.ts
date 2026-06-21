@@ -20,3 +20,16 @@ export function buildTerminalWsUrl({ host, secure, sessionId, cwd, devTerminal }
   const proto = secure ? "wss:" : "ws:";
   return `${proto}//${host}/ws${suffix}`;
 }
+
+export interface RunWsUrlInput {
+  host: string; // location.host
+  secure: boolean; // location.protocol === "https:"
+  index: number; // position in the workspace's script.json (the server resolves it)
+}
+
+// The command-terminal endpoint (the grid's Run menu). The browser sends only the
+// script INDEX — the server resolves it against script.json, the run allowlist.
+export function buildRunWsUrl({ host, secure, index }: RunWsUrlInput): string {
+  const proto = secure ? "wss:" : "ws:";
+  return `${proto}//${host}/ws/run?index=${encodeURIComponent(index)}`;
+}

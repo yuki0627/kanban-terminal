@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import TerminalCell from "./TerminalCell.vue";
+import CommandCell from "./CommandCell.vue";
 import { MAX_CELLS, trackStyle, layoutForCount } from "./gridLayout";
 import type { CwdPreset } from "./presets";
 
@@ -20,11 +21,19 @@ const emit = defineEmits<{ (e: "add-state", v: { canAdd: boolean; adding: boolea
 // the display order; the visible cells are the first `cellCount`. v-for keys by
 // uid, so reordering the array (compaction) MOVES the cell instances — the running
 // terminals follow their slot instead of reconnecting.
+// A slot holds either a Claude session (`session`/`cwd`) or a Run-menu command
+// (`command`), or is empty. Command terminals are ephemeral — never persisted —
+// so a reload drops them; only `session`/`cwd` are saved.
 interface Slot {
   uid: number;
   session: string | null;
   cwd: string | null;
+  command: { index: number; label: string } | null;
 }
+
+// A slot is occupied when it runs a Claude session OR a command. The auto-sized
+// grid shows exactly the occupied cells (+ one launch cell when adding).
+const isOccupied = (s: Slot) => s.session !== null || s.command !== null;
 
 // Persisted so a page reload restores the open terminals and the zoom state.
 const STORE_KEY = "grid_state_v1";
@@ -51,7 +60,8 @@ function loadState(): { slots: Slot[]; expandedUid: number | null } {
     // no/invalid state — defaults
   }
   // uid === initial index; the order changes via compaction, the uid never does.
-  const built = Array.from({ length: MAX_CELLS }, (_, i) => ({ uid: i, session: sessions[i], cwd: cwds[i] }));
+  // Commands aren't persisted, so a freshly loaded slot never has one.
+  const built = Array.from({ length: MAX_CELLS }, (_, i) => ({ uid: i, session: sessions[i], cwd: cwds[i], command: null }));
   // Pack running terminals to the front: the auto-sized grid shows exactly
   // `running` cells, so an older/interleaved saved state must not leave gaps.
   const slots = [...built.filter((s) => s.session !== null), ...built.filter((s) => s.session === null)];
@@ -62,11 +72,11 @@ const initial = loadState();
 const slots = ref<Slot[]>(initial.slots);
 const expandedUid = ref<number | null>(initial.expandedUid);
 
-const runningCount = computed(() => slots.value.filter((s) => s.session !== null).length);
+const occupiedCount = computed(() => slots.value.filter(isOccupied).length);
 // One launch cell is shown to start the first terminal (empty grid) or when the
-// user clicks "+"; otherwise the grid holds exactly the running terminals.
+// user clicks "+"; otherwise the grid holds exactly the occupied cells.
 const adding = ref(false);
-const cellCount = computed(() => Math.min(MAX_CELLS, runningCount.value + (adding.value || runningCount.value === 0 ? 1 : 0)));
+const cellCount = computed(() => Math.min(MAX_CELLS, occupiedCount.value + (adding.value || occupiedCount.value === 0 ? 1 : 0)));
 const layout = computed(() => layoutForCount(cellCount.value));
 
 const visibleSlots = computed(() => slots.value.slice(0, cellCount.value));
@@ -92,8 +102,8 @@ watch(
 // Pack the running terminals to the front (top-left), empties to the back, keeping
 // relative order. Stable uids mean the live cells move without remounting.
 function compact() {
-  const occupied = slots.value.filter((s) => s.session !== null);
-  const empty = slots.value.filter((s) => s.session === null);
+  const occupied = slots.value.filter(isOccupied);
+  const empty = slots.value.filter((s) => !isOccupied(s));
   slots.value = [...occupied, ...empty];
 }
 
@@ -131,20 +141,32 @@ function onClose(uid: number) {
   if (s) {
     s.session = null;
     s.cwd = null;
+    s.command = null;
   }
   if (expandedUid.value === uid) expandedUid.value = null;
   compact();
 }
 
-// Toolbar "+" toggles a single trailing launch cell. Capped at MAX_CELLS running.
+// Toolbar "+" toggles a single trailing launch cell. Capped at MAX_CELLS.
 function addCell() {
   if (adding.value) adding.value = false;
-  else if (runningCount.value < MAX_CELLS) adding.value = true;
+  else if (occupiedCount.value < MAX_CELLS) adding.value = true;
 }
-defineExpose({ addCell });
+
+// Run a script.json command (the Run menu) in a fresh cell. Occupying a slot grows
+// the auto-sized grid by one; capped at MAX_CELLS. Replaces any pending launch cell.
+function runScript(index: number, label: string) {
+  if (occupiedCount.value >= MAX_CELLS) return;
+  const slot = slots.value.find((s) => !isOccupied(s));
+  if (!slot) return;
+  slot.command = { index, label };
+  adding.value = false;
+  compact();
+}
+defineExpose({ addCell, runScript });
 
 // Tell the toolbar whether "+" can add and whether a launch cell is already open.
-watch([runningCount, adding], () => emit("add-state", { canAdd: runningCount.value < MAX_CELLS, adding: adding.value }), { immediate: true });
+watch([occupiedCount, adding], () => emit("add-state", { canAdd: occupiedCount.value < MAX_CELLS, adding: adding.value }), { immediate: true });
 
 // The grid (non-zoomed) always uses full equal tracks; zoom restyles the grid into
 // the bottom strip via CSS, so no track collapsing is needed.
@@ -156,16 +178,16 @@ const zoomMain = ref<HTMLElement | null>(null);
 const mounted = ref(false);
 onMounted(() => {
   mounted.value = true;
-  // Drop a restored zoom that no longer lands on a running cell (stale state).
+  // Drop a restored zoom that no longer lands on an occupied cell (stale state).
   const s = expandedUid.value === null ? undefined : slotByUid(expandedUid.value);
-  if (expandedUid.value !== null && (!s || s.session === null)) expandedUid.value = null;
+  if (expandedUid.value !== null && (!s || !isOccupied(s))) expandedUid.value = null;
 });
 
 const zoomed = computed(() => expandedUid.value !== null && mounted.value);
 
 // While zoomed, push empty cells to the end of the strip so the open terminals line
 // up on the left. Pure CSS order — never reorders the DOM.
-const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.value && slot.session === null ? { order: 1 } : undefined);
+const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.value && !isOccupied(slot) ? { order: 1 } : undefined);
 </script>
 
 <template>
@@ -173,7 +195,16 @@ const stripOrder = (slot: Slot) => (zoomed.value && slot.uid !== expandedUid.val
     <div ref="zoomMain" class="zoom-main" />
     <div class="grid" :style="gridStyle">
       <Teleport v-for="slot in visibleSlots" :key="slot.uid" :to="zoomMain" :disabled="!(zoomed && slot.uid === expandedUid)">
+        <CommandCell
+          v-if="slot.command"
+          :style="stripOrder(slot)"
+          :expanded="slot.uid === expandedUid"
+          :command="slot.command"
+          @toggle-expand="toggleExpand(slot.uid)"
+          @close="() => onClose(slot.uid)"
+        />
         <TerminalCell
+          v-else
           :style="stripOrder(slot)"
           :expanded="slot.uid === expandedUid"
           :initial-session-id="slot.session"
