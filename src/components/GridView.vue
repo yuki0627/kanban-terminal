@@ -1,18 +1,68 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import TerminalGrid from "./TerminalGrid.vue";
 import SettingsModal from "./SettingsModal.vue";
-import { LAYOUTS, isLayout, type Layout } from "./gridLayout";
+import {
+  initialState,
+  addCell,
+  setSession,
+  setCwd,
+  closeCell,
+  toggleExpand,
+  switchPage,
+  pageCount,
+  pageSlice,
+  runningCount,
+  STATE_KEY,
+  LEGACY_KEY,
+  type GridState,
+} from "./gridTabs";
+import { useSoundEnabled } from "../composables/useSoundEnabled";
+import { playAttentionSound } from "../composables/useAttentionSound";
 import type { CwdPreset } from "./presets";
 import { useAppConfig } from "../composables/useAppConfig";
 
 // The multi-terminal grid view. Toggled with the classic single view from App.vue.
 const emit = defineEmits<{ (e: "exit"): void }>();
 
-// Grid layout (cell arrangement), chosen in the toolbar and persisted.
-const stored = localStorage.getItem("grid_layout");
-const layout = ref<Layout>(isLayout(stored) ? stored : "2x2");
-watch(layout, (v) => localStorage.setItem("grid_layout", v));
+// Attention-sound toggle (shared singleton with the single view's toolbar).
+const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
+
+// One flat list of terminal cells; tabs are just pages (9 each) over it. Closing a
+// cell reflows the list so terminals flow across page boundaries. Only the active
+// page is mounted — other pages' terminals live on as background PTYs and
+// reconnect when their page is shown again.
+const init = initialState(localStorage.getItem(STATE_KEY), localStorage.getItem(LEGACY_KEY));
+const state = ref<GridState>(init.state);
+const persist = () => localStorage.setItem(STATE_KEY, JSON.stringify(state.value));
+// Write the migrated state before dropping the legacy key, so a reload between
+// migration and the first change can't lose the sessions.
+if (init.migrated) {
+  persist();
+  localStorage.removeItem(LEGACY_KEY);
+}
+watch(state, persist, { deep: true });
+
+const pages = computed(() => pageCount(state.value.cells.length));
+const pageCells = computed(() => pageSlice(state.value.cells, state.value.page));
+const pageExpanded = computed(() =>
+  state.value.expanded !== null && pageCells.value.some((c) => c.uid === state.value.expanded) ? state.value.expanded : null,
+);
+// A launch cell is open beyond the sole entry cell (so "+ Terminal" cancels it).
+const launchOpen = computed(() => {
+  const last = state.value.cells[state.value.cells.length - 1];
+  return !!last && last.session === null && state.value.cells.length > 1;
+});
+
+function onAddTerminal() {
+  if (runningCount(state.value.cells) >= 81 && !launchOpen.value) return; // surfaced by the disabled button
+  state.value = addCell(state.value);
+}
+const onSession = (uid: number, id: string) => (state.value = setSession(state.value, uid, id));
+const onCwd = (uid: number, cwd: string) => (state.value = setCwd(state.value, uid, cwd));
+const onClose = (uid: number) => (state.value = closeCell(state.value, uid));
+const onToggleExpand = (uid: number) => (state.value = toggleExpand(state.value, uid));
+const switchTo = (page: number) => (state.value = switchPage(state.value, page));
 
 // Server config: the default workspace dir + the user's directory presets.
 const { defaultCwd, home, presets, saving: savingSettings, error: settingsError, loadConfig, savePresets: persistPresets } = useAppConfig();
@@ -33,15 +83,44 @@ function closeSettings() {
   <div class="shell">
     <header class="toolbar">
       <span class="toolbar-title">MulmoTerminal</span>
-      <span class="layout-picker" role="group" aria-label="Grid layout">
-        <button v-for="l in LAYOUTS" :key="l" :class="['layout-btn', { active: layout === l }]" :aria-pressed="layout === l" @click="layout = l">
-          {{ l }}
-        </button>
-      </span>
+      <button
+        class="tb-btn tb-add"
+        :class="{ active: launchOpen }"
+        :title="launchOpen ? 'Cancel adding a terminal' : 'New terminal (overflows to a new tab when full)'"
+        @click="onAddTerminal"
+      >
+        ＋ Terminal
+      </button>
+      <button
+        class="tb-btn"
+        :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-label="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-pressed="soundEnabled"
+        @click="toggleSound"
+      >
+        {{ soundEnabled ? "🔔" : "🔕" }}
+      </button>
+      <button class="tb-btn" title="Test sound" aria-label="Test sound" @click="playAttentionSound">🔊</button>
       <button class="tb-btn" title="Single view" aria-label="Switch to single view" @click="emit('exit')">▢ Single</button>
       <button class="tb-btn" title="Settings" aria-label="Settings" @click="showSettings = true">⚙</button>
     </header>
-    <TerminalGrid class="main" :layout="layout" :default-cwd="defaultCwd" :presets="presets" :home="home" />
+    <nav v-if="pages > 1" class="tabbar" aria-label="Grid tabs">
+      <button v-for="p in pages" :key="p" :class="['tab', { active: p - 1 === state.page }]" :aria-pressed="p - 1 === state.page" @click="switchTo(p - 1)">
+        {{ p }}
+      </button>
+    </nav>
+    <TerminalGrid
+      class="main"
+      :cells="pageCells"
+      :expanded-uid="pageExpanded"
+      :default-cwd="defaultCwd"
+      :presets="presets"
+      :home="home"
+      @session="onSession"
+      @cwd="onCwd"
+      @close="onClose"
+      @toggle-expand="onToggleExpand"
+    />
     <SettingsModal v-if="showSettings" :presets="presets" :saving="savingSettings" :error="settingsError" @save="savePresets" @close="closeSettings" />
   </div>
 </template>
@@ -73,26 +152,10 @@ function closeSettings() {
   letter-spacing: 0.02em;
 }
 
-.layout-picker {
+.tb-add {
   margin-left: auto;
-  display: flex;
-  gap: 4px;
 }
-.layout-btn {
-  border: 1px solid var(--border);
-  background: var(--bg-base);
-  color: var(--text-muted);
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.layout-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.layout-btn.active {
+.tb-add.active {
   background: var(--bg-hover);
   color: var(--text);
   border-color: var(--accent);
@@ -112,6 +175,37 @@ function closeSettings() {
 .tb-btn:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+.tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  min-width: 28px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.tab.active {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .main {
