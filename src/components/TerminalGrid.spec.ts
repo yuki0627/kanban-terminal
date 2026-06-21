@@ -133,4 +133,53 @@ describe("TerminalGrid", () => {
     expect(cellsOf(w)).toHaveLength(4);
     expect(cellsOf(w).every((c) => c.props("initialSessionId") === null)).toBe(true);
   });
+
+  const A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+  const C = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+  const D = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+  const E = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+
+  it("close fills the gap and keeps each session paired with its cwd (compaction)", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, B, C, D], cwds: ["/a", "/b", "/c", "/d"], expanded: null }));
+    const w = mountGrid("2x2");
+    await flushPromises();
+    cellsOf(w)[1].vm.$emit("close"); // close B (position 1)
+    await nextTick();
+
+    // B's slot is emptied and the rest pack forward, cwds following their session.
+    expect(saved().sessions.slice(0, 4)).toEqual([A, C, D, null]);
+    expect(saved().cwds.slice(0, 4)).toEqual(["/a", "/c", "/d", null]);
+    const cells = cellsOf(w);
+    expect(cells[1].props("initialSessionId")).toBe(C);
+    expect(cells[1].props("initialCwd")).toBe("/c");
+  });
+
+  it("packs running terminals to the top-left on layout shrink, preserving session/cwd pairing", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, C, null, E], cwds: ["/a", null, "/c", null, "/e"], expanded: null }));
+    const w = mountGrid("3x3");
+    await flushPromises();
+    await w.setProps({ layout: "2x2" });
+    await nextTick();
+
+    expect(saved().sessions.slice(0, 3)).toEqual([A, C, E]);
+    expect(saved().cwds.slice(0, 3)).toEqual(["/a", "/c", "/e"]);
+    const cells = cellsOf(w); // 2x2 → 4 visible
+    expect(cells.map((c) => c.props("initialSessionId")).slice(0, 3)).toEqual([A, C, E]);
+    expect(cells[1].props("initialCwd")).toBe("/c");
+  });
+
+  it("collapses the filmstrip strip (full-height zoom) when the zoomed cell is the only running terminal", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, null, null, null], cwds: [], expanded: 0 }));
+    const w = mountGrid("2x2");
+    await flushPromises();
+    expect(w.find(".stage").classes()).toContain("solo");
+  });
+
+  it("keeps the strip when another terminal is running while zoomed", async () => {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: [A, B, null, null], cwds: [], expanded: 0 }));
+    const w = mountGrid("2x2");
+    await flushPromises();
+    expect(w.find(".stage").classes()).not.toContain("solo");
+  });
 });
