@@ -104,6 +104,14 @@ function connect() {
       sawExit = true;
       term.write("\r\n\x1b[33m[detached — this session is open in another window]\x1b[0m\r\n");
       status.value = "disconnected";
+    } else if (msg.type === "error") {
+      // Server-declared terminal failure (e.g. the `claude` CLI isn't installed).
+      // Not transient — reconnecting would just re-trigger the failed spawn, so
+      // stop and surface a stable error instead of looping.
+      sawExit = true;
+      const detail = typeof msg.message === "string" ? msg.message : "failed to start";
+      term.write(`\r\n\x1b[31m[${detail}]\x1b[0m\r\n`);
+      status.value = "disconnected";
     }
   };
 
