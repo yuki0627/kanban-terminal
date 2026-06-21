@@ -120,6 +120,13 @@ describe("parseGridState / migrateLegacy / initialState", () => {
     expect(parseGridState(null)).toBeNull();
     expect(parseGridState("not json{")).toBeNull();
   });
+  it("constrains a malformed persisted page to a valid integer", () => {
+    const cells = Array.from({ length: 18 }, (_, i) => cell(i, U(i))); // 2 pages
+    const s = parseGridState(JSON.stringify({ cells, expanded: null, page: 1.5, nextUid: 18 }));
+    if (!s) throw new Error("expected parsed state");
+    expect(Number.isInteger(s.page)).toBe(true);
+    expect(s.page).toBe(0);
+  });
   it("drops cells with invalid uids and dedupes duplicate uids (keeping the first)", () => {
     const raw = JSON.stringify({
       cells: [

@@ -27,7 +27,7 @@ export const pageCount = (cellCount: number) => Math.max(1, Math.ceil(cellCount 
 export const pageSlice = <T>(cells: T[], page: number) => cells.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 export const runningCount = (cells: Cell[]) => cells.filter((c) => c.session !== null).length;
 
-const clampPage = (s: GridState): GridState => ({ ...s, page: Math.min(Math.max(0, s.page), pageCount(s.cells.length) - 1) });
+const clampPage = (s: GridState): GridState => ({ ...s, page: Math.min(Math.max(0, Math.floor(s.page)), pageCount(s.cells.length) - 1) });
 
 // Always keep at least one cell — the entry launch cell on an otherwise empty grid.
 const ensureEntry = (s: GridState): GridState =>
@@ -102,7 +102,8 @@ export function parseGridState(raw: string | null): GridState | null {
     const maxUid = cells.reduce((m: number, c: Cell) => Math.max(m, c.uid), -1);
     const nextUid = Number.isSafeInteger(parsed.nextUid) && parsed.nextUid > maxUid ? parsed.nextUid : maxUid + 1;
     const expanded = typeof parsed.expanded === "number" && cells.some((c) => c.uid === parsed.expanded && c.session !== null) ? parsed.expanded : null;
-    return clampPage(ensureEntry({ cells, expanded, page: typeof parsed.page === "number" ? parsed.page : 0, nextUid }));
+    const page = Number.isSafeInteger(parsed.page) && parsed.page >= 0 ? parsed.page : 0;
+    return clampPage(ensureEntry({ cells, expanded, page, nextUid }));
   } catch {
     return null;
   }
