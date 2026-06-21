@@ -166,6 +166,9 @@ onMounted(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     }
+    // Reflow after a resize (e.g. restoring a cell from zoom) can leave the
+    // viewport scrolled up; stick to the bottom so the prompt stays in view.
+    term.scrollToBottom();
   });
   resizeObserver.observe(container);
 
@@ -240,6 +243,7 @@ onUnmounted(() => {
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   background: #1a1a2e;
 }
@@ -280,8 +284,15 @@ onUnmounted(() => {
   color: #ef9a9a;
 }
 
+/* min-height:0 is load-bearing: a flex item's default min-height is `auto`
+   (its content's min size), which pins this xterm host to the terminal's full
+   rendered height. In a short grid cell that overflows and is clipped — the
+   bottom input row can't be seen or scrolled to — and FitAddon then reads the
+   un-shrunk height and never reduces the rows. min-height:0 lets it shrink so
+   fit() can size the terminal to the cell. */
 .terminal-container {
   flex: 1;
+  min-height: 0;
   padding: 4px;
 }
 </style>
