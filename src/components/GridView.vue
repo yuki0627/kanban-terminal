@@ -17,10 +17,15 @@ import {
   LEGACY_KEY,
   type GridState,
 } from "./gridTabs";
+import { useSoundEnabled } from "../composables/useSoundEnabled";
+import { playAttentionSound } from "../composables/useAttentionSound";
 import type { CwdPreset } from "./presets";
 
 // The multi-terminal grid view. Toggled with the classic single view from App.vue.
 const emit = defineEmits<{ (e: "exit"): void }>();
+
+// Attention-sound toggle (shared singleton with the single view's toolbar).
+const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
 
 // One flat list of terminal cells; tabs are just pages (9 each) over it. Closing a
 // cell reflows the list so terminals flow across page boundaries. Only the active
@@ -117,6 +122,8 @@ function closeSettings() {
       >
         ＋ Terminal
       </button>
+      <button class="tb-btn" :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'" @click="toggleSound">{{ soundEnabled ? "🔔" : "🔕" }}</button>
+      <button class="tb-btn" title="Test sound" aria-label="Test sound" @click="playAttentionSound">🔊</button>
       <button class="tb-btn" title="Single view" aria-label="Switch to single view" @click="emit('exit')">▢ Single</button>
       <button class="tb-btn" title="Settings" aria-label="Settings" @click="showSettings = true">⚙</button>
     </header>
