@@ -122,7 +122,15 @@ function closeSettings() {
       >
         ＋ Terminal
       </button>
-      <button class="tb-btn" :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'" @click="toggleSound">{{ soundEnabled ? "🔔" : "🔕" }}</button>
+      <button
+        class="tb-btn"
+        :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-label="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-pressed="soundEnabled"
+        @click="toggleSound"
+      >
+        {{ soundEnabled ? "🔔" : "🔕" }}
+      </button>
       <button class="tb-btn" title="Test sound" aria-label="Test sound" @click="playAttentionSound">🔊</button>
       <button class="tb-btn" title="Single view" aria-label="Switch to single view" @click="emit('exit')">▢ Single</button>
       <button class="tb-btn" title="Settings" aria-label="Settings" @click="showSettings = true">⚙</button>

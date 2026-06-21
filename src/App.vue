@@ -211,6 +211,7 @@ function onSession(id: string) {
         :class="{ active: soundEnabled }"
         :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
         :aria-label="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-pressed="soundEnabled"
         @click="toggleSound"
       >
         <span class="material-symbols-outlined">{{ soundEnabled ? "notifications_active" : "notifications_off" }}</span>
