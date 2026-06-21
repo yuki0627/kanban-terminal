@@ -71,6 +71,24 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-dir").text()).toBe("~/ss/my-project");
   });
 
+  it("clicking the header dir asks the server to open that folder", async () => {
+    const urls: string[] = [];
+    const bodies: string[] = [];
+    globalThis.fetch = vi.fn((url: string, init?: { body?: string }) => {
+      urls.push(String(url));
+      if (init?.body) bodies.push(init.body);
+      if (String(url).includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell("11111111-1111-1111-1111-111111111111", { initialCwd: "/home/me/ss/proj" });
+    await flushPromises();
+    await w.find(".cell-dir").trigger("click");
+
+    expect(urls).toContain("/api/open-dir");
+    expect(bodies.some((b) => b.includes("/home/me/ss/proj"))).toBe(true);
+  });
+
   it("shows a non-home path in full", async () => {
     const w = mountCell("55555555-5555-5555-5555-555555555555", { initialCwd: "/var/data/proj" });
     await flushPromises();

@@ -18,6 +18,7 @@ import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes } from "./config-routes.js";
 import { buildClaudeArgs } from "./claude-args.js";
 import { isRecord, parseJsonl, userPromptText, latestUserPromptFromJsonl } from "./transcript.js";
+import { mountOpenDirRoute } from "./open-dir.js";
 import { initCollectionsBackend, mountCollectionRoutes } from "./backends/collections.js";
 import { mountFilesRoutes } from "./backends/files.js";
 import { mountShortcutsRoutes } from "./backends/shortcuts.js";
@@ -770,6 +771,10 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
 // GRID-ONLY (dev_tool): backs the grid launcher's default dir + the settings
 // modal's directory presets. The single view never calls it.
 mountConfigRoutes(app, CLAUDE_CWD);
+
+// GRID-ONLY (dev_tool): POST /api/open-dir reveals a cell's working directory in the
+// OS file manager (a browser tab can't, but this local server can).
+mountOpenDirRoute(app, { isAllowedOrigin });
 
 // GRID-ONLY (dev_tool): initial per-session status + last prompt, so a grid cell
 // can render its header immediately (live updates then arrive via the "sessions"
