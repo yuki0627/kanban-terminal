@@ -11,6 +11,8 @@ import { useSessions, type Filter } from "./composables/useSessions";
 import { useShortcuts } from "./composables/useShortcuts";
 import { useCollectionBrowse, browseGotoIndex, browseGotoDetail, browseClose } from "./composables/useCollectionBrowse";
 import { registerChatOpener } from "./composables/useChatLauncher";
+import { useSoundEnabled } from "./composables/useSoundEnabled";
+import { useAttentionSound, playAttentionSound } from "./composables/useAttentionSound";
 import type { Shortcut } from "./types/shortcuts";
 
 // View mode: the classic single-terminal view (default) or the multi-terminal
@@ -38,6 +40,13 @@ const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
 // the filter. Both layouts render this same shared state.
 const { sessions, loading, error, refresh } = useSessions();
 const filter = ref<Filter>("all");
+
+// Beep when any session needs attention (waiting) — across the single and grid
+// views, including terminals on background grid pages. Listens to the "sessions"
+// activity stream directly (same source as the cell status), independent of the
+// fetched list above.
+const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
+useAttentionSound(soundEnabled);
 
 // Terminal column width (px), set by dragging the splitter between the terminal
 // and the GUI panel; the GUI panel absorbs whatever is left. Persisted across
@@ -196,6 +205,20 @@ function onSession(id: string) {
           <span class="material-symbols-outlined">{{ s.icon || "bookmark" }}</span>
         </button>
       </nav>
+      <button
+        type="button"
+        class="launcher-btn sound-toggle"
+        :class="{ active: soundEnabled }"
+        :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-label="soundEnabled ? 'Attention sound on' : 'Attention sound off'"
+        :aria-pressed="soundEnabled"
+        @click="toggleSound"
+      >
+        <span class="material-symbols-outlined">{{ soundEnabled ? "notifications_active" : "notifications_off" }}</span>
+      </button>
+      <button type="button" class="launcher-btn" title="Test sound" aria-label="Test sound" @click="playAttentionSound">
+        <span class="material-symbols-outlined">volume_up</span>
+      </button>
     </header>
     <div :class="['app', layout === 'horizontal' ? 'app-horizontal' : 'app-vertical']">
       <Sidebar
@@ -309,6 +332,9 @@ function onSession(id: string) {
 .launcher-btn.active {
   background: #2f59c0;
   color: #fff;
+}
+.sound-toggle {
+  margin-left: auto;
 }
 .launcher-btn .material-symbols-outlined {
   font-size: 19px;

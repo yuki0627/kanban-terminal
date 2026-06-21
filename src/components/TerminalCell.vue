@@ -289,9 +289,9 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 </script>
 
 <template>
-  <div class="cell">
+  <div class="cell" :class="statusClass">
     <template v-if="launched">
-      <div class="cell-header">
+      <div class="cell-header" :class="statusClass">
         <span class="cell-dot" :class="statusClass" :title="statusLabel" />
         <button v-if="dirDisplay" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">{{ dirDisplay }}</button>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
@@ -359,6 +359,15 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
   border-radius: 6px;
   overflow: hidden;
 }
+/* Frame the whole cell by status so it's obvious at a glance which terminal is
+   busy (blue) or needs you (amber glow). */
+.cell.is-working {
+  border-color: #4a8cff;
+}
+.cell.is-waiting {
+  border-color: #ffb454;
+  box-shadow: 0 0 0 2px rgba(255, 180, 84, 0.55);
+}
 
 .cell-header {
   flex: 0 0 auto;
@@ -369,6 +378,16 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
   padding: 0 8px;
   background: #16213e;
   border-bottom: 1px solid #2a2a4e;
+}
+/* The header also tints by status (working = blue, waiting = amber). */
+.cell-header.is-working {
+  background: #1e3a6b;
+  border-bottom-color: #4a8cff;
+}
+.cell-header.is-waiting {
+  background: #6b4a16;
+  color: #ffe2b0;
+  border-bottom-color: #ffb454;
 }
 
 /* Status dot: idle / working (pulsing) / waiting (attention). */
