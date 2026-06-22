@@ -419,6 +419,9 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 
 .cell-dir {
   flex: 0 1 auto;
+  /* Floor the width at ~15 chars of the path so the current dir stays readable
+     even on a narrow cell (1ch ≈ one monospace char; the leading … takes one). */
+  min-width: 16ch;
   max-width: 60%;
   border: none;
   background: none;

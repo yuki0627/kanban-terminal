@@ -97,6 +97,9 @@ function rerun() {
 
 .cell-dir {
   flex: 0 1 auto;
+  /* Floor the width at ~15 chars of the path so the current dir stays readable
+     even on a narrow cell (1ch ≈ one monospace char; the leading … takes one). */
+  min-width: 16ch;
   max-width: 45%;
   font-family: ui-monospace, "JetBrains Mono", monospace;
   font-size: 11px;
@@ -106,6 +109,8 @@ function rerun() {
   text-overflow: ellipsis;
   /* Truncate from the FRONT so the tail (the project dir) stays visible. */
   direction: rtl;
+  /* Left-align so a short path hugs the dot instead of floating right (rtl). */
+  text-align: left;
 }
 .cell-dir-path {
   unicode-bidi: plaintext;
