@@ -18,7 +18,7 @@ import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes } from "./config-routes.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
-import { isRecord, parseJsonl, userPromptText, latestUserPromptFromJsonl } from "./transcript.js";
+import { isRecord, parseJsonl, userPromptText, latestMeaningfulUserPromptFromJsonl, isTrivialPrompt } from "./transcript.js";
 import { mountOpenDirRoute } from "./open-dir.js";
 import { mountPickFileRoute } from "./pick-file.js";
 import { initCollectionsBackend, mountCollectionRoutes } from "./backends/collections.js";
@@ -303,8 +303,10 @@ const SESSION_LIST_LIMIT = 50;
 // UserPromptSubmit => Claude started thinking; Stop => it finished.
 const activity = new Map<string, Activity>(); // id -> { working, event, at }
 
-// Latest user prompt per session (from the UserPromptSubmit hook), shown on the
-// grid cell header so you can tell at a glance what each terminal is doing.
+// Latest MEANINGFUL user prompt per session (from the UserPromptSubmit hook), shown
+// on the grid cell header so you can tell at a glance what each terminal is about. A
+// trivial ack ("ok", "merge") doesn't replace it (see the hook handler), so a short
+// follow-up can't hide the task.
 const lastPrompts = new Map<string, string>(); // id -> prompt text
 const LAST_PROMPT_CAP = 200;
 
@@ -505,7 +507,7 @@ function resolveWorkspace(cwd: string | null): string {
 async function latestUserPrompt(cwd: string, id: string): Promise<string | null> {
   try {
     const raw = await fs.readFile(path.join(projectSessionsDir(cwd), `${id}.jsonl`), "utf8");
-    return latestUserPromptFromJsonl(raw);
+    return latestMeaningfulUserPromptFromJsonl(raw);
   } catch {
     return null;
   }
@@ -688,9 +690,13 @@ app.post("/api/hook", async (req, res) => {
     const entry = ptys.get(sessionId);
     const foreground = !!(entry && entry.ws);
     // Capture the prompt BEFORE handleActivityHook so the activity publish it
-    // triggers already carries the new lastPrompt.
+    // triggers already carries the new lastPrompt. Keep the last MEANINGFUL prompt:
+    // a trivial ack ("ok", "merge", "はい") shouldn't replace the task already shown,
+    // so it doesn't obscure what the session is about — but always set if we have
+    // nothing yet (the first prompt, even if short, beats a bare session id).
     if (event === "UserPromptSubmit" && typeof body.prompt === "string" && body.prompt.trim()) {
-      lastPrompts.set(sessionId, body.prompt.trim().slice(0, LAST_PROMPT_CAP));
+      const prompt = body.prompt.trim().slice(0, LAST_PROMPT_CAP);
+      if (!isTrivialPrompt(prompt) || !lastPrompts.has(sessionId)) lastPrompts.set(sessionId, prompt);
     }
     handleActivityHook(sessionId, event, foreground);
     await handleToolHook(sessionId, event, body);

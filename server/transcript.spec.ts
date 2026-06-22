@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { latestUserPromptFromJsonl, userPromptText, parseJsonl } from "./transcript.js";
+import { latestUserPromptFromJsonl, latestMeaningfulUserPromptFromJsonl, isTrivialPrompt, userPromptText, parseJsonl } from "./transcript.js";
 
 const line = (o: unknown) => JSON.stringify(o);
 
@@ -51,6 +51,45 @@ describe("latestUserPromptFromJsonl", () => {
   it("tolerates blank and malformed lines", () => {
     const raw = ["", "not json", line({ type: "user", message: { content: "ok" } }), "{bad"].join("\n");
     expect(latestUserPromptFromJsonl(raw)).toBe("ok");
+  });
+});
+
+describe("isTrivialPrompt", () => {
+  it("treats empty / one-word acks / bare commands as trivial", () => {
+    for (const t of ["", "  ", "ok", "OK", " ok. ", "yes", "はい", "マージ", "merge", "okay", "sure", "続けて", "お願いします", "fix"]) {
+      expect(isTrivialPrompt(t)).toBe(true);
+    }
+  });
+  it("treats a substantial prompt as meaningful (incl. short Japanese)", () => {
+    for (const t of ["Fix the parser bug", "deploy to prod", "バグ直して", "テスト追加", "リファクタして"]) {
+      expect(isTrivialPrompt(t)).toBe(false);
+    }
+  });
+});
+
+describe("latestMeaningfulUserPromptFromJsonl", () => {
+  const user = (content: string) => line({ type: "user", message: { content } });
+
+  it("skips trailing trivial acks and returns the last substantial prompt", () => {
+    const raw = [user("Fix the parser bug"), user("ok"), user("merge")].join("\n");
+    expect(latestMeaningfulUserPromptFromJsonl(raw)).toBe("Fix the parser bug");
+  });
+
+  it("returns the most recent substantial prompt when interleaved with acks", () => {
+    const raw = [user("task A"), user("ok"), user("now add the tests"), user("はい")].join("\n");
+    expect(latestMeaningfulUserPromptFromJsonl(raw)).toBe("now add the tests");
+  });
+
+  it("falls back to the latest prompt when every prompt is trivial", () => {
+    expect(latestMeaningfulUserPromptFromJsonl([user("ok"), user("はい")].join("\n"))).toBe("はい");
+  });
+
+  it("falls back to a last-prompt record when there are no user lines", () => {
+    expect(latestMeaningfulUserPromptFromJsonl(line({ type: "last-prompt", lastPrompt: "from record" }))).toBe("from record");
+  });
+
+  it("returns null for an empty transcript", () => {
+    expect(latestMeaningfulUserPromptFromJsonl("")).toBeNull();
   });
 });
 
