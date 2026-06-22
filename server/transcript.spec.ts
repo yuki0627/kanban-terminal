@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { latestUserPromptFromJsonl, latestMeaningfulUserPromptFromJsonl, isTrivialPrompt, userPromptText, parseJsonl } from "./transcript.js";
+import {
+  latestUserPromptFromJsonl,
+  latestMeaningfulUserPromptFromJsonl,
+  isTrivialPrompt,
+  preferredHeaderPrompt,
+  userPromptText,
+  parseJsonl,
+} from "./transcript.js";
 
 const line = (o: unknown) => JSON.stringify(o);
 
@@ -64,6 +71,22 @@ describe("isTrivialPrompt", () => {
     for (const t of ["Fix the parser bug", "deploy to prod", "バグ直して", "テスト追加", "リファクタして"]) {
       expect(isTrivialPrompt(t)).toBe(false);
     }
+  });
+});
+
+describe("preferredHeaderPrompt", () => {
+  it("uses a meaningful incoming prompt (over null or anything)", () => {
+    expect(preferredHeaderPrompt(null, "Fix the bug")).toBe("Fix the bug");
+    expect(preferredHeaderPrompt("old task", "new task here")).toBe("new task here");
+    expect(preferredHeaderPrompt("ok", "Fix the bug")).toBe("Fix the bug");
+  });
+  it("keeps a meaningful current prompt when the incoming is trivial", () => {
+    expect(preferredHeaderPrompt("Fix the parser bug", "ok")).toBe("Fix the parser bug");
+    expect(preferredHeaderPrompt("Fix the parser bug", "マージ")).toBe("Fix the parser bug");
+  });
+  it("tracks the latest trivial prompt when there's nothing meaningful yet", () => {
+    expect(preferredHeaderPrompt(null, "ok")).toBe("ok"); // first prompt, even if trivial
+    expect(preferredHeaderPrompt("ok", "merge")).toBe("merge"); // trivial replaces trivial
   });
 });
 

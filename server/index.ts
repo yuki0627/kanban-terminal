@@ -18,7 +18,7 @@ import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes } from "./config-routes.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
-import { isRecord, parseJsonl, userPromptText, latestMeaningfulUserPromptFromJsonl, isTrivialPrompt } from "./transcript.js";
+import { isRecord, parseJsonl, userPromptText, latestMeaningfulUserPromptFromJsonl, preferredHeaderPrompt } from "./transcript.js";
 import { mountOpenDirRoute } from "./open-dir.js";
 import { mountPickFileRoute } from "./pick-file.js";
 import { initCollectionsBackend, mountCollectionRoutes } from "./backends/collections.js";
@@ -690,13 +690,12 @@ app.post("/api/hook", async (req, res) => {
     const entry = ptys.get(sessionId);
     const foreground = !!(entry && entry.ws);
     // Capture the prompt BEFORE handleActivityHook so the activity publish it
-    // triggers already carries the new lastPrompt. Keep the last MEANINGFUL prompt:
-    // a trivial ack ("ok", "merge", "はい") shouldn't replace the task already shown,
-    // so it doesn't obscure what the session is about — but always set if we have
-    // nothing yet (the first prompt, even if short, beats a bare session id).
+    // triggers already carries the new lastPrompt. preferredHeaderPrompt keeps the
+    // last MEANINGFUL prompt (a trivial ack like "ok"/"merge" doesn't hide the task)
+    // while still tracking the latest for an all-trivial session.
     if (event === "UserPromptSubmit" && typeof body.prompt === "string" && body.prompt.trim()) {
       const prompt = body.prompt.trim().slice(0, LAST_PROMPT_CAP);
-      if (!isTrivialPrompt(prompt) || !lastPrompts.has(sessionId)) lastPrompts.set(sessionId, prompt);
+      lastPrompts.set(sessionId, preferredHeaderPrompt(lastPrompts.get(sessionId) ?? null, prompt));
     }
     handleActivityHook(sessionId, event, foreground);
     await handleToolHook(sessionId, event, body);

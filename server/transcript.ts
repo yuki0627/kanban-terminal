@@ -117,6 +117,15 @@ export function isTrivialPrompt(text: string): boolean {
   return [...norm].length < TRIVIAL_PROMPT_MIN_LEN;
 }
 
+// The prompt the live cell header should show after a new one is submitted. Prefer
+// the latest MEANINGFUL prompt: a trivial ack replaces nothing or another trivial
+// prompt (so an all-trivial session still tracks the latest), but never overwrites a
+// meaningful one. Mirrors latestMeaningfulUserPromptFromJsonl's fallback.
+export function preferredHeaderPrompt(current: string | null, incoming: string): string {
+  if (!isTrivialPrompt(incoming) || current === null || isTrivialPrompt(current)) return incoming;
+  return current;
+}
+
 // Like latestUserPromptFromJsonl, but skips trivial acks and returns the most recent
 // SUBSTANTIAL prompt, so a resumed session's header shows the task instead of a
 // one-word follow-up. Falls back to the latest prompt (then the record) if every
