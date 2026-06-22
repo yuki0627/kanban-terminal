@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import TerminalGrid from "./TerminalGrid.vue";
 import SettingsModal from "./SettingsModal.vue";
+import RunMenu from "./RunMenu.vue";
 import {
   initialState,
   addCell,
@@ -11,6 +12,7 @@ import {
   toggleExpand,
   switchPage,
   runCommand,
+  runScriptInNewCell,
   pageCount,
   zoomedUid,
   visibleCells,
@@ -66,6 +68,7 @@ const onCwd = (uid: number, cwd: string) => (state.value = setCwd(state.value, u
 const onClose = (uid: number) => (state.value = closeCell(state.value, uid));
 const onToggleExpand = (uid: number) => (state.value = toggleExpand(state.value, uid));
 const onRun = (uid: number, command: { index: number; label: string; cwd: string | null }) => (state.value = runCommand(state.value, uid, command));
+const onRunNew = (command: { index: number; label: string; cwd: string | null }) => (state.value = runScriptInNewCell(state.value, command));
 const switchTo = (page: number) => (state.value = switchPage(state.value, page));
 
 // Server config: the default workspace dir + the user's directory presets.
@@ -95,6 +98,7 @@ function closeSettings() {
       >
         ＋ Terminal
       </button>
+      <RunMenu :cwd="defaultCwd" @run="onRunNew" />
       <button
         class="tb-btn"
         :title="soundEnabled ? 'Attention sound on' : 'Attention sound off'"

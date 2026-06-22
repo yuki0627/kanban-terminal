@@ -69,6 +69,20 @@ export function runCommand(state: GridState, uid: number, command: Cell["command
   return { ...state, cells: state.cells.map((c) => (c.uid === uid ? { ...c, command } : c)) };
 }
 
+// The toolbar Run menu ran a script with no target cell: reuse a trailing empty
+// launcher if there is one, otherwise append a fresh command cell (respecting the
+// cap), and jump to its page so it's visible.
+export function runScriptInNewCell(state: GridState, command: NonNullable<Cell["command"]>): GridState {
+  const last = state.cells[state.cells.length - 1];
+  if (isLaunchCell(last)) {
+    const cells = state.cells.map((c, i) => (i === state.cells.length - 1 ? { ...c, command } : c));
+    return { ...state, cells, page: pageCount(cells.length) - 1 };
+  }
+  if (runningCount(state.cells) >= MAX_TERMINALS) return state;
+  const cells = [...state.cells, { uid: state.nextUid, session: null, cwd: null, command }];
+  return { ...state, cells, nextUid: state.nextUid + 1, page: pageCount(cells.length) - 1 };
+}
+
 // Close a cell: drop it and reflow the list (later cells pack forward across
 // pages), un-zoom if it was zoomed, keep an entry cell, and clamp the page.
 export function closeCell(state: GridState, uid: number): GridState {

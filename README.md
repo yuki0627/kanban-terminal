@@ -186,6 +186,12 @@ alongside the Claude sessions. Scripts are **per-directory**: the cell reads the
 `script.json` of whatever directory you select, so different cells can offer
 different projects' scripts.
 
+The grid toolbar also has a global **▶ Run ▾** dropdown. It lists the default
+workspace's (`CLAUDE_CWD`) scripts and launches the picked one in a **spare cell**
+(reusing an open launcher, else a new one) — so you can start a script without
+first opening an empty cell. For a different directory's scripts, use the cell
+launcher above.
+
 The list is populated from a **`script.json`** at the chosen directory's root. It's
 optional; a directory without one simply shows no scripts.
 
@@ -508,7 +514,8 @@ src/
     Sidebar.vue       Session list; working dot + waiting bold; pub/sub driven
     Sidebar.spec.ts   Vitest component tests
     Terminal.vue      xterm.js terminal; /ws (or /ws/run) connection, reconnect
-    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal)
+    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal, ▶ Run menu)
+    RunMenu.vue       Toolbar dropdown: run a script.json command in a spare cell
     TerminalCell.vue  A cell: Claude launcher (dir picker + resume + run-a-script)
     TerminalGrid.vue  Grid of cells; auto-sizes by count; zoom lines up every tab
     CommandCell.vue   A grid cell that runs a script.json command (ephemeral)
