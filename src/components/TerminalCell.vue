@@ -245,6 +245,50 @@ function onServerCwd(c: string) {
   emit("cwd", c);
 }
 
+// "Open on GitHub": when this cell's dir is a GitHub repo, the server returns its
+// repository URL (null otherwise) and the header shows a popover linking to the
+// repo top page / Issues / Pull requests. Refreshed whenever the effective cwd
+// changes (launch, server-confirmed cwd, restore).
+const githubUrl = ref<string | null>(null);
+const ghMenuOpen = ref(false);
+const ghWrap = useTemplateRef<HTMLElement>("ghWrap");
+
+async function refreshGithubUrl() {
+  ghMenuOpen.value = false;
+  if (!cwd.value) {
+    githubUrl.value = null;
+    return;
+  }
+  try {
+    const res = await fetch("/api/git-remote", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: cwd.value }),
+    });
+    const data = res.ok ? await res.json() : null;
+    githubUrl.value = data && typeof data.githubUrl === "string" ? data.githubUrl : null;
+  } catch {
+    githubUrl.value = null; // best-effort — the link just won't appear
+  }
+}
+watch(cwd, refreshGithubUrl, { immediate: true });
+
+// Repository top page (""), Issues, or Pull requests — opened in a new tab.
+function openGithub(suffix: string) {
+  if (!githubUrl.value) return;
+  window.open(githubUrl.value + suffix, "_blank", "noopener,noreferrer");
+  ghMenuOpen.value = false;
+}
+
+function onGhOutside(e: MouseEvent) {
+  if (ghWrap.value && !ghWrap.value.contains(e.target as Node)) ghMenuOpen.value = false;
+}
+watch(ghMenuOpen, (open) => {
+  if (open) document.addEventListener("mousedown", onGhOutside);
+  else document.removeEventListener("mousedown", onGhOutside);
+});
+onUnmounted(() => document.removeEventListener("mousedown", onGhOutside));
+
 function close() {
   // Ask the server to reap this session immediately (don't hold it through the
   // disconnect grace window), then tear the cell down.
@@ -296,6 +340,29 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
         <button v-if="dirDisplay" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">
           <span class="cell-dir-path">{{ dirDisplay }}</span>
         </button>
+        <span v-if="githubUrl" ref="ghWrap" class="cell-gh-wrap">
+          <button
+            type="button"
+            class="cell-gh"
+            title="Open on GitHub"
+            aria-label="Open on GitHub"
+            aria-haspopup="true"
+            :aria-expanded="ghMenuOpen"
+            @click="ghMenuOpen = !ghMenuOpen"
+          >
+            <svg class="cell-gh-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.6 7.6 0 0 1 8 4.6c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+          </button>
+          <div v-if="ghMenuOpen" class="cell-gh-menu" @keydown.escape="ghMenuOpen = false">
+            <button type="button" class="cell-gh-item" @click="openGithub('')">Repository</button>
+            <button type="button" class="cell-gh-item" @click="openGithub('/issues')">Issues</button>
+            <button type="button" class="cell-gh-item" @click="openGithub('/pulls')">Pull requests</button>
+          </div>
+        </span>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
         <span class="cell-actions">
           <button
@@ -445,6 +512,63 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 .cell-dir:hover {
   color: var(--text-muted);
   text-decoration: underline;
+}
+.cell-gh-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+.cell-gh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.cell-gh:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cell-gh-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.cell-gh-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin-top: 4px;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.cell-gh-item {
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cell-gh-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 .cell-prompt {
   flex: 1 1 auto;

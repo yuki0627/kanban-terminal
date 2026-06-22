@@ -20,6 +20,7 @@ import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
 import { isRecord, parseJsonl, userPromptText, latestUserPromptFromJsonl } from "./transcript.js";
 import { mountOpenDirRoute } from "./open-dir.js";
+import { mountGitRemoteRoute } from "./gitRemote.js";
 import { mountPickFileRoute } from "./pick-file.js";
 import { initCollectionsBackend, mountCollectionRoutes } from "./backends/collections.js";
 import { mountFilesRoutes } from "./backends/files.js";
@@ -787,6 +788,10 @@ app.get("/api/scripts", (req, res) => {
 // GRID-ONLY (dev_tool): POST /api/open-dir reveals a cell's working directory in the
 // OS file manager (a browser tab can't, but this local server can).
 mountOpenDirRoute(app, { isAllowedOrigin });
+
+// GRID-ONLY (dev_tool): POST /api/git-remote reports a cell dir's GitHub repository
+// URL (null if it isn't a GitHub repo), so the header can offer an "open on GitHub" link.
+mountGitRemoteRoute(app, { isAllowedOrigin });
 
 // POST /api/pick-file opens the OS file dialog and returns the chosen absolute
 // path(s) — how a browser tab inserts a real filesystem path into the terminal
