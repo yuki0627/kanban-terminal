@@ -25,7 +25,7 @@ describe("CommandCell", () => {
     expect(w.find(".cell-dir").text()).toBe("~/proj"); // ~-anchored to home
     expect(term(w).props("command")).toEqual(COMMAND);
     expect(term(w).props("cwd")).toBe("/work/proj"); // runs in the cell's dir
-    expect(term(w).props("sessionId")).toBe(null); // not a Claude session
+    expect(term(w).props("sessionId")).toBeNull(); // not a Claude session
   });
 
   it("offers a re-run only after the command exits, and re-running reconnects", async () => {

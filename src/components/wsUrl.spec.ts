@@ -21,8 +21,8 @@ describe("buildTerminalWsUrl", () => {
   });
 
   it("fresh session (null id): no session param", () => {
-    const url = buildTerminalWsUrl({ host: "h", secure: false, sessionId: null });
-    expect(url).toBe("ws://h/ws");
+    const url = buildTerminalWsUrl({ host: "localhost", secure: false, sessionId: null });
+    expect(url).toBe("ws://localhost/ws");
   });
 
   it("uses wss when secure", () => {
