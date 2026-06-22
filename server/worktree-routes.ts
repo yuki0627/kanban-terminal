@@ -33,8 +33,9 @@ export function mountWorktreeRoutes(app: Express, { isAllowedOrigin }: WorktreeR
     res.json(wt);
   });
 
-  // Remove a managed worktree. 409 when it's dirty (no force) or not under our root,
-  // so the UI can re-confirm with `force`.
+  // Remove a managed worktree. 409 for a client-resolvable conflict (dirty → the UI
+  // re-confirms with `force`; not-managed → a bad path), 500 for an internal git
+  // failure the client can't fix by retrying.
   app.post("/api/worktrees/remove", async (req, res) => {
     if (!isAllowedOrigin(req.headers.origin)) return res.status(403).end();
     const { repoDir, path: worktreePath, deleteBranch, force } = req.body ?? {};
@@ -42,6 +43,7 @@ export function mountWorktreeRoutes(app: Express, { isAllowedOrigin }: WorktreeR
       return res.status(400).json({ error: "repoDir and path are required" });
     }
     const result = await removeWorktree(repoDir, worktreePath, { deleteBranch: !!deleteBranch, force: !!force });
-    res.status(result.ok ? 200 : 409).json(result);
+    if (result.ok) return res.json(result);
+    res.status(result.reason === "failed" ? 500 : 409).json(result);
   });
 }

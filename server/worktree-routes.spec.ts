@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { mountWorktreeRoutes } from "./worktree-routes.js";
+import { createWorktree, worktreesRoot } from "./worktrees.js";
 
 interface FakeRes {
   statusCode: number;
@@ -167,5 +168,14 @@ describe("worktree routes: create → list → remove lifecycle", () => {
     await routes(allow)["POST /api/worktrees/remove"]({ headers: {}, body: { repoDir: repo, path: repo } }, res);
     expect(res.statusCode).toBe(409);
     expect(res.payload).toEqual({ ok: false, reason: "not-managed" });
+  });
+
+  it.skipIf(!hasGit)("500s an internal git failure (managed path, but not a registered worktree)", async () => {
+    await createWorktree(repo, "real"); // makes the managed root dir exist
+    const ghost = path.join(worktreesRoot(repo), "ghost"); // under the root, but no worktree there
+    const res = makeRes();
+    await routes(allow)["POST /api/worktrees/remove"]({ headers: {}, body: { repoDir: repo, path: ghost } }, res);
+    expect(res.statusCode).toBe(500);
+    expect(res.payload).toEqual({ ok: false, reason: "failed" });
   });
 });
