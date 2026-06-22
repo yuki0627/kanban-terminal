@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, realpathSync } from "no
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { symlinkSync } from "node:fs";
 import { slugify, parseWorktreeList, worktreesRoot, isManagedWorktree, gitTopLevel, createWorktree, listWorktrees, isDirty, removeWorktree } from "./worktrees";
 
 describe("slugify", () => {
@@ -106,6 +107,22 @@ describe("git worktree lifecycle", () => {
   it.skipIf(!hasGit)("refuses to remove a path outside the managed root", async () => {
     expect(await removeWorktree(repo, repo)).toEqual({ ok: false, reason: "not-managed" });
     expect(await removeWorktree(repo, path.join(home, "outside-managed"))).toEqual({ ok: false, reason: "not-managed" });
+  });
+
+  it.skipIf(!hasGit)("rejects a symlink under the managed root that escapes it (no string-prefix bypass)", async () => {
+    const wt = await createWorktree(repo, "real"); // creates the managed root dir
+    if (!wt) throw new Error("expected a worktree");
+    const root = worktreesRoot(repo);
+    const outside = realpathSync(mkdtempSync(path.join(tmpdir(), "mt-wt-outside-")));
+    const link = path.join(root, "escape");
+    symlinkSync(outside, link); // <root>/escape -> /outside (canonicalizes out of the root)
+    try {
+      expect(isManagedWorktree(repo, link)).toBe(false);
+      expect(isManagedWorktree(repo, path.join(link, "wt"))).toBe(false); // symlinked ancestor, absent leaf
+      expect(await removeWorktree(repo, link)).toEqual({ ok: false, reason: "not-managed" });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("gitTopLevel returns null for a non-repo dir", async () => {

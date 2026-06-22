@@ -49,11 +49,33 @@ export function worktreesRoot(repoToplevel: string): string {
   return path.join(worktreesBase(), `${path.basename(repoToplevel)}-${hash}`);
 }
 
+// Canonicalize a path by realpath-resolving its deepest EXISTING ancestor and
+// re-attaching the missing leaf segments. So a symlink anywhere along the path
+// (even when the leaf itself doesn't exist) is resolved before containment checks.
+function canonicalPath(p: string): string {
+  const resolved = path.resolve(p);
+  const missing: string[] = [];
+  let cur = resolved;
+  for (;;) {
+    try {
+      const real = realpathSync(cur);
+      return missing.length ? path.join(real, ...missing) : real;
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return resolved; // reached the fs root, nothing resolved
+      missing.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
 // Whether `p` is inside the managed root for `repoToplevel` — the guard that stops
-// a delete request from touching anything we didn't create.
+// a delete request from touching anything we didn't create. Both sides are
+// canonicalized so a symlink under the root can't escape it (string-prefix alone
+// would let `<root>/link -> /outside` slip through).
 export function isManagedWorktree(repoToplevel: string, p: string): boolean {
-  const root = worktreesRoot(repoToplevel) + path.sep;
-  return path.resolve(p).startsWith(root);
+  const root = canonicalPath(worktreesRoot(repoToplevel)) + path.sep;
+  return canonicalPath(p).startsWith(root);
 }
 
 // Parse `git worktree list --porcelain` into entries (blocks split by blank lines).
