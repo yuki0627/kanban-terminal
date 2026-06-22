@@ -293,7 +293,9 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
     <template v-if="launched">
       <div class="cell-header" :class="statusClass">
         <span class="cell-dot" :class="statusClass" :title="statusLabel" />
-        <button v-if="dirDisplay" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">{{ dirDisplay }}</button>
+        <button v-if="dirDisplay" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">
+          <span class="cell-dir-path">{{ dirDisplay }}</span>
+        </button>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
         <span class="cell-actions">
           <button
@@ -417,6 +419,9 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
 
 .cell-dir {
   flex: 0 1 auto;
+  /* Floor the width at ~15 chars of the path so the current dir stays readable
+     even on a narrow cell (1ch ≈ one monospace char; the leading … takes one). */
+  min-width: 16ch;
   max-width: 60%;
   border: none;
   background: none;
@@ -429,6 +434,13 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Truncate from the FRONT so the tail (the project dir) stays visible: in an
+     rtl box the ellipsis falls on the left. The inner span keeps the path itself
+     in natural left-to-right order (plaintext base direction). */
+  direction: rtl;
+}
+.cell-dir-path {
+  unicode-bidi: plaintext;
 }
 .cell-dir:hover {
   color: var(--text-muted);
