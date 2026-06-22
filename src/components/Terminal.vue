@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { buildTerminalWsUrl, buildRunWsUrl } from "./wsUrl";
 import { dropTextFromUriList, toInsertText } from "./dropPaths";
 import { useTheme, currentTermTheme } from "../composables/useTheme";
+import RunMenu from "./RunMenu.vue";
 
 // `null` => start a fresh session; otherwise resume the given session id.
 // `connectKey` increments on every user action so re-selecting the same
@@ -18,11 +19,27 @@ import { useTheme, currentTermTheme } from "../composables/useTheme";
 // `command` switches the terminal to a plain shell command (the grid's Run menu):
 // it connects to /ws/run with the script index instead of resuming a Claude
 // session, and never auto-reconnects (the ephemeral process can't be resumed).
-const props = defineProps<{ sessionId: string | null; connectKey: number; cwd?: string | null; devTerminal?: boolean; command?: { index: number } | null }>();
-const emit = defineEmits<{ (e: "session" | "cwd", value: string): void; (e: "exit"): void }>();
+// `runMenu` adds a ▶ Run dropdown to the header (the single view) that lists the
+// open project's script.json and emits the picked command for the parent to run.
+const props = defineProps<{
+  sessionId: string | null;
+  connectKey: number;
+  cwd?: string | null;
+  devTerminal?: boolean;
+  command?: { index: number } | null;
+  runMenu?: boolean;
+}>();
+const emit = defineEmits<{
+  (e: "session" | "cwd", value: string): void;
+  (e: "exit"): void;
+  (e: "run", command: { index: number; label: string; cwd: string | null }): void;
+}>();
 
 const terminalRef = ref<HTMLDivElement>();
 const status = ref<"connecting" | "connected" | "disconnected">("connecting");
+// The server-resolved cwd of the connected session (the open project), used by the
+// Run menu so it lists THAT directory's scripts. Falls back to the requested cwd.
+const serverCwd = ref<string | null>(props.cwd ?? null);
 const dragOver = ref(false);
 const { themeId } = useTheme();
 
@@ -101,7 +118,10 @@ function connect() {
       // back from the requested dir).
       knownSessionId = msg.id;
       emit("session", msg.id);
-      if (typeof msg.cwd === "string") emit("cwd", msg.cwd);
+      if (typeof msg.cwd === "string") {
+        serverCwd.value = msg.cwd;
+        emit("cwd", msg.cwd);
+      }
     } else if (msg.type === "exit") {
       // The process exited (claude, or a Run-menu command) — an intentional end;
       // don't auto-reconnect. The cell uses `exit` to offer a re-run.
@@ -293,6 +313,7 @@ onUnmounted(() => {
     <div class="header">
       <span class="title">Terminal</span>
       <span :class="['status', status]">{{ status }}</span>
+      <RunMenu v-if="runMenu" :cwd="serverCwd" @run="(c) => emit('run', c)" />
       <button type="button" class="pick-file" title="Insert a file path" aria-label="Insert a file path" @click="pickFile">
         <span class="material-symbols-outlined">attach_file</span>
       </button>

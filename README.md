@@ -186,11 +186,12 @@ alongside the Claude sessions. Scripts are **per-directory**: the cell reads the
 `script.json` of whatever directory you select, so different cells can offer
 different projects' scripts.
 
-The grid toolbar also has a global **▶ Run ▾** dropdown. It lists the default
-workspace's (`CLAUDE_CWD`) scripts and launches the picked one in a **spare cell**
-(reusing an open launcher, else a new one) — so you can start a script without
-first opening an empty cell. For a different directory's scripts, use the cell
-launcher above.
+The single view's terminal header also has a **▶ Run ▾** dropdown (next to the
+connection status). It lists the **open project's** `script.json` — the directory
+the connected session runs in — and launches the picked script in the grid, in a
+**spare cell** (reusing an open launcher, else a new one), switching to the grid so
+you can watch it. So you can start a dev server or tests for the project you're
+working in without leaving the single view.
 
 The list is populated from a **`script.json`** at the chosen directory's root. It's
 optional; a directory without one simply shows no scripts.
@@ -513,14 +514,15 @@ src/
   components/
     Sidebar.vue       Session list; working dot + waiting bold; pub/sub driven
     Sidebar.spec.ts   Vitest component tests
-    Terminal.vue      xterm.js terminal; /ws (or /ws/run) connection, reconnect
-    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal, ▶ Run menu)
-    RunMenu.vue       Toolbar dropdown: run a script.json command in a spare cell
+    Terminal.vue      xterm.js terminal; /ws (or /ws/run); single-view ▶ Run menu
+    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal); runs handed-off scripts
+    RunMenu.vue       ▶ Run dropdown: lists a dir's script.json, emits the pick
     TerminalCell.vue  A cell: Claude launcher (dir picker + resume + run-a-script)
     TerminalGrid.vue  Grid of cells; auto-sizes by count; zoom lines up every tab
     CommandCell.vue   A grid cell that runs a script.json command (ephemeral)
   composables/
     usePubSub.ts      socket.io-client pub/sub composable (subscribe/unsubscribe)
+    usePendingScript.ts  Hands a header-picked script to the grid to run
 vite.config.ts    Dev proxy for /ws (covers /ws/run), /ws/pubsub, /api
 vitest.config.ts  jsdom test environment
 ```

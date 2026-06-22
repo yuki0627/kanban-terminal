@@ -1,46 +1,43 @@
-# feat: グリッドのツールバーに ▶ Run プルダウンを追加
+# feat: ターミナルヘッダーに ▶ Run プルダウン（開いているプロジェクトの script）
 
 Issue: #97
 
 ## 背景 / 現状
-- `script.json` の Run は **空きセルのランチャー内**（`TerminalCell` 未起動時の "or run a script"）にしか出ない。
-- 走っているセルからは script を起動できず、一度 ＋Terminal で空きセルを足す必要がある。
+- `script.json` の Run は「空きセルのランチャー」内にしか出ず、走っているセルからは起動できない。
+- script は **開いているプロジェクトに紐づく**べき（その端末の cwd の `script.json`）。デフォルトワークスペース（`CLAUDE_CWD`）ではない。
 
 ## ゴール
-グリッド上部ツールバーに **「▶ Run ▾」プルダウン** を置き、どの状態からでもデフォルト cwd の script を選んで **新しいセルで起動**できるようにする。
+単一ビューの**ターミナルヘッダー**（「Terminal connected」の隣）に **▶ Run ▾** を置き、**開いているプロジェクトの `script.json`** を一覧。選ぶとグリッドに切替えて**空きセル**でそのコマンドを起動する。
 
 ## 設計
 
-### 新規 `RunMenu.vue`（再利用可能なドロップダウン）
-- props: `cwd: string | null` — script を読むディレクトリ
-- emits: `run { index, label, cwd }` — 解決後 cwd（`/api/scripts` のレスポンス cwd）を載せる
-- 内部: 開いたときに `/api/scripts?cwd=<cwd>` を取得（request token で順序保証）。外側クリック / Esc で閉じる。スクリプト 0 件なら空表示。
-- 「▶ Run ▾」ボタン＋ドロップダウン list。
+### `RunMenu.vue`（再利用ドロップダウン）
+- props `cwd` の `/api/scripts` を開くたび取得し一覧。選択で `run { index, label, cwd }`（解決後 cwd）を emit。外側クリック / Esc で閉じる。
 
-### `gridTabs.ts`（純粋関数を追加・テスト対象）
-```ts
-// 空きセルで script を起動。末尾に空きランチャーがあれば再利用、なければ
-// 新しい command cell を append（上限 MAX_TERMINALS 厳守）。最後のページへ移動。
-export function runScriptInNewCell(state: GridState, command: NonNullable<Cell["command"]>): GridState
-```
+### `Terminal.vue`
+- `serverCwd` ref: 接続時にサーバ解決済み cwd（= 開いているプロジェクト）を保持。
+- prop `runMenu`（単一ビューのみ true）でヘッダーに `<RunMenu :cwd="serverCwd">` を表示。
+- `run` イベントを親へ re-emit。
+
+### `usePendingScript.ts`（単一ビュー → グリッドの受け渡し）
+- command cell はグリッドにしか存在しないため、選択を ref に stash → グリッドが mount 時に取り出して実行。
+- `requestRun(cmd)` / `takePending()`（取り出して clear）。
+
+### `App.vue`（単一ビュー）
+- `<TerminalView run-menu @run="onRunScript">`。
+- `onRunScript(cmd)` → `requestRun(cmd)` ＋ `viewMode = 'grid'`。
 
 ### `GridView.vue`
-- ツールバー（＋Terminal の隣）に `<RunMenu :cwd="defaultCwd" @run="onRunNew" />`。
-- `onRunNew(cmd)` → `state.value = runScriptInNewCell(state.value, cmd)`。
+- ツールバーの RunMenu は撤去（配置をヘッダーへ移動）。
+- onMounted で `takePending()` → あれば `runScriptInNewCell(state, cmd)`。
 
-## 起動先の方針
-- 常に**新しい / 空いているセル**で起動（現在のセルの Claude セッションは潰さない）。
-- 末尾が空きランチャーならそれを command cell に変える。
+### `gridTabs.ts`
+- `runScriptInNewCell(state, command)`: 末尾の空きランチャー再利用 or 新規 command cell を append（上限厳守）→ 最終ページへ。
 
 ## テスト
-- `gridTabs.spec.ts`: `runScriptInNewCell`
-  - 末尾が稼働セル → 新 command cell を append、最後のページへ
-  - 末尾が空きランチャー → それを再利用（append しない）
-  - 上限到達時は no-op
-- `RunMenu.spec.ts`: fetch をモックし、開く→一覧表示→クリックで `run` emit / 外側クリックで閉じる
-
-## ドキュメント
-- `README.md` の「Scripts (Run menu)」に、ツールバーの ▶ Run はデフォルト cwd の script を空きセルで起動する旨を追記。
+- `gridTabs.spec.ts`: `runScriptInNewCell`（append / 空きランチャー再利用 / 上限 no-op / ページ遷移）
+- `RunMenu.spec.ts`: 開く→一覧→選択で emit / 空表示 / 外側クリックで閉じる
+- `usePendingScript.spec.ts`: 受け渡し・1回で消費・最新優先
 
 ## 確認ゲート
-`yarn format` / `lint` / `typecheck` / `build` / `test`。UI実機（ツールバー▶Run→一覧→選択で新セル起動／外側クリックで閉じる）は手元で目視確認。
+`yarn format` / `lint` / `typecheck` / `build` / `test`。UI実機（単一ビューのヘッダー ▶Run → 開いているプロジェクトの script 一覧 → 選択でグリッドに切替＆空きセル起動）は手元で目視確認。
