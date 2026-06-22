@@ -20,7 +20,7 @@ vi.mock("./Terminal.vue", () => ({
   default: {
     name: "TerminalView",
     props: ["sessionId", "connectKey", "cwd"],
-    emits: ["session"],
+    emits: ["session", "cwd"],
     template: '<div class="stub-term" />',
     methods: { terminate() {} },
   },
@@ -340,5 +340,36 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-gh-menu").exists()).toBe(true);
     await w.find(".cell-gh-menu").trigger("keydown", { key: "Escape" });
     expect(w.find(".cell-gh-menu").exists()).toBe(false);
+  });
+
+  it("ignores an out-of-order /api/git-remote response after a fast cwd change", async () => {
+    // dir A's lookup is in flight when the effective cwd switches to dir B; A
+    // then resolves LAST. The request-token guard must keep B's repo, not A's.
+    const repoA = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    const repoB = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    globalThis.fetch = vi.fn((url: string, init?: { body?: string }) => {
+      const u = String(url);
+      if (u.includes("/api/git-remote")) return String(init?.body ?? "").includes("/home/me/repoA") ? repoA.promise : repoB.promise;
+      if (u.includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repoA" });
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/repoB"); // server confirms a different dir
+    await nextTick();
+
+    repoB.resolve({ ok: true, json: async () => ({ githubUrl: "https://github.com/owner/repoB" }) }); // newer resolves first
+    await flushPromises();
+    repoA.resolve({ ok: true, json: async () => ({ githubUrl: "https://github.com/owner/repoA" }) }); // older resolves last
+    await flushPromises();
+
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await w.find(".cell-gh").trigger("click");
+    await w
+      .findAll(".cell-gh-item")
+      .find((b) => b.text() === "Repository")
+      ?.trigger("click");
+    expect(openSpy.mock.calls.at(-1)?.[0]).toBe("https://github.com/owner/repoB");
+    openSpy.mockRestore();
   });
 });
