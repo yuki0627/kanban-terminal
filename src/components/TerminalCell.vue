@@ -484,6 +484,18 @@ watch(working, (now, prev) => {
 // confirmed a fallback dir. loadDiff() clears it synchronously for a non-worktree
 // dir, so the badge never lingers with a previous worktree's counts.
 watch(cwd, () => loadDiff());
+
+// Esc closes the diff panel. Listen at document scope while it's open: focus is
+// usually on the badge or the terminal, so a handler on the panel element itself
+// wouldn't reliably receive the keydown.
+function onDiffKey(e: KeyboardEvent) {
+  if (e.key === "Escape") diffOpen.value = false;
+}
+watch(diffOpen, (open) => {
+  if (open) document.addEventListener("keydown", onDiffKey);
+  else document.removeEventListener("keydown", onDiffKey);
+});
+onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
 </script>
 
 <template>
@@ -546,7 +558,7 @@ watch(cwd, () => loadDiff());
         @cwd="onServerCwd"
         @run="(cmd) => emit('runSpare', cmd)"
       />
-      <div v-if="diffOpen && diff" class="cell-diff" tabindex="-1" @keydown.escape="diffOpen = false">
+      <div v-if="diffOpen && diff" class="cell-diff">
         <div class="cell-diff-head">
           <span class="cell-diff-title">Changes vs {{ diff?.base ?? "base" }}</span>
           <span class="cell-diff-sum">{{ diff?.ahead ?? 0 }} ahead · {{ diff?.dirty ?? 0 }} uncommitted</span>

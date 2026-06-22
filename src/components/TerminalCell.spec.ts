@@ -588,6 +588,18 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-diff").exists()).toBe(false);
   });
 
+  it("closes the diff panel on Escape (document-level handler)", async () => {
+    mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 1, dirty: 0, files: [], patch: "x", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-wt-badge").trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); // focus may be on the badge/terminal
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(false);
+  });
+
   it("ignores an in-flight diff fetch that resolves after the cwd left the worktree", async () => {
     const diffFetch = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
     globalThis.fetch = vi.fn((url: string) => {
