@@ -13,6 +13,7 @@ import { useShortcuts } from "./composables/useShortcuts";
 import { useCollectionBrowse, browseGotoIndex, browseGotoDetail, browseClose } from "./composables/useCollectionBrowse";
 import { registerChatOpener } from "./composables/useChatLauncher";
 import { useAppConfig } from "./composables/useAppConfig";
+import { usePendingScript, type PendingCommand } from "./composables/usePendingScript";
 import { useSoundEnabled } from "./composables/useSoundEnabled";
 import { useAttentionSound } from "./composables/useAttentionSound";
 import type { Shortcut } from "./types/shortcuts";
@@ -23,6 +24,14 @@ import type { CwdPreset } from "./components/presets";
 type ViewMode = "single" | "grid";
 const viewMode = ref<ViewMode>(localStorage.getItem("view_mode") === "grid" ? "grid" : "single");
 watch(viewMode, (v) => localStorage.setItem("view_mode", v));
+
+// A script picked from the terminal header's Run menu runs in the grid (command
+// cells live only there): stash it and switch to the grid, which picks it up.
+const { requestRun } = usePendingScript();
+function onRunScript(command: PendingCommand) {
+  requestRun(command);
+  viewMode.value = "grid";
+}
 
 // Shared launcher favorites (pinned collections / feeds), backing the toolbar.
 const { shortcuts } = useShortcuts();
@@ -266,7 +275,9 @@ function onSession(id: string) {
           :style="{ flex: `0 0 ${terminalWidth}px` }"
           :session-id="activeId"
           :connect-key="connectKey"
+          run-menu
           @session="onSession"
+          @run="onRunScript"
         />
         <div
           class="splitter"

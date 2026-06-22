@@ -10,6 +10,7 @@ import {
   toggleExpand,
   switchPage,
   runCommand,
+  runScriptInNewCell,
   zoomedUid,
   visibleCells,
   parseGridState,
@@ -136,6 +137,36 @@ describe("runCommand (script command cells)", () => {
   it("switchPage keeps a trailing command cell (only abandons an empty launcher)", () => {
     const after = switchPage(make([...running(9), cmdCell(9)], { page: 1 }), 0);
     expect(after.cells).toHaveLength(10);
+  });
+});
+
+describe("runScriptInNewCell (toolbar Run menu)", () => {
+  const CMD = { index: 1, label: "Dev server", cwd: "/x" };
+
+  it("appends a new command cell and jumps to its page when all cells are occupied", () => {
+    const s = runScriptInNewCell(make(running(2)), CMD);
+    expect(s.cells).toHaveLength(3);
+    expect(s.cells[2]).toMatchObject({ session: null, command: CMD });
+    expect(s.page).toBe(0); // 3 cells -> still page 1
+  });
+  it("overflows onto a new page when the current page is full", () => {
+    const s = runScriptInNewCell(make(running(9)), CMD);
+    expect(s.cells).toHaveLength(10);
+    expect(s.page).toBe(1); // jumped to the new cell's page
+  });
+  it("reuses a trailing empty launcher instead of appending", () => {
+    const s = runScriptInNewCell(make([...running(2), cell(2)]), CMD); // trailing launch cell
+    expect(s.cells).toHaveLength(3);
+    expect(s.cells[2].command).toEqual(CMD);
+  });
+  it("turns the sole entry launch cell into a command cell", () => {
+    const s = runScriptInNewCell(make([cell(0)]), CMD);
+    expect(s.cells).toHaveLength(1);
+    expect(s.cells[0].command).toEqual(CMD);
+  });
+  it("is a no-op at the terminal cap (no trailing launcher to reuse)", () => {
+    const s = runScriptInNewCell(make(running(81)), CMD);
+    expect(s.cells).toHaveLength(81);
   });
 });
 
