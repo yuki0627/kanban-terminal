@@ -24,8 +24,16 @@ const rootRef = useTemplateRef<HTMLElement>("root");
 
 async function loadScripts() {
   const reqId = ++req;
+  const dir = props.cwd;
+  // No resolved project dir yet (e.g. a single-view reconnect before the session
+  // message arrives): show nothing rather than fetching with an empty cwd, which the
+  // server would resolve to the DEFAULT workspace — the wrong project's scripts.
+  if (!dir) {
+    scripts.value = [];
+    scriptsCwd.value = null;
+    return;
+  }
   try {
-    const dir = props.cwd ?? "";
     const res = await fetch(`/api/scripts?cwd=${encodeURIComponent(dir)}`);
     const data = res.ok ? await res.json() : { scripts: [], cwd: dir };
     if (reqId !== req) return;

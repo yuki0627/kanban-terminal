@@ -37,6 +37,15 @@ describe("RunMenu", () => {
     expect(w.find(".run-menu").exists()).toBe(false);
   });
 
+  it("does not fetch (no button) while cwd is unresolved, avoiding default-workspace scripts", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    const w = mount(RunMenu, { props: { cwd: null } });
+    await flushPromises();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(w.find(".run-trigger").exists()).toBe(false);
+  });
+
   it("lists the scripts when opened", async () => {
     const w = await mountMenu();
     await w.find(".run-trigger").trigger("click");
