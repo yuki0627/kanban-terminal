@@ -98,6 +98,12 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-dir").text()).toBe("/var/data/proj");
   });
 
+  it("shows '⎇ <repo> (<task>)' instead of the managed path for a worktree cell", async () => {
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: "/home/me/.mulmoterminal/worktrees/myrepo-1a2b3c4d/fix-login" });
+    await flushPromises();
+    expect(w.find(".cell-dir").text()).toBe("⎇ myrepo (fix-login)");
+  });
+
   it("launches in the dir typed in the form and sends it to the terminal", async () => {
     const w = mountCell(null, { defaultCwd: "/home/me/default" });
     await flushPromises();

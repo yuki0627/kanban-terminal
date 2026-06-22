@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, useTemplateRef } from "vue";
 import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
-import { formatCwd } from "./cwdDisplay";
+import { formatCwd, worktreeLabel } from "./cwdDisplay";
 import type { CwdPreset } from "./presets";
 
 const termRef = useTemplateRef<InstanceType<typeof TerminalView>>("termRef");
@@ -406,8 +406,13 @@ function onSession(id: string) {
   loadInitial(id);
 }
 
-// ~-anchored, front-truncated path for the header (keeps the tail).
+// ~-anchored, front-truncated path for the header (keeps the tail). For a managed
+// worktree cell, show "⎇ <repo> (<task>)" instead — the managed path is just noise.
 const dirDisplay = computed(() => formatCwd(cwd.value, props.home));
+const headerDir = computed(() => {
+  const wt = worktreeLabel(cwd.value);
+  return wt ? `⎇ ${wt.repo} (${wt.task})` : dirDisplay.value;
+});
 
 // Attention (waiting) wins over working wins over idle.
 const status = computed<"waiting" | "working" | "idle">(() => {
@@ -428,8 +433,8 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
     <template v-if="launched">
       <div class="cell-header" :class="statusClass">
         <span class="cell-dot" :class="statusClass" :title="statusLabel" />
-        <button v-if="dirDisplay" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">
-          <span class="cell-dir-path">{{ dirDisplay }}</span>
+        <button v-if="headerDir" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">
+          <span class="cell-dir-path">{{ headerDir }}</span>
         </button>
         <span v-if="githubUrl" ref="ghWrap" class="cell-gh-wrap">
           <button
