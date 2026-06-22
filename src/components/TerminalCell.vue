@@ -545,7 +545,7 @@ watch(cwd, () => loadDiff());
         @cwd="onServerCwd"
         @run="(cmd) => emit('runSpare', cmd)"
       />
-      <div v-if="diffOpen" class="cell-diff" tabindex="-1" @keydown.escape="diffOpen = false">
+      <div v-if="diffOpen && diff" class="cell-diff" tabindex="-1" @keydown.escape="diffOpen = false">
         <div class="cell-diff-head">
           <span class="cell-diff-title">Changes vs {{ diff?.base ?? "base" }}</span>
           <span class="cell-diff-sum">{{ diff?.ahead ?? 0 }} ahead · {{ diff?.dirty ?? 0 }} uncommitted</span>

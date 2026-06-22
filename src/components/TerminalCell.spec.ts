@@ -566,4 +566,25 @@ describe("TerminalCell", () => {
     await flushPromises();
     expect(w.find(".cell-wt-badge").exists()).toBe(false);
   });
+
+  it("auto-closes the open diff panel when the cwd leaves the worktree (no empty overlay)", async () => {
+    mockFetchWithDiff({
+      isWorktree: true,
+      base: "main",
+      ahead: 3,
+      dirty: 1,
+      files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+      patch: "x",
+      truncated: false,
+    });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-wt-badge").trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+    // leaving the worktree clears `diff`; the panel must not linger as an empty overlay
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/plain-proj");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(false);
+  });
 });
