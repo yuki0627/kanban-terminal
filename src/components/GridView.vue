@@ -68,6 +68,8 @@ const onCwd = (uid: number, cwd: string) => (state.value = setCwd(state.value, u
 const onClose = (uid: number) => (state.value = closeCell(state.value, uid));
 const onToggleExpand = (uid: number) => (state.value = toggleExpand(state.value, uid));
 const onRun = (uid: number, command: { index: number; label: string; cwd: string | null }) => (state.value = runCommand(state.value, uid, command));
+// A running cell's header Run menu: launch in a spare cell so the session survives.
+const onRunSpare = (command: { index: number; label: string; cwd: string | null }) => (state.value = runScriptInNewCell(state.value, command));
 const switchTo = (page: number) => (state.value = switchPage(state.value, page));
 
 // A script the single view's terminal-header Run menu handed off: run it in a spare
@@ -134,6 +136,7 @@ function closeSettings() {
       @close="onClose"
       @toggle-expand="onToggleExpand"
       @run="onRun"
+      @run-spare="onRunSpare"
     />
     <SettingsModal v-if="showSettings" :presets="presets" :saving="savingSettings" :error="settingsError" @save="savePresets" @close="closeSettings" />
   </div>

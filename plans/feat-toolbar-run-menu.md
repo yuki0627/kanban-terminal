@@ -12,7 +12,8 @@ Issue: #97
 ## 設計
 
 ### `RunMenu.vue`（再利用ドロップダウン）
-- props `cwd` の `/api/scripts` を開くたび取得し一覧。選択で `run { index, label, cwd }`（解決後 cwd）を emit。外側クリック / Esc で閉じる。
+- props `cwd` の `/api/scripts` を**マウント時／cwd変化時に先読み**し、件数で表示判定。**スクリプト0件（script.json 無し）ならボタン自体を出さない**。選択で `run { index, label, cwd }`（解決後 cwd）を emit。外側クリック / Esc で閉じる。
+- 設置: 単一ビュー（App.vue）＋グリッド各セル（TerminalCell）の端末ヘッダー。グリッドでは走っているセッションを潰さないため、選択は **別イベント `runSpare`** で空きセル起動（ランチャーの `run`＝このセルで起動 とは区別）。
 
 ### `Terminal.vue`
 - `serverCwd` ref: 接続時にサーバ解決済み cwd（= 開いているプロジェクト）を保持。

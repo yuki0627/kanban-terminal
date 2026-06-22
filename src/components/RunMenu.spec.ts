@@ -15,40 +15,41 @@ const SCRIPTS: Script[] = [
   { index: 1, label: "Unit tests", command: "yarn test" },
 ];
 
-const mountMenu = () => mount(RunMenu, { props: { cwd: "/proj" } });
+const mountMenu = async () => {
+  const w = mount(RunMenu, { props: { cwd: "/proj" } });
+  await flushPromises(); // scripts fetch up front (decides whether the button shows)
+  return w;
+};
 
 describe("RunMenu", () => {
   beforeEach(() => mockFetch(SCRIPTS));
 
-  it("is closed until the trigger is clicked", () => {
-    const w = mountMenu();
-    expect(w.find(".run-pop").exists()).toBe(false);
+  it("shows the trigger once the project's scripts have loaded", async () => {
+    const w = await mountMenu();
+    expect(w.find(".run-trigger").exists()).toBe(true);
+    expect(w.find(".run-pop").exists()).toBe(false); // closed until clicked
   });
 
-  it("opens, fetches, and lists the directory's scripts", async () => {
-    const w = mountMenu();
+  it("renders nothing when the project has no scripts (no file, no button)", async () => {
+    mockFetch([]);
+    const w = await mountMenu();
+    expect(w.find(".run-trigger").exists()).toBe(false);
+    expect(w.find(".run-menu").exists()).toBe(false);
+  });
+
+  it("lists the scripts when opened", async () => {
+    const w = await mountMenu();
     await w.find(".run-trigger").trigger("click");
-    await flushPromises();
     const items = w.findAll(".run-item");
     expect(items).toHaveLength(2);
     expect(items[0].text()).toContain("Dev server");
   });
 
   it("emits the picked script with the server-resolved cwd, then closes", async () => {
-    const w = mountMenu();
+    const w = await mountMenu();
     await w.find(".run-trigger").trigger("click");
-    await flushPromises();
     await w.findAll(".run-item")[1].trigger("click");
     expect(w.emitted("run")?.[0]?.[0]).toEqual({ index: 1, label: "Unit tests", cwd: "/home/me/proj" });
     expect(w.find(".run-pop").exists()).toBe(false); // closed after picking
-  });
-
-  it("shows an empty hint when there are no scripts", async () => {
-    mockFetch([]);
-    const w = mountMenu();
-    await w.find(".run-trigger").trigger("click");
-    await flushPromises();
-    expect(w.find(".run-empty").text()).toContain("No scripts");
-    expect(w.findAll(".run-item")).toHaveLength(0);
   });
 });

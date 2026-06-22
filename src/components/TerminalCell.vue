@@ -23,7 +23,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "toggle-expand" | "close"): void;
   (e: "session" | "cwd", value: string): void;
-  (e: "run", value: { index: number; label: string; cwd: string | null }): void;
+  // `run` launches in THIS (empty) cell from the launcher; `runSpare` is the running
+  // terminal's header menu, which must NOT replace the session — it runs in a new cell.
+  (e: "run" | "runSpare", value: { index: number; label: string; cwd: string | null }): void;
 }>();
 
 // A cell with a persisted session relaunches (resumes) on mount; otherwise it
@@ -316,8 +318,10 @@ const headerText = computed(() => lastPrompt.value || (sessionId.value ? session
         :connect-key="connectKey"
         :cwd="cwd"
         dev-terminal
+        run-menu
         @session="onSession"
         @cwd="onServerCwd"
+        @run="(cmd) => emit('runSpare', cmd)"
       />
     </template>
     <div v-else class="cell-launch">

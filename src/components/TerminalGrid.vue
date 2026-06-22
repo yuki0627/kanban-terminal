@@ -19,6 +19,7 @@ const emit = defineEmits<{
   (e: "session" | "cwd", uid: number, value: string): void;
   (e: "close" | "toggle-expand", uid: number): void;
   (e: "run", uid: number, command: { index: number; label: string; cwd: string | null }): void;
+  (e: "runSpare", command: { index: number; label: string; cwd: string | null }): void;
 }>();
 
 const gridStyle = computed(() => trackStyle(layoutForCount(props.cells.length), null));
@@ -56,6 +57,7 @@ const zoomed = computed(() => props.expandedUid !== null && mounted.value);
           @session="(id) => emit('session', cell.uid, id)"
           @cwd="(c) => emit('cwd', cell.uid, c)"
           @run="(cmd) => emit('run', cell.uid, cmd)"
+          @run-spare="(cmd) => emit('runSpare', cmd)"
           @close="emit('close', cell.uid)"
         />
       </Teleport>

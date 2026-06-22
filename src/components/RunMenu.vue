@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onUnmounted, useTemplateRef } from "vue";
+import { ref, onUnmounted, watch, useTemplateRef } from "vue";
 
-// A toolbar dropdown that lists a directory's script.json entries and emits the one
-// picked, so the grid can launch it in a spare cell. Scripts are (re)fetched each
-// time the menu opens (the endpoint is cheap) so the list stays current.
+// A header dropdown that lists a directory's script.json entries and emits the one
+// picked, so the parent can launch it. Scripts are fetched up front (and on cwd
+// change) so the button only appears when the open project actually has scripts —
+// no file, no button.
 interface RunnableScript {
   index: number;
   label: string;
@@ -14,7 +15,6 @@ const emit = defineEmits<{ (e: "run", command: { index: number; label: string; c
 
 const open = ref(false);
 const scripts = ref<RunnableScript[]>([]);
-const loading = ref(false);
 // The resolved dir the listed scripts belong to (the server may fall back from a
 // bad path); the picked command runs there.
 const scriptsCwd = ref<string | null>(null);
@@ -24,7 +24,6 @@ const rootRef = useTemplateRef<HTMLElement>("root");
 
 async function loadScripts() {
   const reqId = ++req;
-  loading.value = true;
   try {
     const dir = props.cwd ?? "";
     const res = await fetch(`/api/scripts?cwd=${encodeURIComponent(dir)}`);
@@ -37,10 +36,9 @@ async function loadScripts() {
       scripts.value = [];
       scriptsCwd.value = null;
     }
-  } finally {
-    if (reqId === req) loading.value = false;
   }
 }
+watch(() => props.cwd, loadScripts, { immediate: true });
 
 function onOutside(e: PointerEvent) {
   if (rootRef.value && !rootRef.value.contains(e.target as Node)) close();
@@ -51,7 +49,6 @@ function onEscape(e: KeyboardEvent) {
 
 function openMenu() {
   open.value = true;
-  loadScripts();
   window.addEventListener("pointerdown", onOutside);
   window.addEventListener("keydown", onEscape);
 }
@@ -74,13 +71,11 @@ onUnmounted(close);
 </script>
 
 <template>
-  <div ref="root" class="run-menu">
+  <div v-if="scripts.length" ref="root" class="run-menu">
     <button class="run-trigger" :class="{ active: open }" :aria-expanded="open" aria-haspopup="menu" title="Run a script in a spare terminal" @click="toggle">
       ▶ Run ▾
     </button>
     <div v-if="open" class="run-pop" role="menu">
-      <div v-if="loading" class="run-empty">Loading…</div>
-      <div v-else-if="!scripts.length" class="run-empty">No scripts (add a script.json)</div>
       <button v-for="s in scripts" :key="s.index" class="run-item" role="menuitem" :title="s.command" @click="pick(s)">▶ {{ s.label }}</button>
     </div>
   </div>
@@ -142,13 +137,5 @@ onUnmounted(close);
 .run-item:hover {
   background: var(--bg-hover);
   color: var(--text);
-}
-
-.run-empty {
-  padding: 6px 8px;
-  color: var(--text-muted);
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  white-space: nowrap;
 }
 </style>
