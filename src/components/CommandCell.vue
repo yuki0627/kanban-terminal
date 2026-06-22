@@ -30,7 +30,9 @@ function rerun() {
   <div class="cell">
     <div class="cell-header">
       <span class="cell-dot" :class="finished ? 'is-idle' : 'is-working'" :title="finished ? 'Finished' : 'Running…'" />
-      <span v-if="dirDisplay" class="cell-dir" :title="command.cwd ?? ''">{{ dirDisplay }}</span>
+      <span v-if="dirDisplay" class="cell-dir" :title="command.cwd ?? ''"
+        ><span class="cell-dir-path">{{ dirDisplay }}</span></span
+      >
       <span class="cell-cmd">▶ {{ command.label }}</span>
       <span class="cell-actions">
         <button v-if="finished" class="cell-btn" title="Re-run" aria-label="Re-run command" @click="rerun">↻</button>
@@ -102,6 +104,11 @@ function rerun() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Truncate from the FRONT so the tail (the project dir) stays visible. */
+  direction: rtl;
+}
+.cell-dir-path {
+  unicode-bidi: plaintext;
 }
 .cell-cmd {
   flex: 1 1 auto;
