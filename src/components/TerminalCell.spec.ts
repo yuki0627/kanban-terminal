@@ -20,7 +20,7 @@ vi.mock("./Terminal.vue", () => ({
   default: {
     name: "TerminalView",
     props: ["sessionId", "connectKey", "cwd"],
-    emits: ["session"],
+    emits: ["session", "cwd"],
     template: '<div class="stub-term" />',
     methods: { terminate() {} },
   },
@@ -276,5 +276,100 @@ describe("TerminalCell", () => {
     await nextTick();
     expect(promptText(w)).not.toBe("not mine");
     expect(dotClass(w)).toContain("is-idle");
+  });
+
+  // The header's "open on GitHub" control: shown only when /api/git-remote
+  // reports a repository URL for the cell's dir.
+  function mockFetchWithGithub(githubUrl: string | null, ok = true) {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/git-remote")) return { ok, json: async () => ({ githubUrl }) };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+  }
+
+  it("shows the GitHub button when the dir is a GitHub repo", async () => {
+    mockFetchWithGithub("https://github.com/owner/repo");
+    const w = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repo" });
+    await flushPromises();
+    expect(w.find(".cell-gh").exists()).toBe(true);
+  });
+
+  it("hides the GitHub button for a non-GitHub repo (null) and on lookup failure", async () => {
+    mockFetchWithGithub(null);
+    const a = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repo" });
+    await flushPromises();
+    expect(a.find(".cell-gh").exists()).toBe(false);
+
+    mockFetchWithGithub("https://github.com/owner/repo", false); // res.ok = false
+    const b = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repo" });
+    await flushPromises();
+    expect(b.find(".cell-gh").exists()).toBe(false);
+  });
+
+  it("opens repository / issues / pull requests from the popover", async () => {
+    mockFetchWithGithub("https://github.com/owner/repo");
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const w = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repo" });
+    await flushPromises();
+
+    const openItem = async (label: string) => {
+      await w.find(".cell-gh").trigger("click");
+      const item = w.findAll(".cell-gh-item").find((b) => b.text() === label);
+      await item?.trigger("click");
+    };
+    await openItem("Repository");
+    await openItem("Issues");
+    await openItem("Pull requests");
+
+    expect(openSpy.mock.calls.map((c) => c[0])).toEqual([
+      "https://github.com/owner/repo",
+      "https://github.com/owner/repo/issues",
+      "https://github.com/owner/repo/pulls",
+    ]);
+    openSpy.mockRestore();
+  });
+
+  it("toggles the popover and closes it on Escape", async () => {
+    mockFetchWithGithub("https://github.com/owner/repo");
+    const w = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repo" });
+    await flushPromises();
+    expect(w.find(".cell-gh-menu").exists()).toBe(false);
+    await w.find(".cell-gh").trigger("click");
+    expect(w.find(".cell-gh-menu").exists()).toBe(true);
+    await w.find(".cell-gh-menu").trigger("keydown", { key: "Escape" });
+    expect(w.find(".cell-gh-menu").exists()).toBe(false);
+  });
+
+  it("ignores an out-of-order /api/git-remote response after a fast cwd change", async () => {
+    // dir A's lookup is in flight when the effective cwd switches to dir B; A
+    // then resolves LAST. The request-token guard must keep B's repo, not A's.
+    const repoA = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    const repoB = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    globalThis.fetch = vi.fn((url: string, init?: { body?: string }) => {
+      const u = String(url);
+      if (u.includes("/api/git-remote")) return String(init?.body ?? "").includes("/home/me/repoA") ? repoA.promise : repoB.promise;
+      if (u.includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell("33333333-3333-3333-3333-333333333333", { initialCwd: "/home/me/repoA" });
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/repoB"); // server confirms a different dir
+    await nextTick();
+
+    repoB.resolve({ ok: true, json: async () => ({ githubUrl: "https://github.com/owner/repoB" }) }); // newer resolves first
+    await flushPromises();
+    repoA.resolve({ ok: true, json: async () => ({ githubUrl: "https://github.com/owner/repoA" }) }); // older resolves last
+    await flushPromises();
+
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await w.find(".cell-gh").trigger("click");
+    await w
+      .findAll(".cell-gh-item")
+      .find((b) => b.text() === "Repository")
+      ?.trigger("click");
+    expect(openSpy.mock.calls.at(-1)?.[0]).toBe("https://github.com/owner/repoB");
+    openSpy.mockRestore();
   });
 });
