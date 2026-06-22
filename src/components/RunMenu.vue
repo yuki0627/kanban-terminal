@@ -23,6 +23,10 @@ let req = 0; // request token: drop out-of-order responses
 const rootRef = useTemplateRef<HTMLElement>("root");
 
 async function loadScripts() {
+  // Close first: a cwd change invalidates the open dropdown (and would otherwise
+  // leave the global listeners attached and the menu re-appearing pre-opened on a
+  // later cwd, since the button can unmount while `open` stays true).
+  close();
   const reqId = ++req;
   const dir = props.cwd;
   // No resolved project dir yet (e.g. a single-view reconnect before the session
