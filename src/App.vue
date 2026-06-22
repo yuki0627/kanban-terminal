@@ -14,7 +14,7 @@ import { useCollectionBrowse, browseGotoIndex, browseGotoDetail, browseClose } f
 import { registerChatOpener } from "./composables/useChatLauncher";
 import { useAppConfig } from "./composables/useAppConfig";
 import { useSoundEnabled } from "./composables/useSoundEnabled";
-import { useAttentionSound, playAttentionSound } from "./composables/useAttentionSound";
+import { useAttentionSound } from "./composables/useAttentionSound";
 import type { Shortcut } from "./types/shortcuts";
 import type { CwdPreset } from "./components/presets";
 
@@ -232,9 +232,6 @@ function onSession(id: string) {
       >
         <span class="material-symbols-outlined">{{ soundEnabled ? "notifications_active" : "notifications_off" }}</span>
       </button>
-      <button type="button" class="launcher-btn" title="Test sound" aria-label="Test sound" @click="playAttentionSound">
-        <span class="material-symbols-outlined">volume_up</span>
-      </button>
       <button type="button" class="launcher-btn settings-btn" title="Settings" aria-label="Settings" @click="showSettings = true">
         <span class="material-symbols-outlined">settings</span>
       </button>
@@ -353,7 +350,7 @@ function onSession(id: string) {
   background: var(--accent-bg);
   color: var(--on-accent);
 }
-/* Push the action buttons (sound, test, settings) to the far right as a group. */
+/* Push the action buttons (sound, settings) to the far right as a group. */
 .sound-toggle {
   margin-left: auto;
 }
