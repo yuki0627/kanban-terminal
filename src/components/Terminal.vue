@@ -83,6 +83,9 @@ function connect() {
   term.reset();
   sawExit = false;
   status.value = "connecting";
+  // Drop the previous session's resolved cwd so the Run menu can't list/launch the
+  // prior project's scripts in the window before the new `session` message arrives.
+  serverCwd.value = props.cwd ?? null;
 
   // Resume the known id (learned from the server, or the prop) so a reconnect
   // re-attaches the same session instead of spawning a fresh one each retry.
