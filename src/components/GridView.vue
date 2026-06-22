@@ -19,7 +19,6 @@ import {
   type GridState,
 } from "./gridTabs";
 import { useSoundEnabled } from "../composables/useSoundEnabled";
-import { playAttentionSound } from "../composables/useAttentionSound";
 import type { CwdPreset } from "./presets";
 import { useAppConfig } from "../composables/useAppConfig";
 
@@ -103,7 +102,6 @@ function closeSettings() {
       >
         {{ soundEnabled ? "🔔" : "🔕" }}
       </button>
-      <button class="tb-btn" title="Test sound" aria-label="Test sound" @click="playAttentionSound">🔊</button>
       <button class="tb-btn" title="Single view" aria-label="Switch to single view" @click="emit('exit')">▢ Single</button>
       <button class="tb-btn" title="Settings" aria-label="Settings" @click="showSettings = true">⚙</button>
     </header>

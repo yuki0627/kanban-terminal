@@ -54,9 +54,8 @@ function armUnlock() {
   window.addEventListener("keydown", unlock);
 }
 
-// A short two-note attention chime via Web Audio (no asset). Exported so a toolbar
-// "test" button can preview it (and, being a user gesture, unlock the context).
-export function playAttentionSound() {
+// A short two-note attention chime via Web Audio (no asset).
+function playAttentionSound() {
   const ctx = getCtx();
   if (!ctx) return;
   if (ctx.state === "suspended") ctx.resume().catch(() => {});
