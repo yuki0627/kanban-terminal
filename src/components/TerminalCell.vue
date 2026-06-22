@@ -453,6 +453,7 @@ let diffReq = 0;
 
 async function loadDiff() {
   if (!launched.value || !isWorktreeCell.value || !cwd.value) {
+    diffReq++; // invalidate any in-flight fetch so its (now stale) response can't land
     diff.value = null;
     return;
   }

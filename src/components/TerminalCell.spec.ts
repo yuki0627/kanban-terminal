@@ -587,4 +587,24 @@ describe("TerminalCell", () => {
     await flushPromises();
     expect(w.find(".cell-diff").exists()).toBe(false);
   });
+
+  it("ignores an in-flight diff fetch that resolves after the cwd left the worktree", async () => {
+    const diffFetch = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    globalThis.fetch = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/diff")) return diffFetch.promise;
+      if (u.includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises(); // the worktree diff fetch is in flight (pending)
+    // leave the worktree BEFORE it resolves — the clear path must invalidate the token
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/plain-proj");
+    await flushPromises();
+    // the stale worktree diff now resolves — it must not repopulate the badge
+    diffFetch.resolve({ ok: true, json: async () => ({ isWorktree: true, base: "main", ahead: 5, dirty: 5, files: [], patch: "", truncated: false }) });
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(false);
+  });
 });
