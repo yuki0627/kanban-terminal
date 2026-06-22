@@ -11,6 +11,7 @@ import {
   toggleExpand,
   switchPage,
   runCommand,
+  runScriptInNewCell,
   pageCount,
   zoomedUid,
   visibleCells,
@@ -20,6 +21,7 @@ import {
   type GridState,
 } from "./gridTabs";
 import { useSoundEnabled } from "../composables/useSoundEnabled";
+import { usePendingScript } from "../composables/usePendingScript";
 import type { CwdPreset } from "./presets";
 import { useAppConfig } from "../composables/useAppConfig";
 
@@ -66,7 +68,17 @@ const onCwd = (uid: number, cwd: string) => (state.value = setCwd(state.value, u
 const onClose = (uid: number) => (state.value = closeCell(state.value, uid));
 const onToggleExpand = (uid: number) => (state.value = toggleExpand(state.value, uid));
 const onRun = (uid: number, command: { index: number; label: string; cwd: string | null }) => (state.value = runCommand(state.value, uid, command));
+// A running cell's header Run menu: launch in a spare cell so the session survives.
+const onRunSpare = (command: { index: number; label: string; cwd: string | null }) => (state.value = runScriptInNewCell(state.value, command));
 const switchTo = (page: number) => (state.value = switchPage(state.value, page));
+
+// A script the single view's terminal-header Run menu handed off: run it in a spare
+// cell now that the grid (where command cells live) is mounted.
+const { takePending } = usePendingScript();
+onMounted(() => {
+  const command = takePending();
+  if (command) state.value = runScriptInNewCell(state.value, command);
+});
 
 // Server config: the default workspace dir + the user's directory presets + sound.
 const {
@@ -134,6 +146,7 @@ function closeSettings() {
       @close="onClose"
       @toggle-expand="onToggleExpand"
       @run="onRun"
+      @run-spare="onRunSpare"
     />
     <SettingsModal
       v-if="showSettings"

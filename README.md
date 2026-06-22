@@ -203,6 +203,15 @@ alongside the Claude sessions. Scripts are **per-directory**: the cell reads the
 `script.json` of whatever directory you select, so different cells can offer
 different projects' scripts.
 
+Every running terminal's header also has a **▶ Run ▾** dropdown (next to the
+connection status), in both the single view and each grid cell — but **only when the
+open project has scripts** (no `script.json`, no button). It lists the **open
+project's** `script.json` — the directory that terminal runs in — and launches the
+picked script in a **spare grid cell** (reusing an open launcher, else a new one),
+switching to the grid from the single view so you can watch it. So you can start a
+dev server or tests for the project you're working in without disturbing the
+session that's running.
+
 The list is populated from a **`script.json`** at the chosen directory's root. It's
 optional; a directory without one simply shows no scripts.
 
@@ -524,13 +533,15 @@ src/
   components/
     Sidebar.vue       Session list; working dot + waiting bold; pub/sub driven
     Sidebar.spec.ts   Vitest component tests
-    Terminal.vue      xterm.js terminal; /ws (or /ws/run) connection, reconnect
-    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal)
+    Terminal.vue      xterm.js terminal; /ws (or /ws/run); single-view ▶ Run menu
+    GridView.vue      Grid toolbar (auto-layout, ＋ Terminal); runs handed-off scripts
+    RunMenu.vue       ▶ Run dropdown: lists a dir's script.json, emits the pick
     TerminalCell.vue  A cell: Claude launcher (dir picker + resume + run-a-script)
     TerminalGrid.vue  Grid of cells; auto-sizes by count; zoom lines up every tab
     CommandCell.vue   A grid cell that runs a script.json command (ephemeral)
   composables/
     usePubSub.ts      socket.io-client pub/sub composable (subscribe/unsubscribe)
+    usePendingScript.ts  Hands a header-picked script to the grid to run
 vite.config.ts    Dev proxy for /ws (covers /ws/run), /ws/pubsub, /api
 vitest.config.ts  jsdom test environment
 ```
