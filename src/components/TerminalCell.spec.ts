@@ -588,6 +588,25 @@ describe("TerminalCell", () => {
     expect(w.find(".cell-diff").exists()).toBe(false);
   });
 
+  it("does not auto-reopen the diff panel after leaving and re-entering a worktree", async () => {
+    mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 2, dirty: 0, files: [], patch: "x", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-wt-badge").trigger("click"); // user opens the panel
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+
+    const term = w.findComponent({ name: "TerminalView" });
+    term.vm.$emit("cwd", "/home/me/plain-proj"); // leave the worktree → panel closes
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(false);
+
+    term.vm.$emit("cwd", WT_CWD); // re-enter a worktree
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(true); // badge returns…
+    expect(w.find(".cell-diff").exists()).toBe(false); // …but the panel stays closed until clicked
+  });
+
   it("closes the diff panel on Escape (document-level handler)", async () => {
     mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 1, dirty: 0, files: [], patch: "x", truncated: false });
     const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });

@@ -455,6 +455,7 @@ async function loadDiff() {
   if (!launched.value || !isWorktreeCell.value || !cwd.value) {
     diffReq++; // invalidate any in-flight fetch so its (now stale) response can't land
     diff.value = null;
+    diffOpen.value = false; // fully close — don't auto-reopen on a later worktree re-entry
     return;
   }
   const reqId = ++diffReq;
