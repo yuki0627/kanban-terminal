@@ -846,4 +846,147 @@ describe("TerminalCell", () => {
     expect(msg).not.toBe("Pushing…");
     expect(msg).toContain("Not allowed");
   });
+
+  // Close-time cleanup: closing a worktree cell asks to keep or remove the room.
+  function mockFetchCloseCleanup(diff: Record<string, unknown>) {
+    const posts: { url: string; body: string }[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      const u = String(url);
+      if (init?.method === "POST") posts.push({ url: u, body: String(init.body ?? "") });
+      if (u.includes("/api/worktrees/remove")) return { ok: true, json: async () => ({ ok: true }) };
+      if (u.includes("/api/worktrees/diff")) return { ok: true, json: async () => diff };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+    return posts;
+  }
+  const cleanWtDiff = { isWorktree: true, base: "main", ahead: 0, dirty: 0, files: [], patch: "", truncated: false };
+
+  it("closing a worktree cell asks to keep or remove the room (no immediate teardown)", async () => {
+    mockFetchCloseCleanup(cleanWtDiff);
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    expect(w.find(".cell-close-confirm").exists()).toBe(true);
+    expect(w.findComponent({ name: "TerminalView" }).exists()).toBe(true); // session not torn down yet
+  });
+
+  it("a NON-worktree cell still closes immediately (no confirm)", async () => {
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: "/home/me/plain-proj" });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    await nextTick();
+    expect(w.find(".cell-close-confirm").exists()).toBe(false);
+    expect(w.find(".cell-launch").exists()).toBe(true); // torn down to the launcher
+  });
+
+  it("Keep worktree tears the cell down WITHOUT removing the room", async () => {
+    const posts = mockFetchCloseCleanup(cleanWtDiff);
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    await w.find(".ccx-keep").trigger("click");
+    await flushPromises();
+    expect(posts.some((p) => p.url.includes("/api/worktrees/remove"))).toBe(false);
+    expect(w.find(".cell-launch").exists()).toBe(true);
+  });
+
+  it("Remove worktree posts a forced remove (path+repoDir = the worktree) then closes", async () => {
+    const posts = mockFetchCloseCleanup(cleanWtDiff);
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    await flushPromises(); // the close() diff refresh enables the Remove button
+    await w.find(".ccx-remove").trigger("click");
+    await flushPromises();
+    const rm = posts.find((p) => p.url.includes("/api/worktrees/remove"));
+    if (!rm) throw new Error("remove not called");
+    expect(JSON.parse(rm.body)).toMatchObject({ repoDir: WT_CWD, path: WT_CWD, deleteBranch: true, force: true });
+    expect(w.find(".cell-launch").exists()).toBe(true);
+  });
+
+  it("holds Remove (Checking…) until the fresh diff load completes", async () => {
+    const gate = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    let diffCalls = 0;
+    globalThis.fetch = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/diff")) {
+        diffCalls += 1;
+        // first call (on mount) resolves; the close() refresh (2nd) is gated
+        return diffCalls >= 2 ? gate.promise : Promise.resolve({ ok: true, json: async () => cleanWtDiff });
+      }
+      if (u.includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click"); // close() refresh is pending on `gate`
+    await nextTick();
+    expect(w.find(".ccx-remove").attributes("disabled")).toBeDefined(); // held while checking
+    gate.resolve({ ok: true, json: async () => cleanWtDiff });
+    await flushPromises();
+    expect(w.find(".ccx-remove").attributes("disabled")).toBeUndefined(); // released
+  });
+
+  it("keeps the confirm open with an error when the remove fails (no false success)", async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/remove")) return { ok: false, status: 500, json: async () => ({ ok: false, reason: "failed" }) };
+      if (u.includes("/api/worktrees/diff")) return { ok: true, json: async () => cleanWtDiff };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    await flushPromises();
+    await w.find(".ccx-remove").trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-close-confirm").exists()).toBe(true); // NOT torn down
+    expect(w.find(".cell-launch").exists()).toBe(false);
+    expect(w.find(".ccx-warn").text()).toContain("Couldn't remove");
+  });
+
+  it("Escape dismisses the close confirmation", async () => {
+    mockFetchCloseCleanup(cleanWtDiff);
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    expect(w.find(".cell-close-confirm").exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await nextTick();
+    expect(w.find(".cell-close-confirm").exists()).toBe(false);
+    expect(w.findComponent({ name: "TerminalView" }).exists()).toBe(true);
+  });
+
+  it("Cancel keeps the session running", async () => {
+    mockFetchCloseCleanup(cleanWtDiff);
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    await w.find(".ccx-cancel").trigger("click");
+    expect(w.find(".cell-close-confirm").exists()).toBe(false);
+    expect(w.findComponent({ name: "TerminalView" }).exists()).toBe(true);
+  });
+
+  it("warns about unsaved work (unpushed + uncommitted) and labels the button Discard", async () => {
+    mockFetchCloseCleanup({
+      isWorktree: true,
+      base: "main",
+      ahead: 2,
+      dirty: 1,
+      files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+      patch: "x",
+      truncated: false,
+    });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-close").trigger("click");
+    await flushPromises(); // the close() diff refresh
+    const warn = w.find(".ccx-warn");
+    expect(warn.exists()).toBe(true);
+    expect(warn.text()).toContain("2 unpushed");
+    expect(warn.text()).toContain("1 uncommitted");
+    expect(w.find(".ccx-remove").text()).toContain("Discard");
+  });
 });
