@@ -5,9 +5,18 @@
 import type { Express } from "express";
 import { repoRoot, defaultBaseBranch, listWorktrees, createWorktree, removeWorktree, isDirty } from "./worktrees.js";
 import { worktreeDiff } from "./worktree-diff.js";
+import { pushWorktree, createOrOpenPR } from "./worktree-pr.js";
 
 interface WorktreeRouteOptions {
   isAllowedOrigin: (origin?: string) => boolean;
+}
+
+// A failed git/gh command is a 500; a precondition the user can fix (no remote, not
+// a GitHub repo, …) is a 409. Mirrors the create/remove status convention.
+const SERVER_ERROR_REASONS = new Set(["failed", "push-failed"]);
+function statusFor(result: { ok: boolean; reason?: string }): number {
+  if (result.ok) return 200;
+  return SERVER_ERROR_REASONS.has(result.reason ?? "") ? 500 : 409;
 }
 
 export function mountWorktreeRoutes(app: Express, { isAllowedOrigin }: WorktreeRouteOptions): void {
@@ -57,5 +66,24 @@ export function mountWorktreeRoutes(app: Express, { isAllowedOrigin }: WorktreeR
     const result = await removeWorktree(repoDir, worktreePath, { deleteBranch: deleteBranch === true, force: force === true });
     if (result.ok) return res.json(result);
     res.status(result.reason === "failed" ? 500 : 409).json(result);
+  });
+
+  // Push the worktree's branch to origin (the first half of "取り込み").
+  app.post("/api/worktrees/push", async (req, res) => {
+    if (!isAllowedOrigin(req.headers.origin)) return res.status(403).end();
+    const { cwd } = req.body ?? {};
+    if (typeof cwd !== "string") return res.status(400).json({ error: "cwd is required" });
+    const result = await pushWorktree(cwd);
+    res.status(statusFor(result)).json(result);
+  });
+
+  // Push, then create a PR via gh — or fall back to the GitHub compare URL. The body
+  // returns the URL for the client to open and which path produced it (`via`).
+  app.post("/api/worktrees/pr", async (req, res) => {
+    if (!isAllowedOrigin(req.headers.origin)) return res.status(403).end();
+    const { cwd } = req.body ?? {};
+    if (typeof cwd !== "string") return res.status(400).json({ error: "cwd is required" });
+    const result = await createOrOpenPR(cwd);
+    res.status(statusFor(result)).json(result);
   });
 }

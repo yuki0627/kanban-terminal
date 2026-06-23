@@ -81,6 +81,21 @@ describe("worktree routes: origin guard + validation", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("403s push and pr from a disallowed origin, 400s when cwd is missing", async () => {
+    const denied = routes(deny);
+    for (const route of ["POST /api/worktrees/push", "POST /api/worktrees/pr"] as const) {
+      const r403 = makeRes();
+      await denied[route]({ headers: { origin: "https://evil.example" }, body: { cwd: "/x" } }, r403);
+      expect(r403.statusCode).toBe(403);
+    }
+    const allowed = routes(allow);
+    for (const route of ["POST /api/worktrees/push", "POST /api/worktrees/pr"] as const) {
+      const r400 = makeRes();
+      await allowed[route]({ headers: {}, body: {} }, r400);
+      expect(r400.statusCode).toBe(400);
+    }
+  });
+
   it("reports isGit:false for a non-git dir", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "wt-routes-plain-"));
     try {
@@ -201,5 +216,37 @@ describe("worktree routes: create → list → remove lifecycle", () => {
     await routes(allow)["POST /api/worktrees/remove"]({ headers: {}, body: { repoDir: repo, path: ghost } }, res);
     expect(res.statusCode).toBe(500);
     expect(res.payload).toEqual({ ok: false, reason: "failed" });
+  });
+
+  it.skipIf(!hasGit)("POST /api/worktrees/push 200s with the branch (and 409s with no remote)", async () => {
+    const r = routes(allow);
+    const created = makeRes();
+    await r["POST /api/worktrees/create"]({ headers: {}, body: { repoDir: repo, task: "ship it" } }, created);
+    const wt = created.payload as { path: string };
+    writeFileSync(path.join(wt.path, "a.txt"), "x");
+    // eslint-disable-next-line sonarjs/no-os-command-from-path -- 'git' from PATH in a test; argv only, no shell
+    execFileSync("git", ["-C", wt.path, "add", "-A"], { stdio: "ignore" });
+    // eslint-disable-next-line sonarjs/no-os-command-from-path -- 'git' from PATH in a test; argv only, no shell
+    execFileSync("git", ["-C", wt.path, "commit", "-m", "work"], { stdio: "ignore" });
+
+    const noRemote = makeRes();
+    await r["POST /api/worktrees/push"]({ headers: {}, body: { cwd: wt.path } }, noRemote);
+    expect(noRemote.statusCode).toBe(409);
+    expect(noRemote.payload).toMatchObject({ ok: false, reason: "no-remote" });
+
+    const remote = realpathSync(mkdtempSync(path.join(tmpdir(), "wt-routes-remote-")));
+    try {
+      // eslint-disable-next-line sonarjs/no-os-command-from-path -- 'git' from PATH in a test; argv only, no shell
+      execFileSync("git", ["init", "--bare", "-b", "main", remote], { stdio: "ignore" });
+      // eslint-disable-next-line sonarjs/no-os-command-from-path -- 'git' from PATH in a test; argv only, no shell
+      execFileSync("git", ["-C", repo, "remote", "add", "origin", remote], { stdio: "ignore" });
+
+      const pushed = makeRes();
+      await r["POST /api/worktrees/push"]({ headers: {}, body: { cwd: wt.path } }, pushed);
+      expect(pushed.statusCode).toBe(200);
+      expect(pushed.payload).toEqual({ ok: true, branch: "agent/ship-it" });
+    } finally {
+      rmSync(remote, { recursive: true, force: true });
+    }
   });
 });

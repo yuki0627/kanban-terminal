@@ -472,7 +472,57 @@ async function loadDiff() {
 
 function openDiff() {
   diffOpen.value = true;
+  prMsg.value = null;
   loadDiff(); // refresh on open
+}
+
+// Outward-facing actions (push / open PR) for the worktree's branch. `prBusy`
+// disables the buttons during a request; `prMsg` shows the result inline.
+const prBusy = ref(false);
+const prMsg = ref<string | null>(null);
+const REASON_MSG: Record<string, string> = {
+  "not-worktree": "Not a worktree",
+  "no-branch": "No branch to push",
+  "no-remote": "No git remote (origin) configured",
+  "no-github": "Not a GitHub repo — push succeeded; open the PR manually",
+  "push-failed": "Push failed",
+  failed: "Failed",
+};
+const reasonMsg = (reason?: string) => REASON_MSG[reason ?? ""] ?? "Failed";
+
+async function worktreeAction(endpoint: "push" | "pr"): Promise<Record<string, unknown> | null> {
+  if (!cwd.value || prBusy.value) return null;
+  prBusy.value = true;
+  prMsg.value = endpoint === "push" ? "Pushing…" : "Creating PR…";
+  try {
+    const res = await fetch(`/api/worktrees/${endpoint}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cwd: cwd.value }),
+    });
+    return await res.json().catch(() => null);
+  } catch {
+    prMsg.value = endpoint === "push" ? "Push failed" : "PR failed";
+    return null;
+  } finally {
+    prBusy.value = false;
+  }
+}
+
+async function pushBranch() {
+  const data = await worktreeAction("push");
+  if (data) prMsg.value = data.ok ? `Pushed ${data.branch}` : reasonMsg(data.reason as string);
+}
+
+async function openPR() {
+  const data = await worktreeAction("pr");
+  if (!data) return;
+  if (data.ok && typeof data.url === "string") {
+    window.open(data.url, "_blank", "noopener,noreferrer");
+    prMsg.value = data.via === "gh" ? "PR created" : "Opened PR page";
+  } else {
+    prMsg.value = reasonMsg(data.reason as string);
+  }
 }
 
 // Refresh when the agent transitions from working → settled: that's when the diff
@@ -578,6 +628,25 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         <pre v-if="diff && diff.patch" class="cell-diff-patch">{{ diff.patch }}</pre>
         <p v-if="diff && diff.truncated" class="cell-diff-note">Diff truncated — open the worktree to see the rest.</p>
         <p v-if="diff && !diff.files.length" class="cell-diff-empty">No changes yet.</p>
+        <div class="cell-diff-actions">
+          <button
+            class="cell-diff-btn"
+            :disabled="prBusy || (diff?.ahead ?? 0) === 0"
+            :title="(diff?.ahead ?? 0) === 0 ? 'Commit changes in the terminal first' : 'git push -u origin'"
+            @click="pushBranch"
+          >
+            ⬆ Push
+          </button>
+          <button
+            class="cell-diff-btn"
+            :disabled="prBusy || (diff?.ahead ?? 0) === 0"
+            :title="(diff?.ahead ?? 0) === 0 ? 'Commit changes in the terminal first' : 'Push and open a pull request'"
+            @click="openPR"
+          >
+            ⧉ Open PR
+          </button>
+          <span v-if="prMsg" class="cell-diff-msg">{{ prMsg }}</span>
+        </div>
       </div>
     </template>
     <div v-else class="cell-launch">
@@ -1164,6 +1233,43 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
 .cell-diff-empty {
   margin: 0;
   padding: 8px;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.cell-diff-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.cell-diff-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+}
+.cell-diff-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cell-diff-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cell-diff-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-family: system-ui, sans-serif;
   font-size: 11px;
   color: var(--text-dim);
