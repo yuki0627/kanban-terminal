@@ -383,25 +383,66 @@ watch(ghMenuOpen, (open) => {
 });
 onUnmounted(() => document.removeEventListener("mousedown", onGhOutside));
 
-function close() {
-  // Ask the server to reap this session immediately (don't hold it through the
-  // disconnect grace window), then tear the cell down.
+// Reap the session and reset the cell back to the empty launcher. The cell isn't
+// remounted (stable key), so the dir/diff state is reset explicitly — otherwise the
+// launch form would still show the closed session's directory.
+function teardown() {
   termRef.value?.terminate();
   launched.value = false;
   sessionId.value = null;
   working.value = false;
   waiting.value = false;
   lastPrompt.value = null;
-  // The cell isn't remounted (stable key), so reset the dir state too — otherwise
-  // the empty launch form would still show the closed session's directory.
   cwd.value = props.defaultCwd;
   dirInput.value = props.defaultCwd ?? "";
   diff.value = null;
   diffOpen.value = false;
+  closeConfirm.value = false;
+  prMsg.value = null;
   emit("close");
   loadResumable();
   loadScripts();
   loadWorktrees();
+}
+
+// Closing a WORKTREE cell offers to keep or remove the room first (never silently
+// discards uncommitted/unpushed work); other cells just tear down.
+const closeConfirm = ref(false);
+const hasUnsaved = computed(() => (diff.value?.dirty ?? 0) > 0 || (diff.value?.ahead ?? 0) > 0);
+const unsavedSummary = computed(() => {
+  const ahead = diff.value?.ahead ?? 0;
+  const dirty = diff.value?.dirty ?? 0;
+  const parts: string[] = [];
+  if (ahead) parts.push(`${ahead} unpushed commit${ahead > 1 ? "s" : ""}`);
+  if (dirty) parts.push(`${dirty} uncommitted change${dirty > 1 ? "s" : ""}`);
+  return parts.join(" + ");
+});
+
+function close() {
+  if (isWorktreeCell.value) {
+    closeConfirm.value = true;
+    loadDiff(); // refresh dirty/ahead so the warning is accurate
+  } else {
+    teardown();
+  }
+}
+const cancelClose = () => (closeConfirm.value = false);
+
+async function removeAndClose() {
+  const dir = cwd.value;
+  termRef.value?.terminate(); // free the worktree dir before removing (Windows locks a process's cwd)
+  if (dir) {
+    try {
+      await fetch("/api/worktrees/remove", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repoDir: dir, path: dir, deleteBranch: true, force: true }),
+      });
+    } catch {
+      // best-effort — an orphaned worktree is pruned on the next list
+    }
+  }
+  teardown();
 }
 
 // Adopt the server-assigned id (esp. for new sessions), bubble it up for
@@ -667,6 +708,18 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
             ⧉ Open PR
           </button>
           <span v-if="prMsg" class="cell-diff-msg">{{ prMsg }}</span>
+        </div>
+      </div>
+      <div v-if="closeConfirm" class="cell-close-confirm">
+        <div class="ccx-box">
+          <p class="ccx-title">Close {{ headerDir }}</p>
+          <p v-if="hasUnsaved" class="ccx-warn">{{ unsavedSummary }} will be discarded if you remove the worktree.</p>
+          <p v-else class="ccx-sub">Keep the worktree to reuse it later, or remove it.</p>
+          <div class="ccx-actions">
+            <button class="ccx-btn ccx-keep" @click="teardown">Keep worktree</button>
+            <button class="ccx-btn ccx-remove" @click="removeAndClose">{{ hasUnsaved ? "Discard &amp; remove" : "Remove worktree" }}</button>
+            <button class="ccx-btn ccx-cancel" @click="cancelClose">Cancel</button>
+          </div>
         </div>
       </div>
     </template>
@@ -1294,5 +1347,75 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   font-family: system-ui, sans-serif;
   font-size: 11px;
   color: var(--text-dim);
+}
+
+/* Close confirmation: keep or remove the worktree before tearing the cell down. */
+.cell-close-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg-base) 82%, transparent);
+}
+.ccx-box {
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.ccx-title {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ccx-sub {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.ccx-warn {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--warn-text, #e0a030);
+}
+.ccx-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ccx-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+.ccx-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.ccx-keep {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.ccx-remove:hover {
+  background: var(--err-hover-bg);
+  color: var(--err-text);
+  border-color: var(--err-text, #e0556b);
 }
 </style>
