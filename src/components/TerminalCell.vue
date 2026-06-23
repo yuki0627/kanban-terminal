@@ -480,6 +480,15 @@ function openDiff() {
 // disables the buttons during a request; `prMsg` shows the result inline.
 const prBusy = ref(false);
 const prMsg = ref<string | null>(null);
+
+// Ask the cell's own Claude session to commit the uncommitted changes (so it writes
+// a sensible message). After it commits and settles, the working→idle watch
+// refreshes the diff: `ahead` rises, `dirty` drops, and Push/PR light up.
+const COMMIT_PROMPT = "Commit all current changes in this worktree with a concise, descriptive commit message.";
+function commitViaClaude() {
+  const delivered = termRef.value?.submitText(COMMIT_PROMPT);
+  prMsg.value = delivered ? "Asked Claude to commit…" : "Couldn't reach the session";
+}
 const REASON_MSG: Record<string, string> = {
   "not-worktree": "Not a worktree",
   "no-branch": "No branch to push",
@@ -635,8 +644,16 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         <div class="cell-diff-actions">
           <button
             class="cell-diff-btn"
+            :disabled="prBusy || working || (diff?.dirty ?? 0) === 0"
+            :title="(diff?.dirty ?? 0) === 0 ? 'No uncommitted changes' : working ? 'Wait for the session to finish' : 'Ask Claude to commit the changes'"
+            @click="commitViaClaude"
+          >
+            ✓ Commit
+          </button>
+          <button
+            class="cell-diff-btn"
             :disabled="prBusy || (diff?.ahead ?? 0) === 0"
-            :title="(diff?.ahead ?? 0) === 0 ? 'Commit changes in the terminal first' : 'git push -u origin'"
+            :title="(diff?.ahead ?? 0) === 0 ? 'Commit changes first' : 'git push -u origin'"
             @click="pushBranch"
           >
             ⬆ Push
