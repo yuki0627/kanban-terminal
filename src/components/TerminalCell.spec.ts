@@ -729,4 +729,30 @@ describe("TerminalCell", () => {
     await flushPromises();
     expect(w.find(".cell-diff-msg").text()).toContain("No git remote");
   });
+
+  it("does not get stuck on 'Pushing…' when the response has no JSON body (403)", async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/push"))
+        return {
+          ok: false,
+          status: 403,
+          json: async () => {
+            throw new Error("empty body");
+          },
+        };
+      if (u.includes("/api/worktrees/diff")) return { ok: true, json: async () => aheadDiff(2) };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const push = w.findAll(".cell-diff-btn").find((b) => b.text().includes("Push"));
+    await push?.trigger("click");
+    await flushPromises();
+    const msg = w.find(".cell-diff-msg").text();
+    expect(msg).not.toBe("Pushing…");
+    expect(msg).toContain("Not allowed");
+  });
 });

@@ -500,7 +500,11 @@ async function worktreeAction(endpoint: "push" | "pr"): Promise<Record<string, u
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ cwd: cwd.value }),
     });
-    return await res.json().catch(() => null);
+    const data = await res.json().catch(() => null);
+    // A non-JSON / empty-body response (e.g. a 403 from the origin guard) must not
+    // leave the UI stuck on the optimistic "Pushing…" text.
+    if (!data) prMsg.value = res.status === 403 ? "Not allowed (origin)" : "Request failed";
+    return data;
   } catch {
     prMsg.value = endpoint === "push" ? "Push failed" : "PR failed";
     return null;
