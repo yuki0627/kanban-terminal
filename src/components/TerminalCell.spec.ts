@@ -480,4 +480,162 @@ describe("TerminalCell", () => {
     expect(posts.some((p) => p.url.includes("/api/worktrees/remove"))).toBe(false);
     confirmSpy.mockRestore();
   });
+
+  // Read-only worktree diff: a launched worktree cell shows an ahead/dirty badge
+  // and opens a panel with the changed files + patch.
+  const WT_CWD = "/home/me/.mulmoterminal/worktrees/repo-1a2b3c4d/fix";
+  function mockFetchWithDiff(diff: Record<string, unknown>) {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/diff")) return { ok: true, json: async () => diff };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+  }
+
+  it("shows the ahead/dirty badge for a worktree cell and opens the diff panel", async () => {
+    mockFetchWithDiff({
+      isWorktree: true,
+      base: "main",
+      ahead: 3,
+      dirty: 2,
+      truncated: false,
+      files: [
+        { path: "src/a.ts", additions: 10, deletions: 2, status: "changed" },
+        { path: "new.txt", additions: 0, deletions: 0, status: "untracked" },
+      ],
+      patch: "diff --git a/src/a.ts b/src/a.ts\n+hello\n",
+    });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+
+    const badge = w.find(".cell-wt-badge");
+    expect(badge.exists()).toBe(true);
+    expect(badge.find(".wt-ahead").text()).toBe("+3");
+    expect(badge.find(".wt-dirty-count").text()).toBe("●2");
+
+    expect(w.find(".cell-diff").exists()).toBe(false); // panel closed initially
+    await badge.trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+    expect(w.findAll(".cell-diff-file")).toHaveLength(2);
+    expect(w.find(".df-new").exists()).toBe(true); // the untracked file
+    expect(w.find(".cell-diff-patch").text()).toContain("hello");
+
+    await w.find(".cell-diff .cell-btn").trigger("click"); // ✕ closes it
+    expect(w.find(".cell-diff").exists()).toBe(false);
+  });
+
+  it("shows no diff badge for a clean worktree (0 ahead / 0 dirty)", async () => {
+    mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 0, dirty: 0, files: [], patch: "", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(false);
+  });
+
+  it("never shows the diff badge for a non-worktree cell", async () => {
+    mockFetchWithDiff({ isWorktree: false, base: null, ahead: 9, dirty: 9, files: [], patch: "", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: "/home/me/regular-proj" });
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(false);
+  });
+
+  it("bootstraps the diff badge when RESUMING an idle worktree session", async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/diff"))
+        return { ok: true, json: async () => ({ isWorktree: true, base: "main", ahead: 2, dirty: 0, files: [], patch: "", truncated: false }) };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ cwd: WT_CWD, sessions: [{ id: "wt-sess", title: "t", mtime: 1 }] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+    const w = mountCell(null, { defaultCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-resume-item").trigger("click"); // resume the idle worktree session
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(true);
+    expect(w.find(".wt-ahead").text()).toBe("+2");
+  });
+
+  it("clears the diff badge when the cwd falls back to a non-worktree dir", async () => {
+    mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 3, dirty: 1, files: [], patch: "", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(true);
+    // server confirms a different, non-worktree dir → badge must not linger
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/plain-proj");
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(false);
+  });
+
+  it("auto-closes the open diff panel when the cwd leaves the worktree (no empty overlay)", async () => {
+    mockFetchWithDiff({
+      isWorktree: true,
+      base: "main",
+      ahead: 3,
+      dirty: 1,
+      files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+      patch: "x",
+      truncated: false,
+    });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-wt-badge").trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+    // leaving the worktree clears `diff`; the panel must not linger as an empty overlay
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/plain-proj");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(false);
+  });
+
+  it("does not auto-reopen the diff panel after leaving and re-entering a worktree", async () => {
+    mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 2, dirty: 0, files: [], patch: "x", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-wt-badge").trigger("click"); // user opens the panel
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+
+    const term = w.findComponent({ name: "TerminalView" });
+    term.vm.$emit("cwd", "/home/me/plain-proj"); // leave the worktree → panel closes
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(false);
+
+    term.vm.$emit("cwd", WT_CWD); // re-enter a worktree
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(true); // badge returns…
+    expect(w.find(".cell-diff").exists()).toBe(false); // …but the panel stays closed until clicked
+  });
+
+  it("closes the diff panel on Escape (document-level handler)", async () => {
+    mockFetchWithDiff({ isWorktree: true, base: "main", ahead: 1, dirty: 0, files: [], patch: "x", truncated: false });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await w.find(".cell-wt-badge").trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); // focus may be on the badge/terminal
+    await flushPromises();
+    expect(w.find(".cell-diff").exists()).toBe(false);
+  });
+
+  it("ignores an in-flight diff fetch that resolves after the cwd left the worktree", async () => {
+    const diffFetch = deferred<{ ok: boolean; json: () => Promise<unknown> }>();
+    globalThis.fetch = vi.fn((url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/diff")) return diffFetch.promise;
+      if (u.includes("/api/sessions")) return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) });
+    }) as unknown as typeof fetch;
+
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises(); // the worktree diff fetch is in flight (pending)
+    // leave the worktree BEFORE it resolves — the clear path must invalidate the token
+    w.findComponent({ name: "TerminalView" }).vm.$emit("cwd", "/home/me/plain-proj");
+    await flushPromises();
+    // the stale worktree diff now resolves — it must not repopulate the badge
+    diffFetch.resolve({ ok: true, json: async () => ({ isWorktree: true, base: "main", ahead: 5, dirty: 5, files: [], patch: "", truncated: false }) });
+    await flushPromises();
+    expect(w.find(".cell-wt-badge").exists()).toBe(false);
+  });
 });
