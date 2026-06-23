@@ -22,7 +22,12 @@ vi.mock("./Terminal.vue", () => ({
     props: ["sessionId", "connectKey", "cwd"],
     emits: ["session", "cwd"],
     template: '<div class="stub-term" />',
-    methods: { terminate() {} },
+    methods: {
+      terminate() {},
+      submitText() {
+        return true;
+      },
+    },
   },
 }));
 
@@ -685,8 +690,10 @@ describe("TerminalCell", () => {
     await flushPromises();
     await openPanel(w);
     const btns = w.findAll(".cell-diff-btn");
-    expect(btns).toHaveLength(2);
-    expect(btns.every((b) => b.attributes("disabled") !== undefined)).toBe(true);
+    const labelled = (text: string) => btns.find((b) => b.text().includes(text));
+    expect(labelled("Push")?.attributes("disabled")).toBeDefined(); // no commits ahead
+    expect(labelled("Open PR")?.attributes("disabled")).toBeDefined();
+    expect(labelled("Commit")?.attributes("disabled")).toBeUndefined(); // but there ARE uncommitted changes to commit
   });
 
   it("Push posts to /api/worktrees/push and shows the pushed branch", async () => {
@@ -728,6 +735,90 @@ describe("TerminalCell", () => {
     await push?.trigger("click");
     await flushPromises();
     expect(w.find(".cell-diff-msg").text()).toContain("No git remote");
+  });
+
+  const commitBtn = (w: ReturnType<typeof mountCell>) => w.findAll(".cell-diff-btn").find((b) => b.text().includes("Commit"));
+
+  it("Commit asks the Claude session to commit when there are uncommitted changes", async () => {
+    // ahead 0, dirty 2 → the badge shows (dirty) and the Commit button is enabled
+    mockFetchWithPr(
+      {
+        isWorktree: true,
+        base: "main",
+        ahead: 0,
+        dirty: 2,
+        files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+        patch: "x",
+        truncated: false,
+      },
+      { body: { ok: true } },
+    );
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const term = w.findComponent({ name: "TerminalView" });
+    const submit = vi.spyOn(term.vm as unknown as { submitText: (t: string) => boolean }, "submitText");
+
+    const commit = commitBtn(w);
+    if (!commit) throw new Error("Commit button not found");
+    expect(commit.attributes("disabled")).toBeUndefined(); // enabled (dirty>0, not working)
+    await commit.trigger("click");
+    await flushPromises();
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0][0]).toContain("Commit all current changes");
+    expect(w.find(".cell-diff-msg").text()).toContain("Asked Claude to commit");
+  });
+
+  it("disables Commit when there are no uncommitted changes (dirty=0)", async () => {
+    mockFetchWithPr(aheadDiff(2), { body: { ok: true } }); // ahead 2, dirty 0
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    expect(commitBtn(w)?.attributes("disabled")).toBeDefined();
+  });
+
+  it("disables Commit while the session is working (don't interrupt the agent)", async () => {
+    mockFetchWithPr(
+      {
+        isWorktree: true,
+        base: "main",
+        ahead: 0,
+        dirty: 2,
+        files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+        patch: "x",
+        truncated: false,
+      },
+      { body: { ok: true } },
+    );
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    captured?.({ id: "66666666-6666-6666-6666-666666666666", working: true, waiting: false }); // agent starts working
+    await nextTick();
+    expect(commitBtn(w)?.attributes("disabled")).toBeDefined();
+  });
+
+  it("shows a fallback message when the session can't be reached", async () => {
+    mockFetchWithPr(
+      {
+        isWorktree: true,
+        base: "main",
+        ahead: 0,
+        dirty: 2,
+        files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+        patch: "x",
+        truncated: false,
+      },
+      { body: { ok: true } },
+    );
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const term = w.findComponent({ name: "TerminalView" });
+    vi.spyOn(term.vm as unknown as { submitText: (t: string) => boolean }, "submitText").mockReturnValue(false);
+    await commitBtn(w)?.trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff-msg").text()).toContain("Couldn't reach the session");
   });
 
   it("does not get stuck on 'Pushing…' when the response has no JSON body (403)", async () => {
