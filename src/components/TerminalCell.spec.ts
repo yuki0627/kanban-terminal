@@ -638,4 +638,121 @@ describe("TerminalCell", () => {
     await flushPromises();
     expect(w.find(".cell-wt-badge").exists()).toBe(false);
   });
+
+  // Slice 2 — push / open-PR actions in the diff panel footer.
+  function mockFetchWithPr(diff: Record<string, unknown>, action: { url?: string; status?: number; body: Record<string, unknown> }) {
+    const posts: { url: string; body: string }[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      const u = String(url);
+      if (init?.method === "POST") posts.push({ url: u, body: String(init.body ?? "") });
+      if (u.includes("/api/worktrees/push") || u.includes("/api/worktrees/pr"))
+        return { ok: (action.status ?? 200) < 400, status: action.status ?? 200, json: async () => action.body };
+      if (u.includes("/api/worktrees/diff")) return { ok: true, json: async () => diff };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+    return posts;
+  }
+  const aheadDiff = (ahead: number) => ({
+    isWorktree: true,
+    base: "main",
+    ahead,
+    dirty: 0,
+    files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+    patch: "x",
+    truncated: false,
+  });
+  const openPanel = async (w: ReturnType<typeof mountCell>) => {
+    await w.find(".cell-wt-badge").trigger("click");
+    await flushPromises();
+  };
+
+  it("disables Push / Open PR when there are no commits ahead (only uncommitted changes)", async () => {
+    // ahead 0 but dirty 2 → badge shows (via dirty), but nothing is committed to push
+    mockFetchWithPr(
+      {
+        isWorktree: true,
+        base: "main",
+        ahead: 0,
+        dirty: 2,
+        files: [{ path: "a.ts", additions: 1, deletions: 0, status: "changed" }],
+        patch: "x",
+        truncated: false,
+      },
+      { body: { ok: true } },
+    );
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const btns = w.findAll(".cell-diff-btn");
+    expect(btns).toHaveLength(2);
+    expect(btns.every((b) => b.attributes("disabled") !== undefined)).toBe(true);
+  });
+
+  it("Push posts to /api/worktrees/push and shows the pushed branch", async () => {
+    const posts = mockFetchWithPr(aheadDiff(2), { body: { ok: true, branch: "agent/fix-login" } });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const push = w.findAll(".cell-diff-btn").find((b) => b.text().includes("Push"));
+    if (!push) throw new Error("Push button not found");
+    await push.trigger("click");
+    await flushPromises();
+    const req = posts.find((p) => p.url.includes("/api/worktrees/push"));
+    if (!req) throw new Error("push not called");
+    expect(JSON.parse(req.body)).toEqual({ cwd: WT_CWD });
+    expect(w.find(".cell-diff-msg").text()).toBe("Pushed agent/fix-login");
+  });
+
+  it("Open PR opens the returned url in a new tab", async () => {
+    mockFetchWithPr(aheadDiff(2), { body: { ok: true, url: "https://github.com/owner/repo/pull/9", via: "gh" } });
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const pr = w.findAll(".cell-diff-btn").find((b) => b.text().includes("Open PR"));
+    if (!pr) throw new Error("Open PR button not found");
+    await pr.trigger("click");
+    await flushPromises();
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/owner/repo/pull/9", "_blank", "noopener,noreferrer");
+    expect(w.find(".cell-diff-msg").text()).toBe("PR created");
+    openSpy.mockRestore();
+  });
+
+  it("shows a friendly message when push fails with no remote (409)", async () => {
+    mockFetchWithPr(aheadDiff(2), { status: 409, body: { ok: false, reason: "no-remote" } });
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const push = w.findAll(".cell-diff-btn").find((b) => b.text().includes("Push"));
+    await push?.trigger("click");
+    await flushPromises();
+    expect(w.find(".cell-diff-msg").text()).toContain("No git remote");
+  });
+
+  it("does not get stuck on 'Pushing…' when the response has no JSON body (403)", async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/worktrees/push"))
+        return {
+          ok: false,
+          status: 403,
+          json: async () => {
+            throw new Error("empty body");
+          },
+        };
+      if (u.includes("/api/worktrees/diff")) return { ok: true, json: async () => aheadDiff(2) };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return { ok: true, json: async () => ({ working: false, waiting: false, lastPrompt: null }) };
+    }) as unknown as typeof fetch;
+    const w = mountCell("66666666-6666-6666-6666-666666666666", { initialCwd: WT_CWD });
+    await flushPromises();
+    await openPanel(w);
+    const push = w.findAll(".cell-diff-btn").find((b) => b.text().includes("Push"));
+    await push?.trigger("click");
+    await flushPromises();
+    const msg = w.find(".cell-diff-msg").text();
+    expect(msg).not.toBe("Pushing…");
+    expect(msg).toContain("Not allowed");
+  });
 });
