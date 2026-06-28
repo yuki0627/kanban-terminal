@@ -39,21 +39,21 @@ export default defineConfig({
     proxy: {
       // socket.io pub/sub (sidebar activity). Must precede the "/ws" rule.
       "/ws/pubsub": {
-        target: "ws://localhost:3456",
+        target: "ws://localhost:34567",
         ws: true,
       },
       "/ws": {
-        target: "ws://localhost:3456",
+        target: "ws://localhost:34567",
         ws: true,
       },
       "/api": {
-        target: "http://localhost:3456",
+        target: "http://localhost:34567",
         changeOrigin: true,
       },
       // presentHtml page serving (the View's iframe src). Without this, the dev
       // Vite catch-all returns index.html instead of the HTML artifact.
       "/artifacts": {
-        target: "http://localhost:3456",
+        target: "http://localhost:34567",
         changeOrigin: true,
       },
     },

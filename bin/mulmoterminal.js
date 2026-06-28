@@ -17,7 +17,7 @@ import { fetchLatestVersion, isNewerVersion } from "./update-check.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = join(__dirname, "..");
 const SERVER_ENTRY = join(PKG_DIR, "server", "index.ts");
-const DEFAULT_PORT = 3456;
+const DEFAULT_PORT = 34567;
 const READY_TIMEOUT_MS = 15_000;
 const MAX_BIND_RETRIES = 5;
 // Server exit code meaning "port taken at bind time" — keep in sync with
