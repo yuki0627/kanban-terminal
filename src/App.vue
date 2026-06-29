@@ -56,8 +56,8 @@ const { enabled: soundEnabled } = useSoundEnabled();
 const { soundFile } = useAppConfig();
 useAttentionSound(soundEnabled, soundFile);
 
-// Reflect global session activity in the tab's favicon (idle / working / attention).
-useFaviconState();
+// Reflect session activity in the tab's favicon (idle / working / attention).
+useFaviconState(sessions);
 
 // Terminal column width (px), set by dragging the splitter between the terminal
 // and the GUI panel; the GUI panel absorbs whatever is left. Persisted across
