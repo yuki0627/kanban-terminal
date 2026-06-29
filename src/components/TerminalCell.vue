@@ -2,7 +2,9 @@
 import { ref, computed, watch, onMounted, onUnmounted, useTemplateRef } from "vue";
 import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
+import { useDirConfig } from "../composables/useDirConfig";
 import { formatCwd, worktreeLabel } from "./cwdDisplay";
+import { badgeStyleFor } from "./dirBadge";
 import type { CwdPreset } from "./presets";
 
 const termRef = useTemplateRef<InstanceType<typeof TerminalView>>("termRef");
@@ -38,6 +40,10 @@ const connectKey = ref(0);
 
 // The directory this terminal runs in (shown in the header, sent to the server).
 const cwd = ref<string | null>(props.initialCwd ?? props.defaultCwd);
+// Per-directory overrides (<cwd>/.mulmoterminal.json): pins this cell's terminal
+// palette and shows a project badge. Re-fetched when the effective cwd changes.
+const { config: dirConfig } = useDirConfig(cwd);
+const dirBadgeStyle = computed(() => badgeStyleFor(dirConfig.value.badgeColor));
 // The launch form's editable dir; prefilled with the default once it's fetched.
 const dirInput = ref(props.initialCwd ?? props.defaultCwd ?? "");
 watch(
@@ -639,6 +645,7 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         <button v-if="headerDir" type="button" class="cell-dir" :title="cwd ? `Open ${cwd}` : ''" @click="openDir">
           <span class="cell-dir-path">{{ headerDir }}</span>
         </button>
+        <span v-if="dirConfig.name" class="cell-badge" :style="dirBadgeStyle" :title="dirConfig.name">{{ dirConfig.name }}</span>
         <button v-if="showDiffBadge && diff" type="button" class="cell-wt-badge" :title="`View changes vs ${diff.base ?? 'base'}`" @click="openDiff">
           <span v-if="diff.ahead > 0" class="wt-ahead">+{{ diff.ahead }}</span>
           <span v-if="diff.dirty > 0" class="wt-dirty-count">●{{ diff.dirty }}</span>
@@ -685,6 +692,7 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         :session-id="sessionId"
         :connect-key="connectKey"
         :cwd="cwd"
+        :dir-theme="dirConfig.theme"
         dev-terminal
         run-menu
         @session="onSession"
@@ -908,6 +916,19 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
 }
 .cell-dir-path {
   unicode-bidi: plaintext;
+}
+/* Project badge from <cwd>/.mulmoterminal.json — a per-directory identity chip. */
+.cell-badge {
+  flex: 0 0 auto;
+  max-width: 14ch;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cell-dir:hover {
   color: var(--text-muted);

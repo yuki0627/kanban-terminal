@@ -16,6 +16,7 @@ import { useCollectionBrowse, browseGotoIndex, browseGotoDetail, browseClose } f
 import { useAccountingView, accountingViewOpen, accountingViewClose } from "./composables/useAccountingView";
 import { registerChatOpener } from "./composables/useChatLauncher";
 import { useAppConfig } from "./composables/useAppConfig";
+import { useDirConfig } from "./composables/useDirConfig";
 import { usePendingScript, type PendingCommand } from "./composables/usePendingScript";
 import { useSoundEnabled } from "./composables/useSoundEnabled";
 import { useAttentionSound } from "./composables/useAttentionSound";
@@ -155,7 +156,10 @@ onMounted(() => window.addEventListener("resize", onViewportResize));
 
 // Settings (directory presets + theme), shared with the grid view via useAppConfig
 // and opened from the toolbar's gear button.
-const { presets, saving: savingSettings, error: settingsError, loadConfig, savePresets: persistPresets, saveSound } = useAppConfig();
+const { defaultCwd, presets, saving: savingSettings, error: settingsError, loadConfig, savePresets: persistPresets, saveSound } = useAppConfig();
+// The single view runs in the server's default project dir; pick up that dir's
+// .mulmoterminal.json so its theme/badge match the grid cells for the same dir.
+const { config: singleDirConfig } = useDirConfig(defaultCwd);
 const showSettings = ref(false);
 onMounted(loadConfig);
 async function savePresets(next: CwdPreset[]) {
@@ -306,6 +310,9 @@ function onSession(id: string) {
           :style="{ flex: `0 0 ${terminalWidth}px` }"
           :session-id="activeId"
           :connect-key="connectKey"
+          :dir-theme="singleDirConfig.theme"
+          :dir-name="singleDirConfig.name"
+          :dir-badge-color="singleDirConfig.badgeColor"
           run-menu
           @session="onSession"
           @run="onRunScript"
