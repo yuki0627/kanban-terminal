@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import TerminalCell from "./TerminalCell.vue";
 import CommandCell from "./CommandCell.vue";
 import { trackStyle, layoutForCount } from "./gridLayout";
-import type { Cell } from "./gridTabs";
+import type { Cell, CellStatus } from "./gridTabs";
 import type { CwdPreset } from "./presets";
 
 // Renders the grid, auto-sized to the cell count, fully controlled by GridView:
@@ -21,12 +21,16 @@ const props = defineProps<{
   defaultCwd: string | null;
   presets: CwdPreset[];
   home: string | null;
+  // Manual sort mode: each cell shows ◀▶ to reorder.
+  reorderable?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "session" | "cwd", uid: number, value: string): void;
   (e: "close" | "toggle-expand", uid: number): void;
   (e: "run", uid: number, command: { index: number; label: string; cwd: string | null }): void;
   (e: "runSpare", command: { index: number; label: string; cwd: string | null }): void;
+  (e: "move", uid: number, dir: -1 | 1): void;
+  (e: "status", uid: number, value: CellStatus): void;
 }>();
 
 const gridStyle = computed(() => trackStyle(layoutForCount(props.cells.length), null));
@@ -49,8 +53,11 @@ const zoomed = computed(() => props.expandedUid !== null && mounted.value);
           :expanded="cell.uid === expandedUid"
           :command="cell.command"
           :home="home"
+          :reorderable="reorderable"
           @toggle-expand="emit('toggle-expand', cell.uid)"
           @close="emit('close', cell.uid)"
+          @move="(dir) => emit('move', cell.uid, dir)"
+          @status="(s) => emit('status', cell.uid, s)"
         />
         <TerminalCell
           v-else
@@ -61,12 +68,15 @@ const zoomed = computed(() => props.expandedUid !== null && mounted.value);
           :presets="presets"
           :home="home"
           :cancellable="cell.uid === cancelUid"
+          :reorderable="reorderable"
           @toggle-expand="emit('toggle-expand', cell.uid)"
           @session="(id) => emit('session', cell.uid, id)"
           @cwd="(c) => emit('cwd', cell.uid, c)"
           @run="(cmd) => emit('run', cell.uid, cmd)"
           @run-spare="(cmd) => emit('runSpare', cmd)"
           @close="emit('close', cell.uid)"
+          @move="(dir) => emit('move', cell.uid, dir)"
+          @status="(s) => emit('status', cell.uid, s)"
         />
       </Teleport>
     </div>

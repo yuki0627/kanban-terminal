@@ -4,6 +4,7 @@ import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
 import { formatCwd, worktreeLabel } from "./cwdDisplay";
 import type { CwdPreset } from "./presets";
+import type { CellStatus } from "./gridTabs";
 
 const termRef = useTemplateRef<InstanceType<typeof TerminalView>>("termRef");
 
@@ -21,6 +22,8 @@ const props = defineProps<{
   home: string | null;
   // An added (not the sole entry) launcher: show a ✕ to dismiss it before launching.
   cancellable?: boolean;
+  // Manual sort mode: show ◀▶ to swap this cell with its neighbour.
+  reorderable?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "toggle-expand" | "close"): void;
@@ -28,6 +31,10 @@ const emit = defineEmits<{
   // `run` launches in THIS (empty) cell from the launcher; `runSpare` is the running
   // terminal's header menu, which must NOT replace the session — it runs in a new cell.
   (e: "run" | "runSpare", value: { index: number; label: string; cwd: string | null }): void;
+  // Swap this cell left (-1) or right (+1) in manual sort mode.
+  (e: "move", dir: -1 | 1): void;
+  // Report live activity up so the grid can attention-sort in auto mode.
+  (e: "status", value: CellStatus): void;
 }>();
 
 // A cell with a persisted session relaunches (resumes) on mount; otherwise it
@@ -499,6 +506,7 @@ const STATUS_CLASS = { waiting: "is-waiting", working: "is-working", idle: "is-i
 const STATUS_LABEL = { waiting: "Needs attention", working: "Working…", idle: "Idle" } as const;
 const statusClass = computed(() => STATUS_CLASS[status.value]);
 const statusLabel = computed(() => STATUS_LABEL[status.value]);
+watch(status, (s) => emit("status", s), { immediate: true });
 
 const headerText = computed(() => lastPrompt.value || (sessionId.value ? sessionId.value.slice(0, 8) : "starting…"));
 
@@ -668,6 +676,8 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         </span>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
         <span class="cell-actions">
+          <button v-if="reorderable" class="cell-btn" title="Move left" aria-label="Move terminal left" @click="emit('move', -1)">◀</button>
+          <button v-if="reorderable" class="cell-btn" title="Move right" aria-label="Move terminal right" @click="emit('move', 1)">▶</button>
           <button
             class="cell-btn"
             :title="expanded ? 'Restore' : 'Expand'"
