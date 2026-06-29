@@ -170,6 +170,37 @@ chime) or in the config file; the server streams that file at `GET /api/sound` a
 the client decodes it (falling back to the chime if it's missing or not audio). It's
 your own local file referenced by absolute path — nothing is added to the package.
 
+### Per-directory settings (`<project>/.mulmoterminal.json`)
+
+Drop a `.mulmoterminal.json` in a project directory to give terminals opened **in
+that directory** their own look and sound. It applies per terminal (per grid cell) —
+the rest of the app keeps your chosen theme — and a directory's theme overrides your
+manual theme pick for that terminal only. Every field is optional; a missing or
+malformed file is ignored.
+
+```jsonc
+{
+  "name": "PROD · payments",            // badge shown on this directory's terminals
+  "badgeColor": "#cf222e",              // badge color (hex #rrggbb)
+  "theme": "nord",                      // terminal palette: midnight | nord | daylight | solarized
+  "colors": { "background": "#190a23", "cursor": "#ff2e63" }, // per-key palette overrides
+  "sound": "./.mulmoterminal/alert.mp3" // attention sound, RELATIVE to this directory
+}
+```
+
+| Field        | Meaning |
+| ------------ | ------- |
+| `name`       | Label shown as a badge in the terminal/cell header. |
+| `badgeColor` | Badge background color (`#rrggbb`); text auto-contrasts. |
+| `theme`      | xterm palette for terminals in this directory (one of the built-in theme ids). |
+| `colors`     | Per-key xterm palette overrides applied on top of `theme` (or the app theme when `theme` is unset). Keys are xterm `ITheme` names (`background`, `foreground`, `cursor`, `selectionBackground`, the 16 ANSI colors, …); values are hex (`#rgb` / `#rrggbb` / `#rrggbbaa`). Unknown keys / bad values are dropped. |
+| `sound`      | Attention sound for this directory's sessions, a path **relative to the directory** (served at `GET /api/dir-sound`). |
+
+**Security.** `sound` is a directory-relative path only — absolute paths and any
+`../` that escapes the directory are rejected, and the path is never taken from the
+HTTP request, so an opened project can't point the player at arbitrary files.
+Changes take effect when the terminal is next opened (no live file watch).
+
 ---
 
 ## Running

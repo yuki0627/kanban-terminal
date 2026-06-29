@@ -16,6 +16,7 @@ import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes } from "./config-routes.js";
+import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
 import { isRecord, parseJsonl, userPromptText, latestMeaningfulUserPromptFromJsonl, preferredHeaderPrompt } from "./transcript.js";
@@ -413,6 +414,10 @@ function publishActivity(id: string) {
   const a = activity.get(id) || {};
   pubsub?.publish(SESSIONS_CHANNEL, {
     id,
+    // The session's working dir, so the attention-sound player can pick up that
+    // directory's custom sound (<cwd>/.mulmoterminal.json). Null for a session with
+    // no live PTY (a reaped background worker).
+    cwd: ptys.get(id)?.cwd ?? null,
     working: a.working ?? false,
     waiting: a.waiting ?? false,
     event: a.event ?? null,
@@ -904,6 +909,30 @@ app.get("/api/session/:id", async (req, res) => {
     working: a.working ?? false,
     waiting: a.waiting ?? false,
     lastPrompt,
+  });
+});
+
+// Per-directory overrides (<cwd>/.mulmoterminal.json): the badge/name/theme a
+// terminal opened in this directory should use. cwd is validated like every other
+// cwd-scoped route; the raw sound path stays server-side (see /api/dir-sound).
+app.get("/api/dir-config", (req, res) => {
+  const cwd = resolveWorkspace(typeof req.query.cwd === "string" ? req.query.cwd : null);
+  res.json(publicDirConfig(cwd));
+});
+
+// Stream a directory's custom attention sound. The path never comes from the
+// request — it's read from that dir's .mulmoterminal.json and confined to the dir —
+// so there's no traversal surface. 404 when unset/missing (the client falls back to
+// the global sound, then the built-in chime).
+app.get("/api/dir-sound", (req, res) => {
+  const cwd = resolveWorkspace(typeof req.query.cwd === "string" ? req.query.cwd : null);
+  const file = dirSoundFile(cwd);
+  if (!file) return res.status(404).end();
+  // dotfiles:"allow" — the conventional location is a hidden <cwd>/.mulmoterminal/
+  // dir, which send() would otherwise 404. The path is already confined to cwd, so
+  // serving from a dot-segment is safe here.
+  res.sendFile(file, { dotfiles: "allow" }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
   });
 });
 

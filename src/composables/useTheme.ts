@@ -87,8 +87,8 @@ export const THEMES: Theme[] = [
 const STORAGE_KEY = "theme";
 const DEFAULT_THEME: ThemeId = "midnight";
 
-function isThemeId(value: string | null): value is ThemeId {
-  return value !== null && THEMES.some((t) => t.id === value);
+export function isThemeId(value: unknown): value is ThemeId {
+  return typeof value === "string" && THEMES.some((t) => t.id === value);
 }
 
 // Storage access can throw (private mode / sandboxed contexts with storage
@@ -113,6 +113,12 @@ function applyTheme(id: ThemeId) {
 // terminal's `theme` option and refreshes it whenever the theme changes.
 export function currentTermTheme(): Theme["term"] {
   return (THEMES.find((t) => t.id === themeId.value) ?? THEMES[0]).term;
+}
+
+// The xterm palette for a specific theme — used by a terminal whose directory pins a
+// theme via .mulmoterminal.json (overriding the user's app-wide choice for that cell).
+export function termThemeFor(id: ThemeId): Theme["term"] {
+  return (THEMES.find((t) => t.id === id) ?? THEMES[0]).term;
 }
 
 // Called from main.ts before mount so the persisted theme is on <html> before

@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from "vue";
-import { Terminal } from "@xterm/xterm";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { buildTerminalWsUrl, buildRunWsUrl } from "./wsUrl";
 import { dropTextFromUriList, toInsertText } from "./dropPaths";
-import { useTheme, currentTermTheme } from "../composables/useTheme";
+import { useTheme, currentTermTheme, termThemeFor, type ThemeId } from "../composables/useTheme";
+import { badgeStyleFor } from "./dirBadge";
 import { useVoiceInput } from "../composables/useVoiceInput";
 import RunMenu from "./RunMenu.vue";
 
@@ -29,6 +30,14 @@ const props = defineProps<{
   devTerminal?: boolean;
   command?: { index: number } | null;
   runMenu?: boolean;
+  // Per-directory overrides from <cwd>/.mulmoterminal.json. `dirTheme` pins this
+  // terminal's xterm palette (overriding the app-wide theme for this cell only);
+  // `dirColors` overrides individual palette keys on top of that; `dirName` /
+  // `dirBadgeColor` render a project badge in the header.
+  dirTheme?: ThemeId | null;
+  dirColors?: Partial<ITheme> | null;
+  dirName?: string | null;
+  dirBadgeColor?: string | null;
 }>();
 const emit = defineEmits<{
   (e: "session" | "cwd", value: string): void;
@@ -43,6 +52,15 @@ const status = ref<"connecting" | "connected" | "disconnected">("connecting");
 const serverCwd = ref<string | null>(props.cwd ?? null);
 const dragOver = ref(false);
 const { themeId } = useTheme();
+
+// A dir-pinned theme wins over the app-wide selection for this terminal's canvas,
+// then per-key `dirColors` override on top (so a dir can tweak just the background
+// without restating a whole palette).
+function effectiveTermTheme(): ITheme {
+  const base = props.dirTheme ? termThemeFor(props.dirTheme) : currentTermTheme();
+  return props.dirColors ? { ...base, ...props.dirColors } : base;
+}
+const dirBadgeStyle = computed(() => badgeStyleFor(props.dirBadgeColor));
 
 // Voice input: a mic in the header transcribes speech (locally, via whisper.cpp)
 // and inserts it at the prompt for the user to review and submit — same channel as
@@ -196,7 +214,7 @@ onMounted(() => {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
-    theme: currentTermTheme(),
+    theme: effectiveTermTheme(),
   });
 
   fitAddon = new FitAddon();
@@ -245,9 +263,10 @@ watch(
 );
 
 // xterm can't read CSS variables, so repaint its canvas palette when the theme
-// changes (keeps an already-open terminal in sync with the rest of the app).
-watch(themeId, () => {
-  if (term) term.options.theme = currentTermTheme();
+// changes (keeps an already-open terminal in sync with the rest of the app). A
+// dir-pinned theme ignores the app-wide change; a change to the pin itself repaints.
+watch([themeId, () => props.dirTheme, () => props.dirColors], () => {
+  if (term) term.options.theme = effectiveTermTheme();
 });
 
 // Submit a GUI-originated message into the PTY (same channel as keyboard input).
@@ -338,6 +357,7 @@ onUnmounted(() => {
   <div class="terminal-wrapper">
     <div class="header">
       <span class="title">Terminal</span>
+      <span v-if="dirName" class="dir-badge" :style="dirBadgeStyle" :title="dirName">{{ dirName }}</span>
       <span :class="['status', status]">{{ status }}</span>
       <RunMenu v-if="runMenu" :cwd="serverCwd" @run="(c) => emit('run', c)" />
       <div class="header-actions">
@@ -384,6 +404,19 @@ onUnmounted(() => {
 
 .title {
   font-weight: 600;
+}
+
+/* Project badge from <cwd>/.mulmoterminal.json — a per-directory identity chip. */
+.dir-badge {
+  max-width: 16ch;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .header-actions {

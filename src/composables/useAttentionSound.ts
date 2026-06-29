@@ -5,6 +5,8 @@ interface ActivityMsg {
   id: string;
   working?: boolean;
   waiting?: boolean;
+  // The session's working dir, so a beep can use that directory's custom sound.
+  cwd?: string | null;
 }
 interface ActivityState {
   working: boolean;
@@ -120,6 +122,50 @@ function playBuffer(buf: AudioBuffer) {
   src.start();
 }
 
+// A directory's own attention sound (<cwd>/.mulmoterminal.json), decoded once and
+// cached by cwd. `undefined` = not checked yet; `null` = checked, no sound (so we
+// never refetch a dir that has none). Streamed from /api/dir-sound?cwd=<cwd>.
+const dirBuffers = new Map<string, AudioBuffer | null>();
+const dirLoading = new Map<string, Promise<void>>();
+
+function loadDirSound(cwd: string): Promise<void> {
+  if (dirBuffers.has(cwd)) return Promise.resolve();
+  const existing = dirLoading.get(cwd);
+  if (existing) return existing;
+  const loading = (async () => {
+    const ctx = getCtx();
+    if (!ctx) return; // can't decode without an AudioContext — leave unknown to retry
+    let decoded: AudioBuffer | null = null;
+    try {
+      const res = await fetch(`/api/dir-sound?cwd=${encodeURIComponent(cwd)}`);
+      if (res.ok) decoded = await ctx.decodeAudioData(await res.arrayBuffer());
+    } catch {
+      decoded = null; // 404 / unreadable / not audio — the dir has no usable sound
+    }
+    dirBuffers.set(cwd, decoded);
+  })();
+  dirLoading.set(
+    cwd,
+    loading.finally(() => dirLoading.delete(cwd)),
+  );
+  return loading;
+}
+
+// Play the attention sound, preferring the session directory's own sound, then the
+// user's global custom file, then the chime. A dir sound not yet decoded is loaded in
+// the background (this beep falls back), so later beeps for that dir use it.
+export function playAttentionFor(cwd: string | null, soundFile: string | null) {
+  if (cwd) {
+    const buf = dirBuffers.get(cwd);
+    if (buf) {
+      playBuffer(buf);
+      return;
+    }
+    if (buf === undefined) loadDirSound(cwd);
+  }
+  playAttention(soundFile);
+}
+
 // Play the attention sound: the user's custom file when configured AND already
 // loaded, otherwise the built-in chime. A newly-configured file is loaded in the
 // background, so the first beep uses the chime and later ones the custom sound.
@@ -158,7 +204,7 @@ export function useAttentionSound(enabled: Ref<boolean>, soundFile?: Ref<string 
   const prev = new Map<string, ActivityState>();
   const { subscribe } = usePubSub();
   const unsubscribe = subscribe("sessions", (d) => {
-    if (isActivityMsg(d) && needsAttention(prev, d) && enabled.value) playAttention(soundFile?.value ?? null);
+    if (isActivityMsg(d) && needsAttention(prev, d) && enabled.value) playAttentionFor(d.cwd ?? null, soundFile?.value ?? null);
   });
   onUnmounted(unsubscribe);
 }

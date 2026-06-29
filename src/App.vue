@@ -14,6 +14,7 @@ import { useSessions, type Filter } from "./composables/useSessions";
 import { browseClose } from "./composables/useCollectionBrowse";
 import { registerChatOpener } from "./composables/useChatLauncher";
 import { useAppConfig } from "./composables/useAppConfig";
+import { useDirConfig } from "./composables/useDirConfig";
 import { usePendingScript, type PendingCommand } from "./composables/usePendingScript";
 import { useSoundEnabled } from "./composables/useSoundEnabled";
 import { useAttentionSound } from "./composables/useAttentionSound";
@@ -122,7 +123,14 @@ onMounted(() => window.addEventListener("resize", onViewportResize));
 
 // Settings (directory presets + theme), shared with the grid view via useAppConfig
 // and opened from the toolbar's gear button.
-const { presets, saving: savingSettings, error: settingsError, loadConfig, savePresets: persistPresets, saveSound } = useAppConfig();
+const { defaultCwd, presets, saving: savingSettings, error: settingsError, loadConfig, savePresets: persistPresets, saveSound } = useAppConfig();
+// Drive the single view's dir overrides off the dir the terminal ACTUALLY runs in
+// (reported by the server, which may resolve/fall back), not the static default — so
+// the badge/theme/colors always track the active session. Falls back to the default
+// until the terminal reports its cwd.
+const activeCwd = ref<string | null>(null);
+const effectiveCwd = computed(() => activeCwd.value ?? defaultCwd.value);
+const { config: singleDirConfig } = useDirConfig(effectiveCwd);
 const showSettings = ref(false);
 onMounted(loadConfig);
 async function savePresets(next: CwdPreset[]) {
@@ -223,8 +231,13 @@ function onSession(id: string) {
           :style="{ flex: `0 0 ${terminalWidth}px` }"
           :session-id="activeId"
           :connect-key="connectKey"
+          :dir-theme="singleDirConfig.theme"
+          :dir-colors="singleDirConfig.colors"
+          :dir-name="singleDirConfig.name"
+          :dir-badge-color="singleDirConfig.badgeColor"
           run-menu
           @session="onSession"
+          @cwd="(c) => (activeCwd = c)"
           @run="onRunScript"
         />
         <div
