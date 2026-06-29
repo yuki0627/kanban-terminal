@@ -18,6 +18,7 @@ import { useDirConfig } from "./composables/useDirConfig";
 import { usePendingScript, type PendingCommand } from "./composables/usePendingScript";
 import { useSoundEnabled } from "./composables/useSoundEnabled";
 import { useAttentionSound } from "./composables/useAttentionSound";
+import { useUnloadGuard, reportActiveTerminals } from "./composables/useUnloadGuard";
 import type { CwdPreset } from "./components/presets";
 
 // View mode: the classic single-terminal view (default) or the multi-terminal
@@ -37,6 +38,19 @@ function onRunScript(command: PendingCommand) {
 const activeId = ref<string | null>(null);
 const connectKey = ref(0);
 const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
+
+// Confirm before an accidental tab close / reload while a terminal is live. The
+// single view has one live session (when activeId is set); the grid reports its own
+// count. Only act for the single view here — when the grid is mounted it owns the
+// count (App renders one or the other).
+useUnloadGuard();
+watch(
+  [viewMode, activeId],
+  () => {
+    if (viewMode.value === "single") reportActiveTerminals(activeId.value ? 1 : 0);
+  },
+  { immediate: true },
+);
 
 // Single source of truth for the session list, owned here (not inside the
 // layout components) so toggling vertical/horizontal — which swaps Sidebar and
