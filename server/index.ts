@@ -381,6 +381,22 @@ let pubsub: ReturnType<typeof createPubSub> | null = null;
 // reattach within it cancels the reap, so a reload just re-attaches to the same
 // running terminal. Only after the window with no reattach do we reap.
 const REAP_GRACE_MS = 30_000;
+// A detached session that still needs the user — mid-turn output the user hasn't
+// seen, or blocked on a permission/question prompt (the `waiting` flag) — is an
+// unfinished task: reaping it loses work. So it gets a much longer grace than an
+// idle one, long enough that you can switch away, do other things, and come back
+// to answer it. Override with WAIT_REAP_GRACE_MS=0 to never auto-close these.
+const WAIT_REAP_GRACE_MS = (() => {
+  const def = 30 * 60_000;
+  const raw = process.env.WAIT_REAP_GRACE_MS;
+  if (raw === undefined) return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.warn(`[pty] ignoring non-numeric WAIT_REAP_GRACE_MS=${JSON.stringify(raw)}; using default ${def}ms`);
+    return def;
+  }
+  return n; // a non-positive value means "never auto-reap waiting sessions" (see scheduleReap)
+})();
 const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function cancelReap(id: string) {
@@ -391,16 +407,45 @@ function cancelReap(id: string) {
   }
 }
 
-function scheduleReap(id: string) {
+// Node's setTimeout delay is a signed 32-bit int; a larger value overflows and
+// fires at ~1ms. Clamp to the max so a big grace doesn't become an instant reap.
+const MAX_TIMER_MS = 2_147_483_647;
+
+function scheduleReap(id: string, delayMs: number = REAP_GRACE_MS) {
+  // Non-positive or non-finite (e.g. a bad env value yielding NaN) => never
+  // auto-reap; the session stays until reattached or explicitly terminated.
+  // Guarding here matters because setTimeout(..., NaN) would fire ~immediately.
+  if (!Number.isFinite(delayMs) || delayMs <= 0) return;
   if (reapTimers.has(id)) return;
+  const delay = Math.min(delayMs, MAX_TIMER_MS);
   reapTimers.set(
     id,
     setTimeout(() => {
       reapTimers.delete(id);
       const entry = ptys.get(id);
       if (entry && !entry.ws) reap(id); // still detached after the grace window
-    }, REAP_GRACE_MS),
+    }, delay),
   );
+}
+
+// Decide whether/when to reap a detached session based on its activity. A session
+// that's actively thinking (`working`) is never reaped — that's "clearly working,
+// don't close it". One that needs the user (`waiting`) gets the long grace. A
+// genuinely idle session (finished AND already viewed, so neither flag) gets the
+// short grace — that's the "auto-close inactive ones" behaviour.
+function armReapForDetached(id: string) {
+  const entry = ptys.get(id);
+  if (!entry || entry.ws) return; // still attached: nothing to reap
+  // Recompute from scratch: state may have escalated (idle -> waiting) since the
+  // last arm, and a stale short timer must not survive to reap a session that now
+  // needs the user. cancelReap clears it so scheduleReap re-arms with the right grace.
+  cancelReap(id);
+  const a = activity.get(id);
+  if (a?.working) {
+    console.log(`[pty] keeping working session ${id} alive (detached)`);
+    return;
+  }
+  scheduleReap(id, a?.waiting ? WAIT_REAP_GRACE_MS : REAP_GRACE_MS);
 }
 
 function reap(id: string) {
@@ -451,14 +496,11 @@ function setWorking(id: string, working: boolean, event?: string) {
   activity.set(id, { ...prev, working, event: event ?? prev.event ?? null, at: Date.now() });
   publishActivity(id);
 
-  // A background session (no attached client) that just went idle is reaped.
-  if (!working) {
-    const entry = ptys.get(id);
-    if (entry && !entry.ws) {
-      console.log(`[pty] reaping idle background session ${id}`);
-      reap(id);
-    }
-  }
+  // A background session (no attached client) that just finished a turn is no
+  // longer `working`. Don't kill it outright — if it ended its turn to ask the
+  // user something (it'll be flagged `waiting`), reaping now would lose the task
+  // before the user can answer. Arm a reap whose grace matches its state.
+  if (!working) armReapForDetached(id);
 }
 
 // A background session needs the user's attention: it is waiting for input
@@ -470,6 +512,10 @@ function setWaiting(id: string, waiting: boolean, event?: string) {
   if ((prev.waiting ?? false) === waiting) return;
   activity.set(id, { ...prev, waiting, event: event ?? prev.event ?? null, at: Date.now() });
   publishActivity(id);
+
+  // A detached session that just started needing the user escalates from the short
+  // idle grace to the long one — re-arm so it isn't reaped before they can return.
+  if (waiting) armReapForDetached(id);
 }
 
 // Hook config injected via `claude --settings <json>`. Each event POSTs the full
@@ -1505,20 +1551,17 @@ function handleCommandFrame(term: IPty, raw: RawData) {
   }
 }
 
-// Socket closed: detach it; keep the PTY alive if Claude is mid-turn (reaped on
-// the Stop hook), otherwise reap now.
+// Socket closed: detach it and decide the PTY's fate by activity — working stays
+// alive, needs-the-user gets a long grace, idle gets the short grace.
 function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   // Ignore if a newer client already reattached to this session.
   if (entry.ws !== ws) return;
   entry.ws = null;
-  if (activity.get(sessionId)?.working) {
-    console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
-  } else {
-    // Don't reap now — a reload reconnects in a moment and should re-attach to
-    // this same live terminal. Reap only if nothing reattaches within the window.
-    console.log(`[ws] disconnected; idle session ${sessionId} reaped in ${REAP_GRACE_MS / 1000}s unless reattached`);
-    scheduleReap(sessionId);
-  }
+  // Keep a working session alive indefinitely, give a session that needs the user
+  // the long grace, and reap a genuinely idle one after the short grace. A reload
+  // reconnects in a moment and re-attaches (cancelling the reap) regardless.
+  console.log(`[ws] disconnected ${sessionId}`);
+  armReapForDetached(sessionId);
 }
 
 wss.on("connection", (ws, req) => {
