@@ -23,6 +23,7 @@ import {
   type GridState,
 } from "./gridTabs";
 import { usePendingScript } from "../composables/usePendingScript";
+import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import type { CwdPreset } from "./presets";
 import { useAppConfig } from "../composables/useAppConfig";
 
@@ -43,6 +44,10 @@ if (init.migrated) {
   localStorage.removeItem(LEGACY_KEY);
 }
 watch(state, persist, { deep: true });
+
+// Feed the tab-close guard: warn on close/reload while any cell runs a session or
+// command (counts every page, not just the mounted one).
+watch(() => runningCount(state.value.cells), reportActiveTerminals, { immediate: true });
 
 const pages = computed(() => pageCount(state.value.cells.length));
 // While a cell is zoomed, render EVERY cell so the filmstrip lines up all tabs'

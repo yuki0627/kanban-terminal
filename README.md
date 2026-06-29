@@ -552,6 +552,7 @@ src/
   composables/
     usePubSub.ts      socket.io-client pub/sub composable (subscribe/unsubscribe)
     usePendingScript.ts  Hands a header-picked script to the grid to run
+    useUnloadGuard.ts  Confirm before closing/reloading the tab while a terminal is live
 vite.config.ts    Dev proxy for /ws (covers /ws/run), /ws/pubsub, /api
 vitest.config.ts  jsdom test environment
 ```
