@@ -25,7 +25,7 @@ Requires the [`claude`](https://claude.com/claude-code) CLI on your `PATH` and
 **Node ≥ 22.9**.
 
 ```bash
-npx mulmoterminal           # start on http://localhost:3456 and open the browser
+npx mulmoterminal           # start on http://localhost:34567 and open the browser
 # or install globally:
 npm install -g mulmoterminal
 mulmoterminal
@@ -36,7 +36,7 @@ prints a one-line notice when a newer version is available (`npm i -g mulmotermi
 to update). Disable with `MULMOTERMINAL_NO_UPDATE_CHECK=1` (or `NO_UPDATE_NOTIFIER=1`).
 
 Options: `--cwd <dir>` (working directory — relative paths allowed; defaults to the
-directory you run the command from), `--port <n>` (default 3456), `--no-open`,
+directory you run the command from), `--port <n>` (default 34567), `--no-open`,
 `--version`, `--help`.
 
 ```bash
@@ -139,7 +139,7 @@ the server runs without one.
 
 | Variable     | Default        | Description |
 | ------------ | -------------- | ----------- |
-| `PORT`       | `3456`         | HTTP/WebSocket port. |
+| `PORT`       | `34567`        | HTTP/WebSocket port. |
 | `CLAUDE_BIN` | `claude`       | The Claude Code binary to spawn. |
 | `CLAUDE_CWD` | current dir    | Working directory each `claude` PTY runs in; determines which project's sessions the sidebar lists. Via `npx mulmoterminal` it defaults to the directory you ran the command from (override with `--cwd <dir>`, relative allowed); when the server is run directly it falls back to `~/mulmoclaude`. A value read from `.env` must be an absolute path (`~` is not expanded). |
 
@@ -173,14 +173,14 @@ your own local file referenced by absolute path — nothing is added to the pack
 ```bash
 yarn install            # postinstall fixes node-pty prebuilt binary perms
 
-yarn dev                # server (:3456) + Vite dev server, concurrently
+yarn dev                # server (:34567) + Vite dev server, concurrently
 # or individually:
 yarn dev:server         # backend only  (node --import tsx --env-file-if-exists=.env server/index.ts)
 yarn dev:client         # Vite dev server only
 
 yarn build              # type-check (vue-tsc) + vite build -> dist/
 yarn typecheck:server   # type-check the server (tsconfig.server.json)
-yarn server             # run backend; serves dist/ + the APIs on :3456
+yarn server             # run backend; serves dist/ + the APIs on :34567
 yarn test               # vitest run
 ```
 
@@ -189,8 +189,8 @@ type-checked separately through `tsconfig.server.json` (`strict`), kept out of
 the main `build` so the two type-check independently.
 
 In dev, open the Vite URL; its proxy forwards `/ws`, `/ws/pubsub`, and `/api` to
-`:3456`. In production, run `yarn build` then `yarn server` and open
-`http://localhost:3456`.
+`:34567`. In production, run `yarn build` then `yarn server` and open
+`http://localhost:34567`.
 
 ---
 
@@ -245,7 +245,7 @@ command, so the file is the allowlist of what can run.
 
 ## Server API specification
 
-Base URL: `http://localhost:$PORT` (default `http://localhost:3456`).
+Base URL: `http://localhost:$PORT` (default `http://localhost:34567`).
 
 ### HTTP: `GET /api/sessions`
 

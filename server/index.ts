@@ -109,7 +109,7 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PORT = process.env.PORT || 3456;
+const PORT = process.env.PORT || 34567;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 // Permission mode for backend-spawned Claude sessions. Defaults to "auto" so
 // the backend runs hands-off; override with CLAUDE_PERMISSION_MODE (e.g.
