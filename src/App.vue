@@ -157,9 +157,13 @@ onMounted(() => window.addEventListener("resize", onViewportResize));
 // Settings (directory presets + theme), shared with the grid view via useAppConfig
 // and opened from the toolbar's gear button.
 const { defaultCwd, presets, saving: savingSettings, error: settingsError, loadConfig, savePresets: persistPresets, saveSound } = useAppConfig();
-// The single view runs in the server's default project dir; pick up that dir's
-// .mulmoterminal.json so its theme/badge match the grid cells for the same dir.
-const { config: singleDirConfig } = useDirConfig(defaultCwd);
+// Drive the single view's dir overrides off the dir the terminal ACTUALLY runs in
+// (reported by the server, which may resolve/fall back), not the static default — so
+// the badge/theme/colors always track the active session. Falls back to the default
+// until the terminal reports its cwd.
+const activeCwd = ref<string | null>(null);
+const effectiveCwd = computed(() => activeCwd.value ?? defaultCwd.value);
+const { config: singleDirConfig } = useDirConfig(effectiveCwd);
 const showSettings = ref(false);
 onMounted(loadConfig);
 async function savePresets(next: CwdPreset[]) {
@@ -316,6 +320,7 @@ function onSession(id: string) {
           :dir-badge-color="singleDirConfig.badgeColor"
           run-menu
           @session="onSession"
+          @cwd="(c) => (activeCwd = c)"
           @run="onRunScript"
         />
         <div

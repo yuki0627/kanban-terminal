@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveDirSound, loadDirConfig, publicDirConfig, dirSoundFile } from "./dir-config";
@@ -55,6 +55,24 @@ describe("resolveDirSound", () => {
     writeFileSync(path.join(sibling, "a.mp3"), "x");
     expect(resolveDirSound(dir, "../app-evil/a.mp3")).toBeNull();
     rmSync(parent, { recursive: true, force: true });
+  });
+
+  it("rejects a symlink inside cwd that points outside it", () => {
+    const parent = tmp();
+    const dir = path.join(parent, "project");
+    mkdirSync(dir);
+    writeFileSync(path.join(parent, "outside.mp3"), "x"); // target lives OUTSIDE the dir
+    symlinkSync(path.join(parent, "outside.mp3"), path.join(dir, "link.mp3"));
+    expect(resolveDirSound(dir, "./link.mp3")).toBeNull();
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  it("allows a symlink that still resolves inside cwd", () => {
+    const dir = tmp();
+    writeFileSync(path.join(dir, "real.mp3"), "x");
+    symlinkSync(path.join(dir, "real.mp3"), path.join(dir, "link.mp3"));
+    expect(resolveDirSound(dir, "./link.mp3")).toBe(path.join(dir, "link.mp3"));
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("returns null for a missing file or non-string input", () => {

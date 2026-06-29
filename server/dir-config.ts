@@ -4,7 +4,7 @@
 // terminal falls back to the global theme/sound. Extracted so the sanitize/confine
 // logic is unit-testable and the path-confinement check (the security surface) has a
 // clear home.
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 // Mirrors the theme ids in src/composables/useTheme.ts. The server can't import the
@@ -93,19 +93,27 @@ function sanitizeColors(input: unknown): Record<string, string> | null {
   return Object.keys(out).length ? out : null;
 }
 
+const isInside = (base: string, target: string): boolean => target === base || target.startsWith(base + path.sep);
+
 // Confine the configured sound to a real file INSIDE cwd. Relative paths only;
 // anything absolute or escaping via "../" is rejected so an opened project can't
-// point the player at arbitrary files on disk. (path.resolve doesn't follow
-// symlinks — acceptable here: cwd is the user's own project dir, not hostile input.)
+// point the player at arbitrary files on disk. The lexical check only constrains the
+// path string, so we ALSO canonicalize with realpath and re-check — otherwise a file
+// inside cwd that is a symlink to a target outside it would slip through.
 export function resolveDirSound(cwd: string, input: unknown): string | null {
   if (typeof input !== "string") return null;
   const rel = input.trim();
   if (!rel || path.isAbsolute(rel)) return null;
   const base = path.resolve(cwd);
   const resolved = path.resolve(base, rel);
-  const withinBase = resolved === base || resolved.startsWith(base + path.sep);
-  if (!withinBase) return null;
-  return existsSync(resolved) && statSync(resolved).isFile() ? resolved : null;
+  if (!isInside(base, resolved)) return null;
+  if (!existsSync(resolved) || !statSync(resolved).isFile()) return null;
+  try {
+    if (!isInside(realpathSync(base), realpathSync(resolved))) return null;
+  } catch {
+    return null;
+  }
+  return resolved;
 }
 
 const EMPTY: DirConfig = { name: null, badgeColor: null, theme: null, colors: null, sound: null };
