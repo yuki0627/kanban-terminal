@@ -19,6 +19,8 @@ const props = defineProps<{
   defaultCwd: string | null;
   presets: CwdPreset[];
   home: string | null;
+  // An added (not the sole entry) launcher: show a ✕ to dismiss it before launching.
+  cancellable?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "toggle-expand" | "close"): void;
@@ -761,6 +763,9 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
       </div>
     </template>
     <div v-else class="cell-launch">
+      <button v-if="cancellable" type="button" class="cell-launch-cancel" title="Cancel new terminal" aria-label="Cancel new terminal" @click="emit('close')">
+        ✕
+      </button>
       <div v-if="presets.length" class="cell-presets">
         <button v-for="p in presets" :key="p.label + p.path" :class="['cell-preset', { active: dirInput === p.path }]" :title="p.path" @click="selectPreset(p)">
           {{ p.label }}
@@ -1023,6 +1028,29 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   gap: 8px;
   padding: 16px;
   overflow-y: auto;
+}
+/* Dismiss an added launcher (anchored to the cell, so it stays put while the form
+   scrolls). */
+.cell-launch-cancel {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.cell-launch-cancel:hover {
+  background: var(--err-hover-bg);
+  color: var(--err-text);
 }
 .cell-presets {
   display: flex;

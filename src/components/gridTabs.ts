@@ -53,6 +53,14 @@ export function addCell(state: GridState): GridState {
   return { ...state, cells, nextUid: state.nextUid + 1, page: pageCount(cells.length) - 1 };
 }
 
+// The uid of the trailing launch cell that "+ Terminal" (and the launcher's own ✕)
+// cancels, or null when there's nothing to cancel. The sole entry cell is never
+// cancelable, so it's excluded.
+export function cancelableLaunchUid(state: GridState): number | null {
+  const last = state.cells[state.cells.length - 1];
+  return state.cells.length > 1 && isLaunchCell(last) ? last.uid : null;
+}
+
 export function setSession(state: GridState, uid: number, id: string | null): GridState {
   const cells = state.cells.map((c) => (c.uid === uid ? { ...c, session: id } : c));
   const expanded = id === null && state.expanded === uid ? null : state.expanded;

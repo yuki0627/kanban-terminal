@@ -58,7 +58,13 @@ beforeEach(() => {
 
 function mountCell(
   initialSessionId: string | null,
-  opts: { initialCwd?: string | null; defaultCwd?: string | null; presets?: { label: string; path: string }[]; home?: string | null } = {},
+  opts: {
+    initialCwd?: string | null;
+    defaultCwd?: string | null;
+    presets?: { label: string; path: string }[];
+    home?: string | null;
+    cancellable?: boolean;
+  } = {},
 ) {
   return mount(TerminalCell, {
     props: {
@@ -68,6 +74,7 @@ function mountCell(
       defaultCwd: opts.defaultCwd ?? "/home/me/my-project",
       presets: opts.presets ?? [],
       home: opts.home ?? "/home/me",
+      cancellable: opts.cancellable ?? false,
     },
   });
 }
@@ -118,6 +125,17 @@ describe("TerminalCell", () => {
     const term = w.findComponent({ name: "TerminalView" });
     expect(term.exists()).toBe(true);
     expect(term.props("cwd")).toBe("/home/me/picked");
+  });
+
+  it("shows a cancel ✕ on a cancellable launcher that emits close, but not otherwise", async () => {
+    const plain = mountCell(null, { defaultCwd: "/home/me/default" });
+    await flushPromises();
+    expect(plain.find(".cell-launch-cancel").exists()).toBe(false);
+
+    const w = mountCell(null, { defaultCwd: "/home/me/default", cancellable: true });
+    await flushPromises();
+    await w.find(".cell-launch-cancel").trigger("click");
+    expect(w.emitted("close")).toHaveLength(1);
   });
 
   it("lists existing sessions for the dir and resumes one on click", async () => {
