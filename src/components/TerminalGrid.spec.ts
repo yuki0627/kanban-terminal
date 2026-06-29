@@ -8,7 +8,7 @@ import type { Cell } from "./gridTabs";
 vi.mock("./TerminalCell.vue", () => ({
   default: {
     name: "TerminalCell",
-    props: ["expanded", "initialSessionId", "initialCwd", "defaultCwd", "presets", "home"],
+    props: ["expanded", "initialSessionId", "initialCwd", "defaultCwd", "presets", "home", "cancellable"],
     emits: ["toggle-expand", "session", "cwd", "run", "close"],
     template: '<div class="stub-cell" />',
   },
@@ -24,8 +24,8 @@ vi.mock("./CommandCell.vue", () => ({
 
 const cell = (uid: number, session: string | null = null, cwd: string | null = null): Cell => ({ uid, session, cwd });
 const cmdCell = (uid: number, command: NonNullable<Cell["command"]>): Cell => ({ uid, session: null, cwd: null, command });
-const mountGrid = (cells: Cell[], expandedUid: number | null = null) =>
-  mount(TerminalGrid, { props: { cells, expandedUid, defaultCwd: "/work", presets: [], home: "/work" } });
+const mountGrid = (cells: Cell[], expandedUid: number | null = null, cancelUid: number | null = null) =>
+  mount(TerminalGrid, { props: { cells, expandedUid, cancelUid, defaultCwd: "/work", presets: [], home: "/work" } });
 const cellsOf = (w: ReturnType<typeof mount>) => w.findAllComponents({ name: "TerminalCell" });
 const commandCellsOf = (w: ReturnType<typeof mount>) => w.findAllComponents({ name: "CommandCell" });
 
@@ -51,6 +51,12 @@ describe("TerminalGrid (page renderer)", () => {
     expect(w.emitted("cwd")?.[0]).toEqual([7, "/x"]);
     expect(w.emitted("close")?.[0]).toEqual([7]);
     expect(w.emitted("toggle-expand")?.[0]).toEqual([7]);
+  });
+
+  it("marks only the cell matching cancelUid as cancellable", () => {
+    const cs = cellsOf(mountGrid([cell(0, "s0"), cell(1)], null, 1));
+    expect(cs[0].props("cancellable")).toBe(false);
+    expect(cs[1].props("cancellable")).toBe(true);
   });
 
   it("adds the zoomed class only when a cell is expanded", async () => {

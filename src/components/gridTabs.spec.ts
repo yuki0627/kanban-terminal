@@ -11,6 +11,7 @@ import {
   switchPage,
   runCommand,
   runScriptInNewCell,
+  cancelableLaunchUid,
   zoomedUid,
   visibleCells,
   parseGridState,
@@ -60,6 +61,20 @@ describe("addCell", () => {
     const s = addCell(make(running(81)));
     expect(runningCount(s.cells)).toBe(81);
     expect(s.cells).toHaveLength(81);
+  });
+});
+
+describe("cancelableLaunchUid", () => {
+  const CMD = { index: 0, label: "Build", cwd: "/x" };
+  it("is the trailing launch cell's uid when one is open beyond the entry cell", () => {
+    expect(cancelableLaunchUid(make([...running(2), cell(7)]))).toBe(7);
+  });
+  it("is null for the sole entry cell (nothing to cancel)", () => {
+    expect(cancelableLaunchUid(make([cell(0)]))).toBeNull();
+  });
+  it("is null when the last cell is occupied (running session or command)", () => {
+    expect(cancelableLaunchUid(make(running(2)))).toBeNull();
+    expect(cancelableLaunchUid(make([...running(1), { uid: 1, session: null, cwd: null, command: CMD }]))).toBeNull();
   });
 });
 

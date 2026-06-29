@@ -12,6 +12,7 @@ import {
   switchPage,
   runCommand,
   runScriptInNewCell,
+  cancelableLaunchUid,
   pageCount,
   zoomedUid,
   visibleCells,
@@ -52,12 +53,10 @@ const pages = computed(() => pageCount(state.value.cells.length));
 // this a single source swap (see visibleCells/zoomedUid).
 const displayCells = computed(() => visibleCells(state.value));
 const expandedUid = computed(() => zoomedUid(state.value));
-// A launch cell is open beyond the sole entry cell (so "+ Terminal" cancels it). A
-// trailing command cell is occupied, not an open launcher.
-const launchOpen = computed(() => {
-  const last = state.value.cells[state.value.cells.length - 1];
-  return !!last && last.session === null && last.command == null && state.value.cells.length > 1;
-});
+// The cancelable trailing launch cell's uid (null when there's nothing to cancel):
+// drives both the toolbar's cancel state and the launcher's in-cell ✕.
+const cancelUid = computed(() => cancelableLaunchUid(state.value));
+const launchOpen = computed(() => cancelUid.value !== null);
 
 function onAddTerminal() {
   if (runningCount(state.value.cells) >= 81 && !launchOpen.value) return; // surfaced by the disabled button
@@ -138,6 +137,7 @@ function closeSettings() {
       class="main"
       :cells="displayCells"
       :expanded-uid="expandedUid"
+      :cancel-uid="cancelUid"
       :default-cwd="defaultCwd"
       :presets="presets"
       :home="home"

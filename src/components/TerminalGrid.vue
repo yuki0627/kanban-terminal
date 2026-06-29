@@ -14,7 +14,14 @@ import type { CwdPreset } from "./presets";
 // zoomed, GridView passes EVERY cell (all tabs), so the strip shows them all live.
 // A cell carrying a `command` renders as a CommandCell (a running script.json
 // command) instead of the Claude launcher/terminal.
-const props = defineProps<{ cells: Cell[]; expandedUid: number | null; defaultCwd: string | null; presets: CwdPreset[]; home: string | null }>();
+const props = defineProps<{
+  cells: Cell[];
+  expandedUid: number | null;
+  cancelUid: number | null;
+  defaultCwd: string | null;
+  presets: CwdPreset[];
+  home: string | null;
+}>();
 const emit = defineEmits<{
   (e: "session" | "cwd", uid: number, value: string): void;
   (e: "close" | "toggle-expand", uid: number): void;
@@ -53,6 +60,7 @@ const zoomed = computed(() => props.expandedUid !== null && mounted.value);
           :default-cwd="defaultCwd"
           :presets="presets"
           :home="home"
+          :cancellable="cell.uid === cancelUid"
           @toggle-expand="emit('toggle-expand', cell.uid)"
           @session="(id) => emit('session', cell.uid, id)"
           @cwd="(c) => emit('cwd', cell.uid, c)"
