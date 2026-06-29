@@ -1,4 +1,5 @@
 import { ref, watch, type Ref } from "vue";
+import type { ITheme } from "@xterm/xterm";
 import { isThemeId, type ThemeId } from "./useTheme";
 
 // The per-directory overrides a terminal adopts when its cwd holds a
@@ -8,10 +9,50 @@ export interface DirConfig {
   name: string | null;
   badgeColor: string | null;
   theme: ThemeId | null;
+  // Per-key xterm palette overrides applied on top of `theme` (or the app theme).
+  colors: Partial<ITheme> | null;
   hasSound: boolean;
 }
 
-const EMPTY: DirConfig = { name: null, badgeColor: null, theme: null, hasSound: false };
+const EMPTY: DirConfig = { name: null, badgeColor: null, theme: null, colors: null, hasSound: false };
+
+// The ITheme keys a dir may override; values arrive server-sanitized but are
+// re-checked here so a hand-rolled response can't widen the terminal options.
+const THEME_COLOR_KEYS = [
+  "foreground",
+  "background",
+  "cursor",
+  "cursorAccent",
+  "selectionBackground",
+  "selectionForeground",
+  "selectionInactiveBackground",
+  "black",
+  "red",
+  "green",
+  "yellow",
+  "blue",
+  "magenta",
+  "cyan",
+  "white",
+  "brightBlack",
+  "brightRed",
+  "brightGreen",
+  "brightYellow",
+  "brightBlue",
+  "brightMagenta",
+  "brightCyan",
+  "brightWhite",
+] as const;
+
+function parseColors(input: unknown): Partial<ITheme> | null {
+  if (!isRecord(input)) return null;
+  const out: Partial<ITheme> = {};
+  for (const key of THEME_COLOR_KEYS) {
+    const value = input[key];
+    if (typeof value === "string") out[key] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 // One fetch per cwd, shared across cells: several terminals in the same directory
 // resolve to one request, and the config is stable for the page's lifetime (changes
@@ -26,6 +67,7 @@ function parse(c: unknown): DirConfig {
     name: typeof c.name === "string" ? c.name : null,
     badgeColor: typeof c.badgeColor === "string" ? c.badgeColor : null,
     theme: isThemeId(c.theme) ? c.theme : null,
+    colors: parseColors(c.colors),
     hasSound: c.hasSound === true,
   };
 }

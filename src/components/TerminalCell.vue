@@ -693,6 +693,7 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         :connect-key="connectKey"
         :cwd="cwd"
         :dir-theme="dirConfig.theme"
+        :dir-colors="dirConfig.colors"
         dev-terminal
         run-menu
         @session="onSession"

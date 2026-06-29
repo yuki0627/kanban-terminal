@@ -15,11 +15,44 @@ const THEME_IDS: readonly ThemeId[] = ["midnight", "nord", "daylight", "solarize
 const DIR_CONFIG_FILE = ".mulmoterminal.json";
 const NAME_MAX_CHARS = 40;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+// xterm accepts #rgb / #rgba / #rrggbb / #rrggbbaa for palette colors.
+const PALETTE_COLOR_RE = /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+// The xterm ITheme keys a `colors` block may override (mirrors @xterm/xterm's
+// ITheme). Anything outside this set is dropped so an arbitrary JSON object can't
+// inject unexpected keys into the terminal options.
+const THEME_COLOR_KEYS: readonly string[] = [
+  "foreground",
+  "background",
+  "cursor",
+  "cursorAccent",
+  "selectionBackground",
+  "selectionForeground",
+  "selectionInactiveBackground",
+  "black",
+  "red",
+  "green",
+  "yellow",
+  "blue",
+  "magenta",
+  "cyan",
+  "white",
+  "brightBlack",
+  "brightRed",
+  "brightGreen",
+  "brightYellow",
+  "brightBlue",
+  "brightMagenta",
+  "brightCyan",
+  "brightWhite",
+];
 
 export interface DirConfig {
   name: string | null;
   badgeColor: string | null;
   theme: ThemeId | null;
+  // Per-key xterm palette overrides (on top of `theme`), or null when none are valid.
+  colors: Record<string, string> | null;
   // Absolute path to the attention sound, resolved within cwd; null when unset or the
   // configured path is absolute / escapes the directory / doesn't exist.
   sound: string | null;
@@ -31,6 +64,7 @@ export interface PublicDirConfig {
   name: string | null;
   badgeColor: string | null;
   theme: ThemeId | null;
+  colors: Record<string, string> | null;
   hasSound: boolean;
 }
 
@@ -45,6 +79,18 @@ function sanitizeName(input: unknown): string | null {
 
 function sanitizeColor(input: unknown): string | null {
   return typeof input === "string" && HEX_COLOR_RE.test(input.trim()) ? input.trim().toLowerCase() : null;
+}
+
+// Keep only known ITheme keys whose value is a valid palette color; drop the rest.
+// null when nothing valid remains, so an empty/garbage block behaves like "unset".
+function sanitizeColors(input: unknown): Record<string, string> | null {
+  if (!isRecord(input)) return null;
+  const out: Record<string, string> = {};
+  for (const key of THEME_COLOR_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && PALETTE_COLOR_RE.test(value.trim())) out[key] = value.trim().toLowerCase();
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // Confine the configured sound to a real file INSIDE cwd. Relative paths only;
@@ -62,7 +108,7 @@ export function resolveDirSound(cwd: string, input: unknown): string | null {
   return existsSync(resolved) && statSync(resolved).isFile() ? resolved : null;
 }
 
-const EMPTY: DirConfig = { name: null, badgeColor: null, theme: null, sound: null };
+const EMPTY: DirConfig = { name: null, badgeColor: null, theme: null, colors: null, sound: null };
 
 export function loadDirConfig(cwd: string): DirConfig {
   try {
@@ -75,6 +121,7 @@ export function loadDirConfig(cwd: string): DirConfig {
       name: sanitizeName(raw.name),
       badgeColor: sanitizeColor(raw.badgeColor),
       theme: isThemeId(raw.theme) ? raw.theme : null,
+      colors: sanitizeColors(raw.colors),
       sound: resolveDirSound(base, raw.sound),
     };
   } catch {
@@ -83,8 +130,8 @@ export function loadDirConfig(cwd: string): DirConfig {
 }
 
 export function publicDirConfig(cwd: string): PublicDirConfig {
-  const { name, badgeColor, theme, sound } = loadDirConfig(cwd);
-  return { name, badgeColor, theme, hasSound: sound !== null };
+  const { name, badgeColor, theme, colors, sound } = loadDirConfig(cwd);
+  return { name, badgeColor, theme, colors, hasSound: sound !== null };
 }
 
 export function dirSoundFile(cwd: string): string | null {

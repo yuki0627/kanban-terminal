@@ -311,6 +311,7 @@ function onSession(id: string) {
           :session-id="activeId"
           :connect-key="connectKey"
           :dir-theme="singleDirConfig.theme"
+          :dir-colors="singleDirConfig.colors"
           :dir-name="singleDirConfig.name"
           :dir-badge-color="singleDirConfig.badgeColor"
           run-menu

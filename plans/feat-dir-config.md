@@ -26,9 +26,14 @@ dir単位の層は無い。これを追加する。
   "name": "PROD · payments",            // UIのラベル／バッジ
   "badgeColor": "#cf222e",              // バッジ色＆セルのアクセント（hex #rrggbb）
   "theme": "nord",                      // 端末の xterm パレット（midnight/nord/daylight/solarized）
+  "colors": { "background": "#190a23", "cursor": "#ff2e63" }, // xtermパレットの部分上書き（任意カラー）
   "sound": "./.mulmoterminal/alert.mp3" // 注目サウンド（このdir配下の相対パスのみ）
 }
 ```
+
+`colors` は `theme`（無ければアプリテーマ）をベースに、xterm `ITheme` の各キー
+（`background`/`foreground`/`cursor`/`selectionBackground`/16 ANSI色…）を hex で上書き。
+既知キーかつ妥当な hex のみ採用し、不正は無視。`theme` の4プリセットに縛られず任意配色にできる。
 
 ## 変更
 

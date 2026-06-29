@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -32,8 +32,10 @@ const props = defineProps<{
   runMenu?: boolean;
   // Per-directory overrides from <cwd>/.mulmoterminal.json. `dirTheme` pins this
   // terminal's xterm palette (overriding the app-wide theme for this cell only);
-  // `dirName` / `dirBadgeColor` render a project badge in the header.
+  // `dirColors` overrides individual palette keys on top of that; `dirName` /
+  // `dirBadgeColor` render a project badge in the header.
   dirTheme?: ThemeId | null;
+  dirColors?: Partial<ITheme> | null;
   dirName?: string | null;
   dirBadgeColor?: string | null;
 }>();
@@ -51,9 +53,12 @@ const serverCwd = ref<string | null>(props.cwd ?? null);
 const dragOver = ref(false);
 const { themeId } = useTheme();
 
-// A dir-pinned theme wins over the app-wide selection for this terminal's canvas.
-function effectiveTermTheme() {
-  return props.dirTheme ? termThemeFor(props.dirTheme) : currentTermTheme();
+// A dir-pinned theme wins over the app-wide selection for this terminal's canvas,
+// then per-key `dirColors` override on top (so a dir can tweak just the background
+// without restating a whole palette).
+function effectiveTermTheme(): ITheme {
+  const base = props.dirTheme ? termThemeFor(props.dirTheme) : currentTermTheme();
+  return props.dirColors ? { ...base, ...props.dirColors } : base;
 }
 const dirBadgeStyle = computed(() => badgeStyleFor(props.dirBadgeColor));
 
@@ -260,7 +265,7 @@ watch(
 // xterm can't read CSS variables, so repaint its canvas palette when the theme
 // changes (keeps an already-open terminal in sync with the rest of the app). A
 // dir-pinned theme ignores the app-wide change; a change to the pin itself repaints.
-watch([themeId, () => props.dirTheme], () => {
+watch([themeId, () => props.dirTheme, () => props.dirColors], () => {
   if (term) term.options.theme = effectiveTermTheme();
 });
 
