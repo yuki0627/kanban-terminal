@@ -17,14 +17,14 @@ main には既に2系統が併存:
 - **統合先ストレージ**: server `config.json` の `cwdPresets`（永続・端末間共有・既存データ流用）。localStorage の `recentDirs` は廃止。
 - **自動追加**: フレッシュ起動のサーバ確定 cwd (`onServerCwd`+`recordNextCwd`) を `cwdPresets` に追加。
 - **label**: dir の basename（worktree は `cwdDisplay.worktreeLabel` の `repo (task)`）。手動ラベルUIは廃止。
-- **上限**: なし。dedup（既存パスは何もしない＝位置保持）、新規は先頭に追加。
+- **上限**: なし。**MRU**: 開くたびに当該 dir を先頭へ移動（既存パスは先頭へ bump・ラベルは保持、既に先頭なら no-op）、新規は先頭に追加。
 - **削除**: 起動フォームの各チップに ✕ を付与し即削除。
 - **Settings**: Directory presets セクションを撤去（Theme / Notification sound は残す）。
 
 ## 実装
 
 ### データ/ロジック
-- `src/composables/useAppConfig.ts`: `recordPreset(path)` / `removePreset(path)` を追加（既存 POST `/api/config {cwdPresets}` を流用、dedup・先頭追加・上限なし）。settings 用 `savePresets` は内部化。
+- `src/composables/useAppConfig.ts`: `recordPreset(path)` / `removePreset(path)` を追加（既存 POST `/api/config {cwdPresets}` を流用、**MRU で先頭へ移動**・ラベル保持・既に先頭なら no-op・上限なし）。settings 用 `savePresets` は内部化。
 - `src/components/presets.ts`: `presetLabel(path)` を追加（basename / worktree-aware）。
 
 ### グリッド経路（自動記録・✕）

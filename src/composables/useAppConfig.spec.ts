@@ -20,12 +20,34 @@ describe("useAppConfig — auto preset recording", () => {
     expect(presets.value).toEqual([{ label: "alpha", path: "/home/me/alpha" }]);
   });
 
-  it("dedups by path and keeps the existing position (no reshuffle on reuse)", async () => {
+  it("moves an already-known dir to the front on reuse (most-recently-used)", async () => {
     const { presets, recordPreset } = useAppConfig();
     await recordPreset("/a/one");
     await recordPreset("/b/two");
-    await recordPreset("/a/one"); // already present
-    expect(presets.value.map((p) => p.path)).toEqual(["/b/two", "/a/one"]);
+    await recordPreset("/a/one"); // reuse → bumps to front
+    expect(presets.value.map((p) => p.path)).toEqual(["/a/one", "/b/two"]);
+  });
+
+  it("keeps an existing entry's label when bumping it to the front", async () => {
+    const { presets, recordPreset } = useAppConfig();
+    presets.value = [
+      { label: "two", path: "/b/two" },
+      { label: "Custom", path: "/a/one" }, // a manual label from legacy cwdPresets
+    ];
+    await recordPreset("/a/one");
+    expect(presets.value).toEqual([
+      { label: "Custom", path: "/a/one" },
+      { label: "two", path: "/b/two" },
+    ]);
+  });
+
+  it("does not re-write when the dir is already at the front", async () => {
+    const { presets, recordPreset } = useAppConfig();
+    await recordPreset("/a");
+    const before = vi.mocked(globalThis.fetch).mock.calls.length;
+    await recordPreset("/a"); // already most-recent → no POST
+    expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(before);
+    expect(presets.value.map((p) => p.path)).toEqual(["/a"]);
   });
 
   it("has no cap — keeps every distinct dir, newest first", async () => {

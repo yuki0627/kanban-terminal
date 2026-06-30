@@ -69,16 +69,19 @@ export function useAppConfig() {
     return run;
   }
 
-  // Auto-add the dir the user just launched in, so it becomes a one-click chip.
-  // Dedup by path (an existing entry keeps its position — no reshuffle on reuse);
-  // a new dir is prepended. No cap: the user prunes the list with the chip's ✕.
-  // Called with the server-confirmed (effective) cwd so we only remember dirs that
-  // actually ran.
+  // Auto-add the dir the user just launched in, so it becomes a one-click chip, and
+  // move it to the FRONT (most-recently-used) on every launch so the list reflects
+  // launch order. A re-launched dir keeps its existing (possibly manual) label; a new
+  // dir is prepended with its basename. Already at the front → no write. No cap: the
+  // user prunes the list with the chip's ✕. Called with the server-confirmed
+  // (effective) cwd so we only remember dirs that actually ran.
   function recordPreset(path: string | null): Promise<void> {
     if (!path) return Promise.resolve();
     return serializePresetWrite(async () => {
-      if (presets.value.some((p) => p.path === path)) return;
-      await savePresets([{ label: presetLabel(path), path }, ...presets.value]);
+      if (presets.value[0]?.path === path) return; // already most-recent — nothing to reorder
+      const existing = presets.value.find((p) => p.path === path);
+      const entry = existing ?? { label: presetLabel(path), path };
+      await savePresets([entry, ...presets.value.filter((p) => p.path !== path)]);
     });
   }
 
