@@ -49,4 +49,17 @@ describe("useAppConfig — auto preset recording", () => {
     await removePreset("/a");
     expect(presets.value.map((p) => p.path)).toEqual(["/b"]);
   });
+
+  it("serializes concurrent records so neither write clobbers the other (#163 review)", async () => {
+    // A slow POST means two un-serialized records would both read the empty list and
+    // the second would overwrite the first. Serialization keeps both.
+    globalThis.fetch = vi.fn(async (_url: string, init?: { body?: string }) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      await new Promise((r) => setTimeout(r, 5));
+      return { ok: true, json: async () => ({ cwdPresets: body.cwdPresets ?? [] }) };
+    }) as unknown as typeof fetch;
+    const { presets, recordPreset } = useAppConfig();
+    await Promise.all([recordPreset("/a"), recordPreset("/b")]);
+    expect(presets.value.map((p) => p.path).sort()).toEqual(["/a", "/b"]);
+  });
 });

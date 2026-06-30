@@ -54,20 +54,40 @@ export function useAppConfig() {
     }
   }
 
+  // Each preset write POSTs the whole array, so concurrent record/remove calls
+  // (two grid cells launching at once) must not each derive `next` from the same
+  // stale snapshot — the later POST would clobber the earlier one (last-write-wins,
+  // dropping a just-launched dir). Serialize the writes so every mutation reads the
+  // freshly-saved list before computing its own.
+  let presetWrite: Promise<unknown> = Promise.resolve();
+  function serializePresetWrite(mutate: () => Promise<void>): Promise<void> {
+    const run = presetWrite.then(mutate, mutate);
+    presetWrite = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
   // Auto-add the dir the user just launched in, so it becomes a one-click chip.
   // Dedup by path (an existing entry keeps its position — no reshuffle on reuse);
   // a new dir is prepended. No cap: the user prunes the list with the chip's ✕.
   // Called with the server-confirmed (effective) cwd so we only remember dirs that
   // actually ran.
-  async function recordPreset(path: string | null): Promise<void> {
-    if (!path || presets.value.some((p) => p.path === path)) return;
-    await savePresets([{ label: presetLabel(path), path }, ...presets.value]);
+  function recordPreset(path: string | null): Promise<void> {
+    if (!path) return Promise.resolve();
+    return serializePresetWrite(async () => {
+      if (presets.value.some((p) => p.path === path)) return;
+      await savePresets([{ label: presetLabel(path), path }, ...presets.value]);
+    });
   }
 
   // Drop one preset (the chip's ✕). No-op when the path isn't present.
-  async function removePreset(path: string): Promise<void> {
-    if (!presets.value.some((p) => p.path === path)) return;
-    await savePresets(presets.value.filter((p) => p.path !== path));
+  function removePreset(path: string): Promise<void> {
+    return serializePresetWrite(async () => {
+      if (!presets.value.some((p) => p.path === path)) return;
+      await savePresets(presets.value.filter((p) => p.path !== path));
+    });
   }
 
   // Persist just the custom attention sound (a file path, or null to use the chime).
