@@ -36,6 +36,7 @@ import { startCollectionCompletionWatchers } from "./backends/collectionWatchers
 import { initUserTaskScheduler, mountSchedulerRoutes } from "./backends/scheduler.js";
 import { mountFilesRoutes } from "./backends/files.js";
 import { mountShortcutsRoutes } from "./backends/shortcuts.js";
+import { mountTranslationRoutes } from "./backends/translation.js";
 import { mountHtmlDispatchRoute, mountHtmlPreviewRoute } from "./backends/html.js";
 
 // Per-session activity flags, driven by Claude hooks (see /api/hook).
@@ -132,6 +133,20 @@ initWorkspaceSetup({ workspace: CLAUDE_CWD });
 // workspace dir, so it stays valid regardless of which directory is active.
 const MULMOTERMINAL_HOME = path.join(os.homedir(), ".mulmoterminal");
 
+// Hidden translation-worker sessions run in CLAUDE_CWD — the workspace the user has
+// already trusted — because claude blocks on its workspace-trust dialog in any
+// untrusted dir (no input ever comes, so the worker would hang). Their session ids
+// are tracked here so they're FILTERED OUT of /api/sessions: a translation worker is
+// a transient internal helper, not a chat the user should see in the sidebar.
+const translationWorkerIds = new Set<string>();
+
+// sessionId → settlers for a hidden translation worker's in-flight request.
+// `resolve` is called from POST /api/translation/submit when the worker reports its
+// answer (via the submitTranslation GUI tool); `reject` from the Stop hook if the
+// worker ends its turn WITHOUT submitting (a misbehaved turn), so we fail fast
+// instead of waiting out the full timeout.
+const pendingTranslations = new Map<string, { resolve: (translations: string[]) => void; reject: (err: Error) => void }>();
+
 // A session id is always a UUID (server-generated, or a .jsonl basename). Reject
 // anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
 // a value that claude re-parses as a flag) into the spawned process.
@@ -167,7 +182,10 @@ const sessionChannel = (id: string) => `session:${id}`;
 // MCP tool names claude uses, in the mcp__<server>__<tool> form, one per enabled
 // plugin. Auto-allowed via --allowedTools so the spike doesn't trip the permission
 // prompt (permissions stay terminal-native). Comma-joined into one --allowedTools.
-const GUI_MCP_TOOLS = allowedToolNames().join(",");
+// The worker-only `submitTranslation` tool is allowed for every session (harmless —
+// only hidden translation workers are actually shown it, see the /mcp route) so the
+// worker can call it without a permission prompt.
+const GUI_MCP_TOOLS = [...allowedToolNames(), "mcp__mulmoterminal-gui__submitTranslation"].join(",");
 
 // A per-session list store mirrored to disk so it survives a server reboot — one
 // JSON file per session under <workspace>/<dirName>/<sessionId>.json
@@ -363,6 +381,22 @@ let pubsub: ReturnType<typeof createPubSub> | null = null;
 // reattach within it cancels the reap, so a reload just re-attaches to the same
 // running terminal. Only after the window with no reattach do we reap.
 const REAP_GRACE_MS = 30_000;
+// A detached session that still needs the user — mid-turn output the user hasn't
+// seen, or blocked on a permission/question prompt (the `waiting` flag) — is an
+// unfinished task: reaping it loses work. So it gets a much longer grace than an
+// idle one, long enough that you can switch away, do other things, and come back
+// to answer it. Override with WAIT_REAP_GRACE_MS=0 to never auto-close these.
+const WAIT_REAP_GRACE_MS = (() => {
+  const def = 30 * 60_000;
+  const raw = process.env.WAIT_REAP_GRACE_MS;
+  if (raw === undefined) return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.warn(`[pty] ignoring non-numeric WAIT_REAP_GRACE_MS=${JSON.stringify(raw)}; using default ${def}ms`);
+    return def;
+  }
+  return n; // a non-positive value means "never auto-reap waiting sessions" (see scheduleReap)
+})();
 const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function cancelReap(id: string) {
@@ -373,16 +407,45 @@ function cancelReap(id: string) {
   }
 }
 
-function scheduleReap(id: string) {
+// Node's setTimeout delay is a signed 32-bit int; a larger value overflows and
+// fires at ~1ms. Clamp to the max so a big grace doesn't become an instant reap.
+const MAX_TIMER_MS = 2_147_483_647;
+
+function scheduleReap(id: string, delayMs: number = REAP_GRACE_MS) {
+  // Non-positive or non-finite (e.g. a bad env value yielding NaN) => never
+  // auto-reap; the session stays until reattached or explicitly terminated.
+  // Guarding here matters because setTimeout(..., NaN) would fire ~immediately.
+  if (!Number.isFinite(delayMs) || delayMs <= 0) return;
   if (reapTimers.has(id)) return;
+  const delay = Math.min(delayMs, MAX_TIMER_MS);
   reapTimers.set(
     id,
     setTimeout(() => {
       reapTimers.delete(id);
       const entry = ptys.get(id);
       if (entry && !entry.ws) reap(id); // still detached after the grace window
-    }, REAP_GRACE_MS),
+    }, delay),
   );
+}
+
+// Decide whether/when to reap a detached session based on its activity. A session
+// that's actively thinking (`working`) is never reaped — that's "clearly working,
+// don't close it". One that needs the user (`waiting`) gets the long grace. A
+// genuinely idle session (finished AND already viewed, so neither flag) gets the
+// short grace — that's the "auto-close inactive ones" behaviour.
+function armReapForDetached(id: string) {
+  const entry = ptys.get(id);
+  if (!entry || entry.ws) return; // still attached: nothing to reap
+  // Recompute from scratch: state may have escalated (idle -> waiting) since the
+  // last arm, and a stale short timer must not survive to reap a session that now
+  // needs the user. cancelReap clears it so scheduleReap re-arms with the right grace.
+  cancelReap(id);
+  const a = activity.get(id);
+  if (a?.working) {
+    console.log(`[pty] keeping working session ${id} alive (detached)`);
+    return;
+  }
+  scheduleReap(id, a?.waiting ? WAIT_REAP_GRACE_MS : REAP_GRACE_MS);
 }
 
 function reap(id: string) {
@@ -433,14 +496,11 @@ function setWorking(id: string, working: boolean, event?: string) {
   activity.set(id, { ...prev, working, event: event ?? prev.event ?? null, at: Date.now() });
   publishActivity(id);
 
-  // A background session (no attached client) that just went idle is reaped.
-  if (!working) {
-    const entry = ptys.get(id);
-    if (entry && !entry.ws) {
-      console.log(`[pty] reaping idle background session ${id}`);
-      reap(id);
-    }
-  }
+  // A background session (no attached client) that just finished a turn is no
+  // longer `working`. Don't kill it outright — if it ended its turn to ask the
+  // user something (it'll be flagged `waiting`), reaping now would lose the task
+  // before the user can answer. Arm a reap whose grace matches its state.
+  if (!working) armReapForDetached(id);
 }
 
 // A background session needs the user's attention: it is waiting for input
@@ -452,6 +512,10 @@ function setWaiting(id: string, waiting: boolean, event?: string) {
   if ((prev.waiting ?? false) === waiting) return;
   activity.set(id, { ...prev, waiting, event: event ?? prev.event ?? null, at: Date.now() });
   publishActivity(id);
+
+  // A detached session that just started needing the user escalates from the short
+  // idle grace to the long one — re-arm so it isn't reaped before they can return.
+  if (waiting) armReapForDetached(id);
 }
 
 // Hook config injected via `claude --settings <json>`. Each event POSTs the full
@@ -575,27 +639,34 @@ app.use(express.json({ limit: "25mb" }));
 // terminal session, seeded with `message`, that the user can open from the sidebar.
 // `role` is ignored (MulmoTerminal has no roles). `hidden:true` marks it a background
 // worker: it still lists in the sidebar but never renders bold/unread when it
-// finishes. Registered BEFORE mountAllRoutes so this specific route wins over
-// /api/plugin/:toolName.
+// finishes. `draft:true` makes `message` an editable DRAFT — typed into the input box
+// but NOT auto-submitted (the collection-plugin's startNewChatDraft / template cards),
+// so the user reviews and presses Enter. Registered BEFORE mountAllRoutes so this
+// specific route wins over /api/plugin/:toolName.
 app.post("/api/plugin/spawnBackgroundChat", (req, res) => {
   const body = isRecord(req.body) ? req.body : {};
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message) {
     return res.json({ message: "spawnBackgroundChat: `message` is required (non-empty string)." });
   }
+  const draft = body.draft === true;
   const sessionId = randomUUID();
   if (body.hidden === true) hiddenSessions.add(sessionId);
   // ws is null: the session runs headless until the user opens it (reattach
   // replays the buffered output). The "created" pubsub event in spawnClaudePty
-  // surfaces it in the sidebar right away.
+  // surfaces it in the sidebar right away. A draft spawns with NO initial prompt
+  // (so claude doesn't auto-run) and gets the text typed into its input box instead.
   try {
-    spawnClaudePty(sessionId, null, null, message);
+    if (draft) spawnClaudePty(sessionId, null, null, undefined, CLAUDE_CWD, true, message);
+    else spawnClaudePty(sessionId, null, null, message);
   } catch (err) {
     console.error(`[spawnBackgroundChat] failed for ${sessionId}: ${messageOf(err)}`);
     return res.json({ message: `Failed to spawn a new session: ${messageOf(err)}` });
   }
   return res.json({
-    message: `Spawned a new terminal session (chatId ${sessionId}). It runs in parallel; the user can open it from the sidebar.`,
+    message: draft
+      ? `Opened a new terminal session (chatId ${sessionId}) with the text prefilled in the input for the user to review and send.`
+      : `Spawned a new terminal session (chatId ${sessionId}). It runs in parallel; the user can open it from the sidebar.`,
     jsonData: { chatId: sessionId },
   });
 });
@@ -678,6 +749,32 @@ mountShortcutsRoutes(app, { workspace: CLAUDE_CWD });
 // <workspace>/models dir, so a download by either app is reused.
 mountWhisperRoutes(app, { workspace: CLAUDE_CWD });
 
+// Runtime UI-string translation (POST /api/translation), backing the shared
+// @mulmoclaude/core/translation/client. The HTTP contract + on-disk cache schema
+// match MulmoClaude (so the <workspace>/data/translation cache is shared between the
+// apps), but the LLM step is MulmoTerminal's own: translateViaHiddenChat spawns a
+// hidden background claude session (NEVER `claude -p`) and is filtered from the
+// sidebar. translateViaHiddenChat is a hoisted function declaration defined alongside
+// spawnClaudePty below.
+mountTranslationRoutes(app, { workspace: CLAUDE_CWD, translateBatch: translateViaHiddenChat });
+
+// The hidden translation worker reports its answer here, via the broker's worker-only
+// submitTranslation GUI tool (which POSTs { sessionId, translations }). We hand the
+// array to the waiting request and let translateViaHiddenChat validate it.
+app.post("/api/translation/submit", (req, res) => {
+  const { sessionId, translations } = isRecord(req.body) ? req.body : {};
+  if (typeof sessionId !== "string" || !SESSION_ID_RE.test(sessionId)) {
+    return res.status(400).json({ error: "invalid sessionId" });
+  }
+  const pending = pendingTranslations.get(sessionId);
+  if (!pending) {
+    // No in-flight request for this id (already settled / timed out / not a worker).
+    return res.status(404).json({ error: "no pending translation for this session" });
+  }
+  pending.resolve(Array.isArray(translations) ? (translations as string[]) : []);
+  return res.json({ ok: true });
+});
+
 // In-process GUI MCP server, served over Streamable HTTP. claude (wired up via
 // mcpConfigJson) POSTs JSON-RPC here; the session id is in the URL path. We run in
 // STATELESS mode (sessionIdGenerator: undefined): one fresh Server+transport per
@@ -689,7 +786,9 @@ app.post("/mcp/:sessionId", async (req, res) => {
   if (!SESSION_ID_RE.test(sessionId)) {
     return res.status(400).json({ error: "invalid sessionId" });
   }
-  const server = buildGuiMcpServer(sessionId, `http://127.0.0.1:${PORT}`);
+  // Hidden translation workers (and only they) get the worker-only submitTranslation
+  // tool, so a normal chat's tool list stays clean.
+  const server = buildGuiMcpServer(sessionId, `http://127.0.0.1:${PORT}`, { submitTranslationTool: translationWorkerIds.has(sessionId) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     transport.close();
@@ -784,6 +883,10 @@ app.post("/api/hook", async (req, res) => {
     }
     handleActivityHook(sessionId, event, foreground);
     await handleToolHook(sessionId, event, body);
+    // A hidden translation worker that ends its turn while still pending never called
+    // submitTranslation — fail it now rather than hang until the timeout. (When it DID
+    // submit, the entry is already resolved and this reject is a no-op.)
+    if (event === "Stop") pendingTranslations.get(sessionId)?.reject(new Error("[translation] worker ended its turn without calling submitTranslation"));
     console.log(`[hook] ${event} for ${sessionId}`);
   }
   res.json({ ok: true });
@@ -991,8 +1094,12 @@ app.get("/api/sessions", async (req, res) => {
     }
 
     // Keep only the most-recent N, then read & parse contents for just those
-    // on-disk files (a deleted/corrupt file is dropped, not fatal).
-    const top = [...onDiskStats, ...pending].sort((a, b) => b.mtime - a.mtime).slice(0, SESSION_LIST_LIMIT);
+    // on-disk files (a deleted/corrupt file is dropped, not fatal). Hidden translation
+    // workers are dropped first — they're transient internal helpers, not user chats.
+    const top = [...onDiskStats, ...pending]
+      .filter((s) => !translationWorkerIds.has(s.id))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, SESSION_LIST_LIMIT);
     const sessions = (
       await Promise.all(
         top.map((s) =>
@@ -1141,11 +1248,113 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
   return entry;
 }
 
+// How long to wait for a hidden translation worker to call submitTranslation before
+// giving up (cold claude startup + one short turn). Generous; the result is cached.
+const TRANSLATION_TIMEOUT_MS = 120_000;
+
+// Tear down a finished/failed translation worker: kill any lingering pty and drop its
+// bookkeeping + transcript so the activity maps and the workspace don't accumulate
+// throwaway translation sessions.
+function cleanupTranslationWorker(sessionId: string): void {
+  reap(sessionId); // idempotent — already reaped if Stop fired
+  activity.delete(sessionId);
+  hiddenSessions.delete(sessionId);
+  translationWorkerIds.delete(sessionId);
+  lastPrompts.delete(sessionId);
+  pendingTranslations.delete(sessionId);
+  fs.rm(path.join(projectSessionsDir(CLAUDE_CWD), `${sessionId}.jsonl`), { force: true }).catch(() => {});
+}
+
+// Most a worker request retries before failing. The model occasionally answers in
+// text instead of calling submitTranslation (caught fast by the Stop hook); a fresh
+// worker almost always succeeds. Misses are cached, so retries are rare in practice.
+const TRANSLATION_MAX_ATTEMPTS = 3;
+
+// Run ONE hidden translation worker: spawn it, wait for it to call submitTranslation
+// (or fail via the Stop hook / timeout), validate, and tear it down.
+async function runTranslationWorkerOnce(prompt: string, expected: number): Promise<string[]> {
+  const sessionId = randomUUID();
+  hiddenSessions.add(sessionId);
+  translationWorkerIds.add(sessionId);
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const submitted = new Promise<string[]>((resolve, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`[translation] hidden chat timed out after ${TRANSLATION_TIMEOUT_MS}ms`)), TRANSLATION_TIMEOUT_MS);
+    pendingTranslations.set(sessionId, { resolve, reject });
+  });
+
+  try {
+    // ws=null → headless; the worker buffers output nobody reads. Default cwd =
+    // CLAUDE_CWD (trusted). submitTranslation (or the Stop hook) settles `submitted`.
+    spawnClaudePty(sessionId, null, null, prompt);
+    // spawnClaudePty registers a pending session + emits a "created" event; drop the
+    // pending entry now so this internal worker never surfaces as a sidebar row (the
+    // /api/sessions filter on translationWorkerIds covers its on-disk transcript).
+    knownSessions.delete(sessionId);
+    const translations = await submitted;
+    if (translations.length !== expected || !translations.every((s) => typeof s === "string")) {
+      throw new Error(`[translation] submitTranslation returned ${translations.length} strings for ${expected} inputs`);
+    }
+    return translations;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    cleanupTranslationWorker(sessionId);
+  }
+}
+
+// The injected LLM step for /api/translation. Drives MulmoTerminal's EXISTING hidden
+// background chat (spawnClaudePty) — explicitly NOT `claude -p`, which is banned in
+// MulmoTerminal. It seeds a headless worker that translates the strings and reports
+// them by calling the worker-only `submitTranslation` GUI tool (POST
+// /api/translation/submit). Retries a fresh worker if one answers without submitting.
+async function translateViaHiddenChat(targetLanguage: string, sentences: readonly string[]): Promise<string[]> {
+  const expected = sentences.length;
+  const prompt =
+    `You are an automated translation service. Translate each of the ${expected} English strings in ` +
+    `the JSON array below into the target language (BCP-47 code: ${targetLanguage}), preserving ` +
+    `placeholders like {name}, {count}, %s and any HTML tags verbatim. You MUST deliver the result by ` +
+    `calling the submitTranslation tool with a "translations" array of exactly ${expected} strings in ` +
+    `the same order — that tool call is the ONLY way to return the result; a text reply is discarded. ` +
+    `Do not call any other tool.\n\nInput: ${JSON.stringify(sentences)}`;
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= TRANSLATION_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await runTranslationWorkerOnce(prompt, expected);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[translation] attempt ${attempt}/${TRANSLATION_MAX_ATTEMPTS} failed: ${messageOf(err)}`);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("[translation] hidden chat failed");
+}
+
+// Claude must have its input box + bracketed-paste mode up before it will capture a
+// typed `draft`; too early and the bytes are echoed into the scrollback instead. We
+// wait for its status line to paint (the "shift+tab to cycle" mode hint), settle
+// briefly, then type. A fallback fires if that marker never shows (UI string drift).
+const DRAFT_READY_MARKER = /shift\+tab to cycle/;
+const DRAFT_SETTLE_MS = 250;
+const DRAFT_FALLBACK_MS = 6000;
+
+// Sanitize a draft before typing it into a PTY: strip ALL control bytes (C0/C1 —
+// ESC, Ctrl-C, CR/LF, and an embedded bracketed-paste terminator) so untrusted draft
+// content can't inject terminal control sequences that break out of the paste and
+// submit/interrupt. Only printable text survives, with whitespace collapsed.
+// eslint-disable-next-line no-control-regex -- intentional: match terminal control bytes (C0/C1) to strip them
+const DRAFT_CONTROL_BYTES_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+function sanitizeDraftText(text: string): string {
+  return text.replace(DRAFT_CONTROL_BYTES_RE, " ").replace(/\s+/g, " ").trim();
+}
+
 // Spawn a fresh claude PTY for this session, register it, and wire its output /
 // exit back to the browser socket. `ws` may be null for a session spawned without
 // a viewer yet (e.g. spawnBackgroundChat) — output just buffers until a client
 // reattaches. `initialPrompt`, when given, is passed to claude as the first turn
-// so the session starts working immediately, before anyone opens it.
+// so the session starts working immediately, before anyone opens it. `draft` is the
+// opposite: it is NOT auto-submitted — once claude's UI is ready the text is typed
+// into the input box (no Enter) so the user can review / edit / send it. Pass one or
+// the other, never both.
 function spawnClaudePty(
   sessionId: string,
   resume: string | null,
@@ -1153,6 +1362,7 @@ function spawnClaudePty(
   initialPrompt?: string,
   cwd: string = CLAUDE_CWD,
   attachGuiMcp: boolean = true,
+  draft?: string,
 ): PtyEntry {
   // attachGuiMcp picks the MCP mode (see buildClaudeArgs): the single view (default)
   // attaches the GUI MCP + --strict-mcp-config (main's classic behavior); the grid's
@@ -1189,18 +1399,51 @@ function spawnClaudePty(
 
   if (!canResume) {
     // Brand-new (or restarted-idle) session: surface it in the sidebar before
-    // it's persisted. A spawned session (initialPrompt) gets a title from its
-    // first message so it's recognizable in the sidebar before anyone opens it.
-    const title = initialPrompt ? initialPrompt.replace(/\s+/g, " ").trim().slice(0, 60) || "New session" : "New session";
+    // it's persisted. A spawned session (initialPrompt or a draft) gets a title from
+    // that text so it's recognizable in the sidebar before anyone opens it.
+    const seed = initialPrompt ?? draft;
+    const title = seed ? seed.replace(/\s+/g, " ").trim().slice(0, 60) || "New session" : "New session";
     knownSessions.set(sessionId, { createdAt: Date.now(), title });
     pubsub?.publish(SESSIONS_CHANNEL, { id: sessionId, working: false, event: "created" });
   }
+
+  // A draft is typed into the input box once claude is ready for input. ALL control
+  // bytes are stripped first — C0/C1, including ESC, Ctrl-C, CR/LF and an embedded
+  // bracketed-paste terminator (\e[201~) — so untrusted draft content (collection /
+  // custom-view text) can't inject terminal control sequences that break out of the
+  // paste and submit/interrupt. Only printable text is typed, wrapped in bracketed
+  // paste (\e[200~…\e[201~), with NO trailing Enter, so it can never auto-submit — the
+  // user reviews and presses Enter.
+
+  const draftText = draft ? sanitizeDraftText(draft) : "";
+  let draftDone = !draftText;
+  let draftScan = "";
+  const typeDraft = () => {
+    if (draftDone) return;
+    draftDone = true;
+    try {
+      entry.term.write(`\x1b[200~${draftText}\x1b[201~`);
+    } catch {
+      // pty already gone — nothing to draft into
+    }
+  };
+  // Fallback: type even if the readiness marker never appears (UI string drift).
+  if (draftText) setTimeout(typeDraft, DRAFT_FALLBACK_MS);
 
   // PTY -> browser (buffering a bounded tail for reattach).
   term.onData((data) => {
     entry.buffer = (entry.buffer + data).slice(-OUTPUT_BUFFER_LIMIT);
     if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
       entry.ws.send(JSON.stringify({ type: "output", data }));
+    }
+    // Type the draft once claude's input box has painted (its mode-hint status line),
+    // then settle briefly so the paste lands in the input rather than the scrollback.
+    if (!draftDone) {
+      draftScan = (draftScan + data).slice(-4096);
+      if (DRAFT_READY_MARKER.test(draftScan)) {
+        draftScan = "";
+        setTimeout(typeDraft, DRAFT_SETTLE_MS);
+      }
     }
   });
 
@@ -1308,20 +1551,17 @@ function handleCommandFrame(term: IPty, raw: RawData) {
   }
 }
 
-// Socket closed: detach it; keep the PTY alive if Claude is mid-turn (reaped on
-// the Stop hook), otherwise reap now.
+// Socket closed: detach it and decide the PTY's fate by activity — working stays
+// alive, needs-the-user gets a long grace, idle gets the short grace.
 function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   // Ignore if a newer client already reattached to this session.
   if (entry.ws !== ws) return;
   entry.ws = null;
-  if (activity.get(sessionId)?.working) {
-    console.log(`[ws] disconnected; keeping working session ${sessionId} alive`);
-  } else {
-    // Don't reap now — a reload reconnects in a moment and should re-attach to
-    // this same live terminal. Reap only if nothing reattaches within the window.
-    console.log(`[ws] disconnected; idle session ${sessionId} reaped in ${REAP_GRACE_MS / 1000}s unless reattached`);
-    scheduleReap(sessionId);
-  }
+  // Keep a working session alive indefinitely, give a session that needs the user
+  // the long grace, and reap a genuinely idle one after the short grace. A reload
+  // reconnects in a moment and re-attaches (cancelling the reap) regardless.
+  console.log(`[ws] disconnected ${sessionId}`);
+  armReapForDetached(sessionId);
 }
 
 wss.on("connection", (ws, req) => {

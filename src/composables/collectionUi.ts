@@ -7,14 +7,15 @@
 // Wired: data fetch (detail/list), record CRUD, read-only custom views, actions
 // (seed prompt → startChat → a visible chat), favorites (useShortcuts), feed/agent
 // refresh (POST /api/collections/:slug/refresh via @mulmoclaude/core/feeds — see
-// server/backends/feeds.ts), and state-based navigation (useCollectionBrowse — the
-// toolbar + browse overlay).
-// Still stubbed: feed listing (listFeeds), collection/view deletion, the Discover
-// registry tab (listRegistry/importRegistry), and the notifier.
+// server/backends/feeds.ts), the Discover registry tab (listRegistry/importRegistry
+// via @mulmoclaude/core/collection/registry — see server/backends/collections.ts),
+// and state-based navigation (useCollectionBrowse — the toolbar + browse overlay).
+// Still stubbed: feed listing (listFeeds), collection/view deletion, and the notifier.
 import { configureCollectionUi } from "@mulmoclaude/collection-plugin/vue";
 import type { CollectionApiResult, CollectionViewToken, CollectionActionResult } from "@mulmoclaude/collection-plugin/vue";
 import type { CollectionDetailResponse, CollectionsListResponse, CollectionNotifySeverity, ItemMutationResponse } from "@mulmoclaude/core/collection";
 import type { RegistryListResponse, RegistryImportResponse } from "@mulmoclaude/core/collection/registry";
+import type { TranslateRequest, TranslateResponse } from "@mulmoclaude/core/translation/client";
 import { buildCustomViewSrcdoc } from "../utils/customViewSrcdoc";
 import { useShortcuts } from "./useShortcuts";
 import {
@@ -77,6 +78,26 @@ async function apiDelete(url: string): Promise<{ ok: true } | { ok: false; error
     return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Runtime UI-string translation transport for the collection plugin (e.g. the
+// new-collection starter modal's card titles/descriptions/prompts). POSTs to
+// MulmoTerminal's OWN /api/translation (server/backends/translation.ts → hidden-chat
+// LLM); the request/response contract is the host-agnostic
+// @mulmoclaude/core/translation/client. Resolves null on any failure so the plugin
+// falls back to the English source. English is short-circuited server-side.
+async function postTranslation(req: TranslateRequest): Promise<TranslateResponse | null> {
+  try {
+    const res = await fetch("/api/translation", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as TranslateResponse;
+  } catch {
+    return null;
   }
 }
 
@@ -188,13 +209,17 @@ configureCollectionUi({
   //    collection/record action buttons (Repair, etc.). MulmoTerminal has no roles,
   //    so `role` is ignored. ──
   startChat: (prompt) => void startCollectionChat(prompt, { hidden: false }),
-  // Custom views call this to open a chat with the prompt prefilled as an editable
-  // DRAFT (not auto-sent). MulmoTerminal terminals are PTYs with no editable composer
-  // draft, so we degrade to the same visible seeded chat as startChat; `role` is
-  // ignored (MulmoTerminal has no roles).
-  startNewChatDraft: (prompt) => void startCollectionChat(prompt, { hidden: false }),
+  // Open a chat with the prompt prefilled as an editable DRAFT (not auto-sent) — the
+  // new-collection template cards + custom views. The text is typed into claude's PTY
+  // input box without an Enter (server: spawnBackgroundChat draft:true), so the user
+  // reviews / edits / sends. `role` is ignored (MulmoTerminal has no roles).
+  startNewChatDraft: (prompt) => void startCollectionChat(prompt, { hidden: false, draft: true }),
   // No notifier in MulmoTerminal.
   notifiedSeverities: () => new Map<string, CollectionNotifySeverity>(),
+
+  // ── runtime translation: POST /api/translation (hidden-chat LLM). Enables the
+  //    new-collection starter modal's localized cards; omitted ⇒ English fallback. ──
+  translate: postTranslation,
 
   // ── Shadow-DOM modal target ── ShadowRoot is a valid Teleport target at runtime
   //    though the declared type is string | HTMLElement.

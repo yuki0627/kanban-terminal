@@ -15,9 +15,11 @@ import { browseClose } from "./composables/useCollectionBrowse";
 import { registerChatOpener } from "./composables/useChatLauncher";
 import { useAppConfig } from "./composables/useAppConfig";
 import { useDirConfig } from "./composables/useDirConfig";
+import { useFaviconState } from "./composables/useFaviconState";
 import { usePendingScript, type PendingCommand } from "./composables/usePendingScript";
 import { useSoundEnabled } from "./composables/useSoundEnabled";
 import { useAttentionSound } from "./composables/useAttentionSound";
+import { useUnloadGuard, reportActiveTerminals } from "./composables/useUnloadGuard";
 import type { CwdPreset } from "./components/presets";
 
 // View mode: the classic single-terminal view (default) or the multi-terminal
@@ -38,6 +40,19 @@ const activeId = ref<string | null>(null);
 const connectKey = ref(0);
 const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
 
+// Confirm before an accidental tab close / reload while a terminal is live. The
+// single view has one live session (when activeId is set); the grid reports its own
+// count. Only act for the single view here — when the grid is mounted it owns the
+// count (App renders one or the other).
+useUnloadGuard();
+watch(
+  [viewMode, activeId],
+  () => {
+    if (viewMode.value === "single") reportActiveTerminals(activeId.value ? 1 : 0);
+  },
+  { immediate: true },
+);
+
 // Single source of truth for the session list, owned here (not inside the
 // layout components) so toggling vertical/horizontal — which swaps Sidebar and
 // SessionTabBar via v-if/v-else — never unmounts the store, refetches, or resets
@@ -54,6 +69,9 @@ const { enabled: soundEnabled } = useSoundEnabled();
 // made from either view's settings modal (and loadConfig below hydrates it).
 const { soundFile } = useAppConfig();
 useAttentionSound(soundEnabled, soundFile);
+
+// Reflect session activity in the tab's favicon (idle / working / attention).
+useFaviconState(sessions);
 
 // Terminal column width (px), set by dragging the splitter between the terminal
 // and the GUI panel; the GUI panel absorbs whatever is left. Persisted across
@@ -172,15 +190,57 @@ function sendTextMessage(text: string): boolean {
 }
 
 function selectSession(id: string) {
+  if (id !== activeId.value) clearDraftHint(); // switching away from a preparing draft
   activeId.value = id;
   connectKey.value++;
 }
 
-// A collection action (startChat) spawned a new chat and wants it shown: close the
-// browse overlay (if open) and select the session so the terminal displays it.
-registerChatOpener((id: string) => {
+// A transient "preparing your draft…" hint, shown over the terminal while a draft
+// chat boots and its text is typed into claude's input box (a few seconds), so the
+// brief delay doesn't look like nothing happened. Auto-dismisses.
+const DRAFT_HINT_EN = "Preparing your draft — it'll appear in the input box in a moment. Review it, then press Enter to send.";
+const draftHint = ref(false);
+const draftHintText = ref(DRAFT_HINT_EN);
+let draftHintTimer: ReturnType<typeof setTimeout> | undefined;
+// Localize the hint via the same runtime translation route the collection UX uses
+// (English fallback while it resolves / on failure). The host has no static i18n, so
+// this keeps the one new user-facing string from being English-only. Translated once
+// per session; the server cache makes it instant thereafter.
+async function localizeDraftHint() {
+  const locale = (navigator.language || "en").split("-")[0];
+  if (locale === "en" || draftHintText.value !== DRAFT_HINT_EN) return;
+  try {
+    const res = await fetch("/api/translation", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ namespace: "mulmoterminal-ui", targetLanguage: locale, sentences: [DRAFT_HINT_EN] }),
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as { translations?: string[] };
+    if (typeof data.translations?.[0] === "string") draftHintText.value = data.translations[0];
+  } catch {
+    // leave the English fallback
+  }
+}
+function showDraftHint() {
+  draftHint.value = true;
+  clearTimeout(draftHintTimer);
+  draftHintTimer = setTimeout(() => (draftHint.value = false), 6000);
+  localizeDraftHint();
+}
+function clearDraftHint() {
+  clearTimeout(draftHintTimer);
+  draftHint.value = false;
+}
+onUnmounted(() => clearTimeout(draftHintTimer));
+
+// A collection action spawned a new chat and wants it shown: close the browse overlay
+// (if open) and select the session so the terminal displays it. A draft also shows the
+// preparing hint until claude is ready for the prefilled text.
+registerChatOpener((id: string, opts?: { draft?: boolean }) => {
   browseClose();
   selectSession(id);
+  if (opts?.draft) showDraftHint();
 });
 
 function newSession() {
@@ -225,6 +285,12 @@ function onSession(id: string) {
         @refresh="refresh"
       />
       <div class="main">
+        <Transition name="draft-hint-fade">
+          <div v-if="draftHint" class="draft-hint" role="status">
+            <span class="material-symbols-outlined" aria-hidden="true">edit_note</span>
+            <span>{{ draftHintText }}</span>
+          </div>
+        </Transition>
         <TerminalView
           ref="terminalRef"
           class="terminal-pane"
@@ -312,6 +378,45 @@ function onSession(id: string) {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  position: relative; /* anchor the draft hint overlay */
+}
+
+/* Transient "preparing your draft…" hint, overlaid at the top of the terminal area.
+   Bright yellow + bold border so it clearly stands out over the dark terminal; uses
+   the app's system UI font (not the inherited default) to match the rest of the UI. */
+.draft-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: min(90%, 640px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: #ffd54a;
+  color: #1a1a2e;
+  border: 2px solid #c98a00;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  pointer-events: none; /* never intercept clicks meant for the terminal */
+}
+.draft-hint .material-symbols-outlined {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.draft-hint-fade-enter-active,
+.draft-hint-fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+.draft-hint-fade-enter-from,
+.draft-hint-fade-leave-to {
+  opacity: 0;
 }
 
 /* Terminal pane: fixed flex-basis (set inline from terminalWidth); the GUI

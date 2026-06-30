@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, useTemplateRef } from "vu
 import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
 import { useDirConfig } from "../composables/useDirConfig";
+import { useRecentDirs } from "../composables/useRecentDirs";
 import { formatCwd, worktreeLabel } from "./cwdDisplay";
 import { badgeStyleFor } from "./dirBadge";
 import type { CwdPreset } from "./presets";
@@ -54,8 +55,14 @@ const cwd = ref<string | null>(props.initialCwd ?? props.defaultCwd);
 // palette and shows a project badge. Re-fetched when the effective cwd changes.
 const { config: dirConfig } = useDirConfig(cwd);
 const dirBadgeStyle = computed(() => badgeStyleFor(dirConfig.value.badgeColor));
-// The launch form's editable dir; prefilled with the default once it's fetched.
-const dirInput = ref(props.initialCwd ?? props.defaultCwd ?? "");
+// The last few dirs the user launched in, offered as one-click chips. Shown as-is
+// (not filtered against presets) so the user always sees their true recent four —
+// even when those happen to also be preset folders.
+const { recentDirs, recordDir } = useRecentDirs();
+// The launch form's editable dir. Prefer this cell's persisted dir, then the most
+// recent location the user launched in, then the server default (fetched async, so
+// the watch below fills it in if we had nothing yet).
+const dirInput = ref(props.initialCwd ?? recentDirs.value[0] ?? props.defaultCwd ?? "");
 watch(
   () => props.defaultCwd,
   (d) => {
@@ -123,6 +130,12 @@ onUnmounted(() => {
   if (resumableTimer) clearTimeout(resumableTimer);
 });
 
+// Set when the user starts a FRESH session from the launcher, so the next server
+// cwd report is recorded as a recent dir — but a reconnect/restore of an existing
+// session (which also reports a cwd) is not, or recents would be rewritten in mount
+// order on reload instead of reflecting what the user actually launched last.
+let recordNextCwd = false;
+
 // Start a fresh session in `dir`. Optimistic display only; the persisted/displayed
 // truth is the EFFECTIVE cwd the server confirms (onServerCwd), which may fall back.
 function launchIn(dir: string | null) {
@@ -130,16 +143,27 @@ function launchIn(dir: string | null) {
   sessionId.value = null; // new session — the server generates the id
   connectKey.value++;
   launched.value = true;
+  recordNextCwd = true;
   loadDiff(); // no-op for a non-worktree dir
 }
 function launch() {
   launchIn(dirInput.value.trim() || props.defaultCwd);
 }
 
-// Pick a preset directory: fill the field and refresh the resume list for it, so
-// the user can then start fresh OR resume one of that dir's sessions.
+// A preset or recent-locations chip is a one-click action: fill the field and jump
+// straight into a fresh session in that dir.
+function selectRecent(path: string) {
+  dirInput.value = path;
+  launchIn(path);
+}
 function selectPreset(p: CwdPreset) {
-  dirInput.value = p.path;
+  selectRecent(p.path);
+}
+
+// The chip's tiny end button: fill the field WITHOUT launching, and refresh the
+// resume / script / worktree lists for that dir so the user can resume there.
+function fillDir(path: string) {
+  dirInput.value = path;
   loadResumable();
   loadScripts();
   loadWorktrees();
@@ -325,6 +349,7 @@ function resume(s: ResumableSession) {
   sessionId.value = s.id;
   connectKey.value++;
   launched.value = true;
+  recordNextCwd = false; // resuming isn't a fresh launch — don't record its cwd
   loadDiff(); // an already-idle worktree session shows its badge right away
 }
 
@@ -356,6 +381,12 @@ async function openDir() {
 // requested dir). Adopt it as the truth — display and persist the effective cwd.
 function onServerCwd(c: string) {
   cwd.value = c;
+  // Only a user-initiated fresh launch updates the recent-locations chips — not a
+  // reconnect/restore of an already-running session (see recordNextCwd).
+  if (recordNextCwd) {
+    recordNextCwd = false;
+    recordDir(c);
+  }
   emit("cwd", c);
 }
 
@@ -413,6 +444,7 @@ onUnmounted(() => document.removeEventListener("mousedown", onGhOutside));
 function teardown() {
   termRef.value?.terminate();
   launched.value = false;
+  recordNextCwd = false; // drop any pending fresh-launch record from a torn-down session
   sessionId.value = null;
   working.value = false;
   waiting.value = false;
@@ -795,15 +827,52 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         ✕
       </button>
       <div v-if="presets.length" class="cell-presets">
-        <button v-for="p in presets" :key="p.label + p.path" :class="['cell-preset', { active: dirInput === p.path }]" :title="p.path" @click="selectPreset(p)">
-          {{ p.label }}
-        </button>
+        <span v-for="p in presets" :key="p.label + p.path" class="cell-chip">
+          <button type="button" class="cell-chip-main" :title="p.path" @click="selectPreset(p)">{{ p.label }}</button>
+          <button
+            type="button"
+            class="cell-chip-fill"
+            :title="`Use ${p.path} without launching (browse / resume here)`"
+            :aria-label="`Use ${p.path} without launching`"
+            @click="fillDir(p.path)"
+          >
+            <span class="material-symbols-outlined">edit</span>
+          </button>
+        </span>
       </div>
       <label class="cell-launch-label">
         <span class="cell-launch-caption">Working directory</span>
-        <input v-model="dirInput" class="cell-dir-input" type="text" placeholder="/path/to/project" spellcheck="false" @keydown.enter="launch" />
+        <span class="cell-dir-row">
+          <input v-model="dirInput" class="cell-dir-input" type="text" placeholder="/path/to/project" spellcheck="false" @keydown.enter="launch" />
+          <button
+            type="button"
+            class="cell-dir-go"
+            :disabled="!dirInput.trim()"
+            title="Start a new terminal here (or press Enter)"
+            aria-label="Start a new terminal here"
+            @click="launch"
+          >
+            <span class="material-symbols-outlined">play_arrow</span>
+          </button>
+        </span>
       </label>
-      <button class="cell-start" @click="launch">＋ New terminal</button>
+      <div v-if="recentDirs.length" class="cell-recents">
+        <span class="cell-launch-caption">recent</span>
+        <div class="cell-recent-list">
+          <span v-for="r in recentDirs" :key="r" class="cell-chip">
+            <button type="button" class="cell-chip-main" :title="r" @click="selectRecent(r)">{{ formatCwd(r, home, 28) }}</button>
+            <button
+              type="button"
+              class="cell-chip-fill"
+              :title="`Use ${r} without launching (browse / resume here)`"
+              :aria-label="`Use ${r} without launching`"
+              @click="fillDir(r)"
+            >
+              <span class="material-symbols-outlined">edit</span>
+            </button>
+          </span>
+        </div>
+      </div>
       <div v-if="isGitRepo" class="cell-worktrees">
         <span class="cell-launch-caption">or isolate in a worktree (git repo)</span>
         <div class="wt-new">
@@ -1069,10 +1138,9 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* `safe` centers when it fits but falls back to top-aligned (so nothing is
-     clipped past the scroll origin) when the form is taller than a short cell —
-     e.g. a 3x3 cell with a long resume list. overflow-y makes it reachable. */
-  justify-content: safe center;
+  /* Top-aligned: the form anchors to the top of the cell rather than floating in
+     the vertical middle (which looks adrift when there are few/no resume rows). */
+  justify-content: flex-start;
   gap: 8px;
   padding: 16px;
   overflow-y: auto;
@@ -1107,24 +1175,55 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   gap: 6px;
   max-width: 360px;
 }
-.cell-preset {
+/* A chip is a segmented pill: the main button launches; the tiny end button just
+   fills the working-directory field (so the user can resume a session there). */
+.cell-chip {
+  display: inline-flex;
+  align-items: stretch;
   border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
   background: var(--bg-elevated);
+}
+.cell-chip-main {
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   font-family: system-ui, sans-serif;
   font-size: 12px;
   padding: 4px 10px;
-  border-radius: 14px;
 }
-.cell-preset:hover {
+.cell-chip-fill {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 5px;
+}
+.cell-chip-fill .material-symbols-outlined {
+  font-size: 14px;
+}
+.cell-chip-main:hover,
+.cell-chip-fill:hover {
   background: var(--bg-hover);
   color: var(--text);
 }
-.cell-preset.active {
-  background: var(--bg-hover);
-  color: var(--text);
-  border-color: var(--accent);
+.cell-recents {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.cell-recent-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  max-width: 360px;
 }
 .cell-launch-label {
   display: flex;
@@ -1155,6 +1254,40 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
 .cell-dir-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+.cell-dir-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+}
+.cell-dir-row .cell-dir-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cell-dir-go {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.cell-dir-go:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--accent);
+}
+.cell-dir-go:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.cell-dir-go .material-symbols-outlined {
+  font-size: 18px;
 }
 .cell-start {
   border: 1px solid var(--border);
