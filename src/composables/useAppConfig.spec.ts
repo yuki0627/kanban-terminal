@@ -75,7 +75,7 @@ describe("useAppConfig — auto preset recording", () => {
     expect(presets.value.map((p) => p.path)).toEqual(["/b"]);
   });
 
-  it("imports legacy localStorage recents (recent_dirs_v1) into presets on load, then clears the key", async () => {
+  it("imports legacy localStorage recents (recent_dirs_v1) to the FRONT of presets on load, then clears the key", async () => {
     localStorage.setItem("recent_dirs_v1", JSON.stringify(["/r/one", "/r/two"]));
     globalThis.fetch = vi.fn(async (_url: string, init?: { body?: string }) => {
       if (!init) return { ok: true, json: async () => ({ cwd: "/w", home: "/h", cwdPresets: [{ label: "kept", path: "/p/kept" }], soundFile: null }) };
@@ -85,9 +85,9 @@ describe("useAppConfig — auto preset recording", () => {
     const { presets, loadConfig } = useAppConfig();
     await loadConfig();
     expect(presets.value).toEqual([
-      { label: "kept", path: "/p/kept" },
-      { label: "one", path: "/r/one" },
+      { label: "one", path: "/r/one" }, // most-recent legacy dir prepended, ahead of existing
       { label: "two", path: "/r/two" },
+      { label: "kept", path: "/p/kept" },
     ]);
     expect(localStorage.getItem("recent_dirs_v1")).toBeNull();
   });
@@ -101,7 +101,7 @@ describe("useAppConfig — auto preset recording", () => {
     }) as unknown as typeof fetch;
     const { presets, loadConfig } = useAppConfig();
     await loadConfig();
-    expect(presets.value.map((p) => p.path)).toEqual(["/p/kept", "/r/new"]);
+    expect(presets.value.map((p) => p.path)).toEqual(["/r/new", "/p/kept"]);
     expect(localStorage.getItem("recent_dirs_v1")).toBeNull();
   });
 

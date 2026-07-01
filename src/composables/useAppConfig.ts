@@ -110,9 +110,11 @@ export function useAppConfig() {
   }
 
   // One-time import of the pre-#163 localStorage recents so upgrading users keep
-  // their recent dirs as chips. New paths are appended after the existing presets
-  // (their basename as label); the legacy key is cleared on success so a chip the
-  // user later deletes can't reappear. Dedup keeps it harmless if it runs twice.
+  // their recent dirs as chips. New paths are prepended (most-recent first, ahead of
+  // the existing presets) so the last-used dir stays at the front — consistent with
+  // the MRU ordering; their basename is the label. The legacy key is cleared on
+  // success so a chip the user later deletes can't reappear. Dedup keeps it harmless
+  // if it runs twice.
   async function migrateLegacyRecents(): Promise<void> {
     const legacy = readLegacyRecents();
     if (!legacy.length) return;
@@ -121,7 +123,7 @@ export function useAppConfig() {
     let saved = true;
     if (additions.length) {
       await serializePresetWrite(async () => {
-        saved = await savePresets([...presets.value, ...additions]);
+        saved = await savePresets([...additions, ...presets.value]);
       });
     }
     if (!saved) return; // keep the key so the import retries on the next load
