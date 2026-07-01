@@ -105,6 +105,27 @@ describe("useAppConfig — auto preset recording", () => {
     expect(localStorage.getItem("recent_dirs_v1")).toBeNull();
   });
 
+  it("loadConfig does not clobber a preset recorded while the initial GET is in flight (#164 review)", async () => {
+    let releaseGet: () => void = () => {};
+    const getGate = new Promise<void>((r) => {
+      releaseGet = r;
+    });
+    globalThis.fetch = vi.fn(async (_url: string, init?: { body?: string }) => {
+      if (!init) {
+        await getGate; // the initial GET stalls until we release it
+        return { ok: true, json: async () => ({ cwd: "/w", home: "/h", cwdPresets: [], soundFile: null }) };
+      }
+      const body = init.body ? JSON.parse(init.body) : {};
+      return { ok: true, json: async () => ({ cwdPresets: body.cwdPresets ?? [] }) };
+    }) as unknown as typeof fetch;
+    const { presets, loadConfig, recordPreset } = useAppConfig();
+    const loading = loadConfig(); // GET in flight (stalled)
+    await recordPreset("/launched/now"); // user launches before the GET resolves
+    releaseGet(); // the stale (empty) GET snapshot now lands
+    await loading;
+    expect(presets.value.map((p) => p.path)).toEqual(["/launched/now"]);
+  });
+
   it("serializes concurrent records so neither write clobbers the other (#163 review)", async () => {
     // A slow POST means two un-serialized records would both read the empty list and
     // the second would overwrite the first. Serialization keeps both.

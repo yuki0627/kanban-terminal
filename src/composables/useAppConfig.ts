@@ -31,15 +31,21 @@ export function useAppConfig() {
   const presets = ref<CwdPreset[]>([]);
   const saving = ref(false);
   const error = ref<string | null>(null);
+  // Bumped by every local preset write (savePresets). loadConfig captures it before
+  // its GET and skips adopting the server list if it changed meanwhile — otherwise a
+  // dir the user launched before the initial /api/config resolves would be dropped by
+  // the slower, stale GET snapshot.
+  let presetsVersion = 0;
 
   async function loadConfig() {
+    const version = presetsVersion;
     try {
       const res = await fetch("/api/config");
       if (!res.ok) return;
       const c = await res.json();
       defaultCwd.value = c.cwd ?? null;
       home.value = c.home ?? null;
-      presets.value = Array.isArray(c.cwdPresets) ? c.cwdPresets : [];
+      if (presetsVersion === version) presets.value = Array.isArray(c.cwdPresets) ? c.cwdPresets : [];
       soundFile.value = typeof c.soundFile === "string" ? c.soundFile : null;
       await migrateLegacyRecents();
     } catch {
@@ -61,6 +67,7 @@ export function useAppConfig() {
       });
       if (!res.ok) throw new Error(`save failed (${res.status})`);
       presets.value = (await res.json()).cwdPresets ?? [];
+      presetsVersion++; // mark local state as newer than any in-flight loadConfig GET
       return true;
     } catch {
       error.value = "Couldn't save presets. Check the server and try again.";
