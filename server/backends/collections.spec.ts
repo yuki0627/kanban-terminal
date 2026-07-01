@@ -39,8 +39,12 @@ const SCHEMA = {
   fields: {
     id: { type: "string", label: "ID", primary: true, required: true },
     name: { type: "string", label: "Name" },
+    status: { type: "enum", label: "Status", values: ["open", "closed"] },
   },
-  views: [{ id: "v1", file: "views/v1.html", label: "Custom", capabilities: ["read"] }],
+  views: [
+    { id: "v1", file: "views/v1.html", label: "Custom", capabilities: ["read"] },
+    { id: "v2", file: "views/v2.html", label: "Editable", capabilities: ["read", "write"] },
+  ],
   actions: [{ id: "enrich", label: "Enrich", kind: "chat", role: "general", template: "templates/enrich.md" }],
   collectionActions: [{ id: "audit", label: "Audit", kind: "chat", role: "general", template: "templates/audit.md" }],
 };
@@ -60,6 +64,25 @@ beforeAll(async () => {
   writeFileSync(path.join(ws, "data", "testcol", "items", "item1.json"), JSON.stringify({ id: "item1", name: "Foo" }));
   mkdirSync(path.join(ws, "data", "skills", "testcol", "views"), { recursive: true });
   writeFileSync(path.join(ws, "data", "skills", "testcol", "views", "v1.html"), "<head></head><body>view</body>");
+  writeFileSync(path.join(ws, "data", "skills", "testcol", "views", "v2.html"), "<head></head><body>editable</body>");
+
+  // A singleton collection with a write-capable view, to prove PUT /view-data
+  // enforces the singleton invariant (only the fixed id is writable).
+  const SINGLETON_SCHEMA = {
+    title: "Singleton",
+    icon: "person",
+    dataPath: "data/singletoncol/items",
+    primaryKey: "id",
+    singleton: "me",
+    fields: { id: { type: "string", label: "ID", primary: true, required: true }, name: { type: "string", label: "Name" } },
+    views: [{ id: "sv", file: "views/sv.html", label: "Editable", capabilities: ["read", "write"] }],
+  };
+  mkdirSync(path.join(ws, ".claude", "skills", "singletoncol"), { recursive: true });
+  writeFileSync(path.join(ws, ".claude", "skills", "singletoncol", "schema.json"), JSON.stringify(SINGLETON_SCHEMA));
+  mkdirSync(path.join(ws, "data", "singletoncol", "items"), { recursive: true });
+  writeFileSync(path.join(ws, "data", "singletoncol", "items", "me.json"), JSON.stringify({ id: "me", name: "Owner" }));
+  mkdirSync(path.join(ws, "data", "skills", "singletoncol", "views"), { recursive: true });
+  writeFileSync(path.join(ws, "data", "skills", "singletoncol", "views", "sv.html"), "<head></head><body>editable</body>");
 
   // Point the (singleton) collection host at the fixture. vitest isolates modules
   // per test file, so this configure is fresh for this worker.
@@ -153,6 +176,210 @@ describe("custom view routes", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { items: Array<{ id: string }> };
     expect(body.items.map((i) => i.id)).toEqual(["item1"]);
+  });
+
+  it("grants a write token to a view that declares write", async () => {
+    const res = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { capabilities: string[] };
+    expect(body.capabilities).toEqual(["read", "write"]);
+  });
+
+  it("advertises PUT in the view-data CORS preflight", async () => {
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, { method: "OPTIONS" });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-methods")).toContain("PUT");
+  });
+
+  it("401s a PUT made with a read-only token", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v1" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "item1", name: "Hacked" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("merge-writes a partial record without clobbering untouched fields", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    // item1 starts as { id: "item1", name: "Foo" }. Merge a new field only.
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "item1", note: "graded" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: unknown[] };
+    expect(body.rejected).toEqual([]);
+    expect(body.written).toEqual(["item1"]);
+    // name survived the partial write; note was added.
+    const detail = await fetch(`${base}/api/collections/testcol/detail`);
+    const item1 = ((await detail.json()) as { items: Array<{ id: string; name?: string; note?: string }> }).items.find((i) => i.id === "item1");
+    expect(item1).toMatchObject({ id: "item1", name: "Foo", note: "graded" });
+  });
+
+  it("rejects an item missing its primary key", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ name: "no id" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: Array<{ problem: string }> };
+    expect(body.written).toEqual([]);
+    expect(body.rejected).toHaveLength(1);
+    expect(body.rejected[0].problem).toContain("primary key");
+  });
+
+  it("rejects (does not upsert) a merge write to a missing id", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "ghost", note: "should not exist" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: Array<{ id: string; problem: string }> };
+    expect(body.written).toEqual([]);
+    expect(body.rejected).toHaveLength(1);
+    expect(body.rejected[0].problem).toContain("not found");
+    // and no record file was created for the ghost id
+    const detail = await fetch(`${base}/api/collections/testcol/detail`);
+    const ids = ((await detail.json()) as { items: Array<{ id: string }> }).items.map((i) => i.id);
+    expect(ids).not.toContain("ghost");
+  });
+
+  it("rejects a non-singleton id on a singleton collection", async () => {
+    const mint = await fetch(`${base}/api/collections/singletoncol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "sv" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/singletoncol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "intruder", name: "Evil" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: Array<{ id: string; problem: string }> };
+    expect(body.written).toEqual([]);
+    expect(body.rejected).toHaveLength(1);
+    expect(body.rejected[0].problem).toContain("singleton");
+  });
+
+  it("allows the fixed id on a singleton collection", async () => {
+    const mint = await fetch(`${base}/api/collections/singletoncol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "sv" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/singletoncol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "me", note: "ok" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: unknown[] };
+    expect(body.rejected).toEqual([]);
+    expect(body.written).toEqual(["me"]);
+  });
+
+  it('mode "create" rejects an id that already exists', async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "item1", name: "Dupe" }], mode: "create" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: Array<{ problem: string }> };
+    expect(body.written).toEqual([]);
+    expect(body.rejected[0].problem).toContain("already exists");
+  });
+
+  it("defaults to upsert (full replace) when mode is omitted", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    // A complete record with no mode → written; it replaces whatever was there.
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "upserted", name: "Fresh" }] }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: unknown[] };
+    expect(body.written).toEqual(["upserted"]);
+    expect(body.rejected).toEqual([]);
+  });
+
+  it("400s an unknown mode", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "item1" }], mode: "replace" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a row that fails schema validation (bad enum value)", async () => {
+    const mint = await fetch(`${base}/api/collections/testcol/view-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewId: "v2" }),
+    });
+    const { token } = (await mint.json()) as { token: string };
+    const res = await fetch(`${base}/api/collections/testcol/view-data`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ items: [{ id: "item1", status: "bogus" }], mode: "merge" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { written: string[]; rejected: Array<{ problem: string }> };
+    expect(body.written).toEqual([]);
+    expect(body.rejected[0].problem).toContain("not one of");
   });
 });
 

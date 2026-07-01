@@ -25,6 +25,7 @@ import {
   writeItem,
   deleteItem,
   readItem,
+  validateRecordObject,
   generateItemId,
   resolveCreateItemId,
   readSkillTemplate,
@@ -92,6 +93,57 @@ function errorMessage(err: unknown): string {
 function extractRecord(body: unknown): CollectionItem | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   return body as CollectionItem;
+}
+
+// A loaded collection, sans the null that `loadCollection` returns on a miss —
+// derived here so the view-write helper doesn't need a fresh type import.
+type ResolvedCollection = NonNullable<Awaited<ReturnType<typeof loadCollection>>>;
+
+// The write modes a custom view's PUT may request, matching the documented
+// __MC_VIEW contract (@mulmoclaude/core help: custom-view.md).
+type ViewWriteMode = "merge" | "upsert" | "create";
+const VIEW_WRITE_MODES: readonly ViewWriteMode[] = ["merge", "upsert", "create"];
+
+// Apply ONE per-record write for PUT /view-data. Returns the written id or a
+// `{ rejected }` reason; kept out of the route handler so its loop stays flat
+// (lint caps cognitive complexity). Behavior mirrors manageCollection's putItems:
+//  - `merge`  — layer the partial onto the EXISTING record (update-only; a missing
+//               id is rejected, never upserted into a half-populated record).
+//  - `create` — insert-only; an existing id collides.
+//  - `upsert` — write the record as given (create or overwrite); the default.
+// Also enforces the singleton invariant (only the fixed id is writable) and gates
+// every row on the schema (required fields, enum values, id↔primaryKey) so a bad
+// row comes back in `rejected` with an actionable `problem` instead of persisting.
+type ViewItemWriteResult = { writtenId: string } | { rejected: { id: string; problem: string } };
+
+async function writeViewItem(collection: ResolvedCollection, raw: unknown, mode: ViewWriteMode): Promise<ViewItemWriteResult> {
+  const record = extractRecord(raw);
+  if (!record) return { rejected: { id: "", problem: "item must be a JSON object" } };
+  const { singleton, primaryKey } = collection.schema;
+  const itemId = typeof record[primaryKey] === "string" ? (record[primaryKey] as string) : "";
+  if (!itemId) return { rejected: { id: "", problem: `missing primary key '${primaryKey}'` } };
+  if (singleton && itemId !== singleton) {
+    return { rejected: { id: itemId, problem: `collection '${collection.slug}' is a singleton; the only valid item id is '${singleton}'` } };
+  }
+  let toWrite: CollectionItem;
+  if (mode === "merge") {
+    const existing = await readItem(collection.dataDir, itemId);
+    if (!existing) return { rejected: { id: itemId, problem: `item '${itemId}' not found — use "upsert" or "create" to add it` } };
+    toWrite = { ...existing, ...record, [primaryKey]: itemId };
+  } else {
+    toWrite = { ...record, [primaryKey]: itemId };
+  }
+  const problem = validateRecordObject(toWrite, itemId, collection.schema);
+  if (problem) return { rejected: { id: itemId, problem } };
+  const result = await writeItem(collection.dataDir, itemId, toWrite, { slug: collection.slug, refuseOverwrite: mode === "create" });
+  // Handle each WriteItemResult kind; the final case (`path-escape`) is the
+  // fallthrough return so `result` narrows cleanly instead of hitting a `never`
+  // default (mirrors manageCollection.putOneItem in MulmoClaude).
+  if (result.kind === "ok") return { writtenId: result.itemId };
+  if (result.kind === "invalid-id") return { rejected: { id: itemId, problem: `'${itemId}' is not a valid record id` } };
+  if (result.kind === "conflict")
+    return { rejected: { id: itemId, problem: `'${itemId}' already exists — mode "create" refuses overwrite; use "upsert" to update it` } };
+  return { rejected: { id: itemId, problem: "write refused: the collection's data dir escapes the workspace" } };
 }
 
 /** Mount the read-side REST surface. Mirrors MulmoClaude's
@@ -399,8 +451,8 @@ export function mountCollectionRoutes(app: Express): void {
 
   // ── Custom views (sandboxed-iframe HTML views, e.g. a poster gallery) ──
   // A custom view is LLM-authored HTML rendered in a sandboxed iframe that fetches
-  // its records from view-data with a scoped token. Read-only here: the GET data
-  // route is wired; write (PUT) is deferred to the interactive tier.
+  // its records from view-data with a scoped token. Both tiers are wired: a GET
+  // read route and a PUT write route (the latter gated by a `write`-capable token).
 
   // The custom view's raw HTML, read from the staging path via the package's
   // path-safe reader. The frontend renders it sandboxed (token injected).
@@ -459,10 +511,10 @@ export function mountCollectionRoutes(app: Express): void {
         res.status(404).json({ error: `custom view '${viewId}' not found on collection '${slug}'` });
         return;
       }
-      // Read-only for now: MulmoTerminal has no view-data write route yet, so never
-      // grant `write` even if the view declares it (clamp the request to ["read"]).
-      // Drop the `write` clamp here once the interactive tier wires PUT /view-data.
-      const granted = clampCapabilities(view.capabilities as ViewCapability[] | undefined, ["read"]);
+      // The write tier is wired below (PUT /view-data), so grant exactly what the
+      // view declared. `clampCapabilities` defaults the requested set to the declared
+      // set, so a `["read"]` view still can never obtain a `write` token.
+      const granted = clampCapabilities(view.capabilities as ViewCapability[] | undefined, undefined);
       const minted = mintViewToken(slug, granted);
       res.json({ token: minted.token, exp: minted.exp, dataUrl: `/api/collections/${encodeURIComponent(slug)}/view-data`, capabilities: granted });
     } catch (err) {
@@ -478,7 +530,7 @@ export function mountCollectionRoutes(app: Express): void {
   const viewDataCors = (_req: Request, res: Response, next: NextFunction): void => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, PUT, OPTIONS");
     next();
   };
   app.options("/api/collections/:slug/view-data", viewDataCors, (_req: Request, res: Response) => {
@@ -498,6 +550,44 @@ export function mountCollectionRoutes(app: Express): void {
       res.json({ items });
     } catch (err) {
       log.warn("collections", "view-data read failed", { slug: req.params.slug, error: errorMessage(err) });
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // Scoped write: apply per-record updates from a custom view (e.g. the vocabulary
+  // flashcard's grade buttons). Requires a `write`-capable token. Body is
+  // `{ items: [...], mode?: "merge" | "upsert" | "create" }`, matching the documented
+  // __MC_VIEW contract; `mode` defaults to `upsert` (write the record as given). The
+  // response envelope is `{ written, rejected }` — `written` is the id of each stored
+  // record, `rejected` a `{ id, problem }` per row that failed — the shape views read.
+  app.put("/api/collections/:slug/view-data", viewDataCors, requireViewToken("write"), async (req: Request<{ slug: string }>, res: Response) => {
+    try {
+      const collection = await loadCollection(req.params.slug);
+      if (!collection) {
+        res.status(404).json({ error: `collection '${req.params.slug}' not found` });
+        return;
+      }
+      const body = (req.body ?? {}) as { items?: unknown; mode?: unknown };
+      if (!Array.isArray(body.items)) {
+        res.status(400).json({ error: "`items` must be an array" });
+        return;
+      }
+      const mode: ViewWriteMode = body.mode === undefined ? "upsert" : (body.mode as ViewWriteMode);
+      if (!VIEW_WRITE_MODES.includes(mode)) {
+        const modeList = VIEW_WRITE_MODES.map((m) => `"${m}"`).join(", ");
+        res.status(400).json({ error: `\`mode\` must be one of ${modeList}` });
+        return;
+      }
+      const written: string[] = [];
+      const rejected: Array<{ id: string; problem: string }> = [];
+      for (const raw of body.items) {
+        const outcome = await writeViewItem(collection, raw, mode);
+        if ("writtenId" in outcome) written.push(outcome.writtenId);
+        else rejected.push(outcome.rejected);
+      }
+      res.json({ written, rejected });
+    } catch (err) {
+      log.warn("collections", "view-data write failed", { slug: req.params.slug, error: errorMessage(err) });
       res.status(500).json({ error: errorMessage(err) });
     }
   });
