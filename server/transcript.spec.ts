@@ -6,6 +6,7 @@ import {
   preferredHeaderPrompt,
   userPromptText,
   parseJsonl,
+  sessionUsageFromJsonl,
 } from "./transcript.js";
 
 const line = (o: unknown) => JSON.stringify(o);
@@ -133,5 +134,29 @@ describe("userPromptText", () => {
 describe("parseJsonl", () => {
   it("keeps valid object lines and skips blank / malformed ones", () => {
     expect(parseJsonl(['{"a":1}', "", "oops", '{"b":2}'].join("\n"))).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+});
+
+describe("sessionUsageFromJsonl", () => {
+  const assistant = (usage: Record<string, number>) => line({ type: "assistant", message: { usage } });
+  it("sums usage across every assistant turn", () => {
+    const raw = [
+      line({ type: "user", message: { content: "hi" } }),
+      assistant({ input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 }),
+      assistant({ input_tokens: 200, output_tokens: 40, cache_read_input_tokens: 50, cache_creation_input_tokens: 0 }),
+    ].join("\n");
+    expect(sessionUsageFromJsonl(raw)).toEqual({ inputTokens: 300, outputTokens: 60, cacheReadTokens: 55, cacheCreationTokens: 3 });
+  });
+  it("ignores non-assistant lines and assistant lines without usage", () => {
+    const raw = [
+      line({ type: "user", message: { content: "hi" } }),
+      line({ type: "assistant", message: {} }), // no usage
+      assistant({ input_tokens: 10, output_tokens: 2 }), // missing cache fields default to 0
+      "malformed",
+    ].join("\n");
+    expect(sessionUsageFromJsonl(raw)).toEqual({ inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0 });
+  });
+  it("is all-zero for an empty / promptless transcript", () => {
+    expect(sessionUsageFromJsonl("")).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
   });
 });

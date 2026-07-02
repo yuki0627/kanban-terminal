@@ -448,6 +448,30 @@ describe("TerminalCell", () => {
     expect(dotClass(w)).toContain("is-done");
   });
 
+  it("shows a token-usage badge from /api/session/:id", async () => {
+    const id = "55555555-5555-5555-5555-555555555555";
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/api/scripts")) return { ok: true, json: async () => ({ cwd: "/p", scripts: [] }) };
+      if (u.includes("/api/sessions")) return { ok: true, json: async () => ({ sessions: [] }) };
+      return {
+        ok: true,
+        json: async () => ({
+          working: false,
+          waiting: false,
+          lastPrompt: null,
+          usage: { inputTokens: 1200, outputTokens: 3400, cacheReadTokens: 800, cacheCreationTokens: 0 },
+        }),
+      };
+    }) as unknown as typeof fetch;
+    const w = mountCell(id);
+    await flushPromises();
+    const badge = w.find(".cell-usage");
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toContain("2.0k"); // input 1200 + cacheRead 800 = 2000
+    expect(badge.text()).toContain("3.4k"); // output 3400
+  });
+
   it("clears a stale prompt when the server sends lastPrompt: null", async () => {
     const id = "33333333-3333-3333-3333-333333333333";
     const w = mountCell(id);
