@@ -129,10 +129,10 @@ function showWiki(): void {
       >
         <span class="material-symbols-outlined">{{ autoSort ? "sort" : "swap_horiz" }}</span>
       </button>
-      <span v-if="inGrid && hasSummary && statusCounts" class="grid-summary" :title="summaryTitle" aria-label="Grid status summary">
-        <span v-if="statusCounts.blocked" class="gs gs-blocked">{{ statusCounts.blocked }}</span>
-        <span v-if="statusCounts.done" class="gs gs-done">{{ statusCounts.done }}</span>
-        <span v-if="statusCounts.working" class="gs gs-working">{{ statusCounts.working }}</span>
+      <span v-if="inGrid && hasSummary && statusCounts" class="grid-summary" role="img" :aria-label="`Grid status — ${summaryTitle}`" :title="summaryTitle">
+        <span v-if="statusCounts.blocked" class="gs gs-blocked" aria-hidden="true">{{ statusCounts.blocked }}</span>
+        <span v-if="statusCounts.done" class="gs gs-done" aria-hidden="true">{{ statusCounts.done }}</span>
+        <span v-if="statusCounts.working" class="gs gs-working" aria-hidden="true">{{ statusCounts.working }}</span>
       </span>
     </nav>
     <NotificationBell class="toolbar-bell" />
