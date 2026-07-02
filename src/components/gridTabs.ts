@@ -177,6 +177,19 @@ export const visibleOrdered = (state: GridState, statusByUid: Record<number, Cel
   return zoomedUid(state) !== null ? ordered : pageSlice(ordered, state.page);
 };
 
+export type StatusCounts = Record<CellStatus, number>;
+
+// Tally occupied cells (a running session or command) by status — empty launchers are
+// skipped. Powers the toolbar's at-a-glance "N need you" summary across ALL pages.
+export function countByStatus(cells: Cell[], statusByUid: Record<number, CellStatus>): StatusCounts {
+  const counts: StatusCounts = { blocked: 0, done: 0, working: 0, idle: 0 };
+  for (const c of cells) {
+    if (isLaunchCell(c)) continue;
+    counts[statusByUid[c.uid] ?? "idle"]++;
+  }
+  return counts;
+}
+
 // Switch page: drop an abandoned trailing launch cell first and clear the zoom
 // (zoom is scoped to a page). Selecting the already-active page is a no-op so it
 // doesn't discard the open launch cell or zoom.

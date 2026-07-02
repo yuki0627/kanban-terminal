@@ -17,6 +17,7 @@ import {
   moveCell,
   visibleOrdered,
   activityStatus,
+  countByStatus,
   cancelableLaunchUid,
   pageCount,
   zoomedUid,
@@ -82,6 +83,8 @@ const statusForSort = computed<Record<number, CellStatus>>(() => {
   }
   return out;
 });
+// At-a-glance tally across ALL pages, for the toolbar summary.
+const statusCounts = computed(() => countByStatus(state.value.cells, statusForSort.value));
 const reorderable = computed(() => state.value.sortMode === "manual");
 // In "auto" mode the whole list is attention-sorted then paged (a waiting cell from
 // any page floats to the front); "manual" keeps the hand-arranged order. While a cell
@@ -135,6 +138,7 @@ function closeSettings() {
     <AppToolbar
       :add-terminal-active="launchOpen"
       :auto-sort="state.sortMode === 'auto'"
+      :status-counts="statusCounts"
       @add-terminal="onAddTerminal"
       @toggle-sort="toggleSortMode"
       @settings="showSettings = true"

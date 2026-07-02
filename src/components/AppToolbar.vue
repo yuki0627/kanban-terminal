@@ -9,6 +9,7 @@ import { useAccountingView, accountingViewOpen } from "../composables/useAccount
 import { useWikiBrowse, wikiGotoIndex } from "../composables/useWikiBrowse";
 import { useSoundEnabled } from "../composables/useSoundEnabled";
 import type { Shortcut } from "../types/shortcuts";
+import type { StatusCounts } from "./gridTabs";
 
 // The standard header, shared by the single (App.vue) and grid (GridView.vue) views so
 // both show one identical toolbar. Every launcher button now just pushes a route — the
@@ -17,10 +18,23 @@ import type { Shortcut } from "../types/shortcuts";
 // active states re-derive from route.name (via the route-backed browse/accounting
 // stores). Grid-only state (`addTerminalActive`, `autoSort`) is still passed in, and
 // the grid-only actions (add-terminal / toggle-sort) and settings stay emits.
-defineProps<{ addTerminalActive?: boolean; autoSort?: boolean }>();
+const props = defineProps<{ addTerminalActive?: boolean; autoSort?: boolean; statusCounts?: StatusCounts }>();
 const emit = defineEmits<{ (e: "add-terminal" | "toggle-sort" | "settings"): void }>();
 
 const route = useRoute();
+// Grid-wide, at-a-glance tally: how many cells are blocked (need input) / done
+// (review) / working, across every page. Shown only when something is running.
+const summaryTitle = computed(() => {
+  const c = props.statusCounts;
+  if (!c) return "";
+  const parts: string[] = [];
+  if (c.blocked) parts.push(`${c.blocked} need input`);
+  if (c.done) parts.push(`${c.done} done (review)`);
+  if (c.working) parts.push(`${c.working} working`);
+  if (c.idle) parts.push(`${c.idle} idle`);
+  return parts.join(" · ");
+});
+const hasSummary = computed(() => !!props.statusCounts && props.statusCounts.blocked + props.statusCounts.done + props.statusCounts.working > 0);
 const { shortcuts } = useShortcuts();
 const { view: browseView } = useCollectionBrowse();
 const { isOpen: accountingOpen } = useAccountingView();
@@ -115,6 +129,11 @@ function showWiki(): void {
       >
         <span class="material-symbols-outlined">{{ autoSort ? "sort" : "swap_horiz" }}</span>
       </button>
+      <span v-if="inGrid && hasSummary && statusCounts" class="grid-summary" :title="summaryTitle" aria-label="Grid status summary">
+        <span v-if="statusCounts.blocked" class="gs gs-blocked">{{ statusCounts.blocked }}</span>
+        <span v-if="statusCounts.done" class="gs gs-done">{{ statusCounts.done }}</span>
+        <span v-if="statusCounts.working" class="gs gs-working">{{ statusCounts.working }}</span>
+      </span>
     </nav>
     <NotificationBell class="toolbar-bell" />
     <button
@@ -192,5 +211,41 @@ function showWiki(): void {
 .launcher-btn .material-symbols-outlined {
   font-size: 19px;
   line-height: 1;
+}
+
+/* Grid-wide status tally: blocked (amber, needs you) · done (blue, review) · working
+   (dim, just busy). A colored dot + count each; grouped after the grid controls. */
+.grid-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.gs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 12px;
+  line-height: 1;
+}
+.gs::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.gs-blocked {
+  color: var(--amber);
+}
+.gs-done {
+  color: var(--accent);
+}
+.gs-working {
+  color: var(--text-muted);
 }
 </style>
