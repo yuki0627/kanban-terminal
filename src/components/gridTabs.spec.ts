@@ -16,6 +16,7 @@ import {
   orderCells,
   visibleOrdered,
   activityStatus,
+  countByStatus,
   cancelableLaunchUid,
   zoomedUid,
   visibleCells,
@@ -232,6 +233,21 @@ describe("activityStatus", () => {
   });
   it("waiting wins over working (a permission pause mid-turn is blocked)", () => {
     expect(activityStatus(true, true, "Notification")).toBe("blocked");
+  });
+});
+
+describe("countByStatus", () => {
+  it("tallies occupied cells by status, skipping empty launchers", () => {
+    const cells = [...running(4), cell(4)]; // uid 4 = empty launcher
+    const counts = countByStatus(cells, { 0: "blocked", 1: "blocked", 2: "done", 3: "working" });
+    expect(counts).toEqual({ blocked: 2, done: 1, working: 1, idle: 0 });
+  });
+  it("treats an unreported occupied cell as idle", () => {
+    expect(countByStatus(running(2), { 0: "working" })).toEqual({ blocked: 0, done: 0, working: 1, idle: 1 });
+  });
+  it("counts a command cell (occupied, no session)", () => {
+    const cmd = { uid: 0, session: null, cwd: null, command: { index: 0, label: "Build", cwd: "/x" } };
+    expect(countByStatus([cmd], { 0: "working" })).toEqual({ blocked: 0, done: 0, working: 1, idle: 0 });
   });
 });
 
