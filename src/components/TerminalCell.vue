@@ -80,6 +80,17 @@ const waiting = ref(false);
 const activityEvent = ref<string | null>(null);
 const lastPrompt = ref<string | null>(null);
 
+// Cumulative token usage for this session (from /api/session/:id, refreshed when a
+// turn finishes). Null until first fetched.
+interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+const usage = ref<Usage | null>(null);
+const isUsage = (u: unknown): u is Usage => typeof u === "object" && u !== null && "outputTokens" in u;
+
 const { subscribe } = usePubSub();
 let unsubscribe: (() => void) | null = null;
 
@@ -111,9 +122,28 @@ async function loadInitial(id: string) {
     const data = await res.json();
     // Guard against a stale response: the cell may have closed / switched session
     // while the fetch was in flight — don't leak old status into the new state.
-    if (id === sessionId.value) applyActivity(data);
+    if (id === sessionId.value) {
+      applyActivity(data);
+      if (isUsage(data.usage)) usage.value = data.usage;
+    }
   } catch {
     // best-effort — pub/sub will fill it in on the next event
+  }
+}
+
+// Refresh ONLY the token usage (not the live activity — that's pub/sub's job). Called
+// when a turn finishes, so the badge reflects the just-completed turn.
+async function refreshUsage() {
+  const id = sessionId.value;
+  if (!id) return;
+  try {
+    const q = cwd.value ? `?cwd=${encodeURIComponent(cwd.value)}` : "";
+    const res = await fetch(`/api/session/${id}${q}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (id === sessionId.value && isUsage(data.usage)) usage.value = data.usage;
+  } catch {
+    // best-effort
   }
 }
 
@@ -453,6 +483,7 @@ function teardown() {
   waiting.value = false;
   activityEvent.value = null;
   lastPrompt.value = null;
+  usage.value = null;
   cwd.value = props.defaultCwd;
   dirInput.value = props.defaultCwd ?? "";
   dirTouched.value = false; // fresh launcher again — let a late preset sync re-prefill
@@ -558,6 +589,22 @@ const statusLabel = computed(() => STATUS_LABEL[status.value]);
 watch(status, (s) => emit("status", s), { immediate: true });
 
 const headerText = computed(() => lastPrompt.value || (sessionId.value ? sessionId.value.slice(0, 8) : "starting…"));
+
+// Per-cell token usage badge: ⇡ total input (fresh + cache) · ⇣ output generated.
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return String(n);
+}
+const usageIn = computed(() => (usage.value ? usage.value.inputTokens + usage.value.cacheReadTokens + usage.value.cacheCreationTokens : 0));
+const usageOut = computed(() => usage.value?.outputTokens ?? 0);
+const showUsage = computed(() => usageIn.value + usageOut.value > 0);
+const usageLabel = computed(() => `⇡${fmtTokens(usageIn.value)} ⇣${fmtTokens(usageOut.value)}`);
+const usageTitle = computed(() =>
+  usage.value
+    ? `Tokens — input ${usage.value.inputTokens.toLocaleString()} · cache ${(usage.value.cacheReadTokens + usage.value.cacheCreationTokens).toLocaleString()} · output ${usage.value.outputTokens.toLocaleString()}`
+    : "",
+);
 
 // Worktree diff (read-only): for a launched worktree cell, show how much the agent
 // changed vs the base branch — a header badge (ahead/dirty) and a panel (changed
@@ -665,9 +712,13 @@ async function openPR() {
 }
 
 // Refresh when the agent transitions from working → settled: that's when the diff
-// is stable and worth re-reading (avoids churn while it's actively editing).
+// is stable and worth re-reading (avoids churn while it's actively editing), and the
+// turn's token usage is final.
 watch(working, (now, prev) => {
-  if (prev && !now) loadDiff();
+  if (prev && !now) {
+    loadDiff();
+    refreshUsage();
+  }
 });
 
 // Re-read (or clear) the diff when the effective cwd changes — e.g. the server
@@ -725,6 +776,7 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
           </div>
         </span>
         <span class="cell-prompt" :title="lastPrompt ?? ''">{{ headerText }}</span>
+        <span v-if="showUsage" class="cell-usage" :title="usageTitle">{{ usageLabel }}</span>
         <span class="cell-actions">
           <button v-if="reorderable" class="cell-btn" title="Move left" aria-label="Move terminal left" @click="emit('move', -1)">◀</button>
           <button v-if="reorderable" class="cell-btn" title="Move right" aria-label="Move terminal right" @click="emit('move', 1)">▶</button>
@@ -1107,6 +1159,16 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Per-cell token usage: ⇡ input · ⇣ output. Dim + monospace so it reads as metadata. */
+.cell-usage {
+  flex: 0 0 auto;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 
 .cell-actions {

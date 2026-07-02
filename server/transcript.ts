@@ -162,3 +162,30 @@ export function latestMeaningfulUserPromptFromJsonl(raw: string): string | null 
   }
   return prompts[prompts.length - 1] ?? lastPromptRecord;
 }
+
+// Cumulative token usage for a session — summed across every assistant turn's
+// `message.usage`. Each turn re-sends the growing context, so summing reflects the
+// tokens actually consumed over the session (cache reads are counted separately, as
+// they're discounted). Fresh input, output, and the two cache buckets are kept apart.
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+const usageNum = (u: Record<string, unknown>, key: string): number => (typeof u[key] === "number" ? (u[key] as number) : 0);
+
+export function sessionUsageFromJsonl(raw: string): SessionUsage {
+  const total: SessionUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  for (const o of parseJsonl(raw)) {
+    if (o.type !== "assistant" || !isRecord(o.message)) continue;
+    const u = o.message.usage;
+    if (!isRecord(u)) continue;
+    total.inputTokens += usageNum(u, "input_tokens");
+    total.outputTokens += usageNum(u, "output_tokens");
+    total.cacheReadTokens += usageNum(u, "cache_read_input_tokens");
+    total.cacheCreationTokens += usageNum(u, "cache_creation_input_tokens");
+  }
+  return total;
+}

@@ -19,7 +19,15 @@ import { mountConfigRoutes } from "./config-routes.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
-import { isRecord, parseJsonl, userPromptText, latestMeaningfulUserPromptFromJsonl, preferredHeaderPrompt } from "./transcript.js";
+import {
+  isRecord,
+  parseJsonl,
+  userPromptText,
+  latestMeaningfulUserPromptFromJsonl,
+  preferredHeaderPrompt,
+  sessionUsageFromJsonl,
+  type SessionUsage,
+} from "./transcript.js";
 import { mountOpenDirRoute } from "./open-dir.js";
 import { mountGitRemoteRoute } from "./gitRemote.js";
 import { mountWorktreeRoutes } from "./worktree-routes.js";
@@ -653,6 +661,18 @@ async function latestUserPrompt(cwd: string, id: string): Promise<string | null>
   }
 }
 
+const EMPTY_USAGE: SessionUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+// One read of a session's transcript → its latest prompt AND cumulative token usage,
+// so /api/session/:id doesn't parse the .jsonl twice.
+async function readSessionSummary(cwd: string, id: string): Promise<{ lastPrompt: string | null; usage: SessionUsage }> {
+  try {
+    const raw = await fs.readFile(path.join(projectSessionsDir(cwd), `${id}.jsonl`), "utf8");
+    return { lastPrompt: latestMeaningfulUserPromptFromJsonl(raw), usage: sessionUsageFromJsonl(raw) };
+  } catch {
+    return { lastPrompt: null, usage: EMPTY_USAGE };
+  }
+}
+
 // Scan a session JSONL for a human-friendly title and last activity.
 async function readSessionMeta(dir: string, file: string): Promise<SessionMeta> {
   const full = path.join(dir, file);
@@ -1074,7 +1094,8 @@ app.get("/api/session/:id", async (req, res) => {
   if (!SESSION_ID_RE.test(id)) return res.status(400).json({ error: "invalid session id" });
   const cwd = resolveWorkspace(typeof req.query.cwd === "string" ? req.query.cwd : null);
   const a = activity.get(id) || {};
-  const lastPrompt = lastPrompts.get(id) ?? (await latestUserPrompt(cwd, id));
+  const { lastPrompt: transcriptPrompt, usage } = await readSessionSummary(cwd, id);
+  const lastPrompt = lastPrompts.get(id) ?? transcriptPrompt;
   res.json({
     id,
     cwd,
@@ -1082,6 +1103,7 @@ app.get("/api/session/:id", async (req, res) => {
     waiting: a.waiting ?? false,
     event: a.event ?? null,
     lastPrompt,
+    usage,
   });
 });
 
