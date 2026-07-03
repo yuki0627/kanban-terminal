@@ -21,6 +21,7 @@ interface RepoPrs {
   repo: string;
   prs?: PrItem[];
   error?: string;
+  truncated?: boolean;
 }
 
 const { isOpen, close } = usePrsView();
@@ -94,7 +95,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <ul v-else-if="r.prs" class="prs-list">
           <li v-for="pr in r.prs" :key="pr.number">
             <button type="button" class="prs-row" @click="openPr(pr.url)">
-              <span class="prs-ci" :class="`ci-${pr.ci}`" :title="CI_TITLE[pr.ci]" />
+              <span class="prs-ci" :class="`ci-${pr.ci}`" role="img" :aria-label="CI_TITLE[pr.ci]" :title="CI_TITLE[pr.ci]" />
               <span class="prs-num">#{{ pr.number }}</span>
               <span class="prs-name">{{ pr.title }}</span>
               <span v-if="pr.isDraft" class="prs-tag prs-draft">draft</span>
@@ -103,6 +104,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
             </button>
           </li>
         </ul>
+        <p v-if="r.truncated" class="prs-msg prs-empty">Showing the first {{ r.prs?.length ?? 0 }} — this repo has more open PRs.</p>
       </section>
     </div>
   </div>

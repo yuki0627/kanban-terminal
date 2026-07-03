@@ -21,7 +21,14 @@ export interface RepoPrs {
   repo: string;
   prs?: PrItem[];
   error?: string;
+  // True when the repo has at least PR_LIMIT open PRs, so the list may be incomplete —
+  // surfaced in the UI so a truncated view isn't mistaken for full coverage.
+  truncated?: boolean;
 }
+
+// Per-repo cap. High enough for a review dashboard; a repo that hits it is flagged
+// `truncated` rather than silently cut.
+export const PR_LIMIT = 100;
 
 const FAIL = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 const OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
@@ -80,12 +87,13 @@ function run(bin: string, args: string[]): Promise<{ ok: boolean; stdout: string
 export async function listPrsAcrossRepos(repos: string[]): Promise<RepoPrs[]> {
   return Promise.all(
     repos.map(async (repo): Promise<RepoPrs> => {
-      const res = await run("gh", ["pr", "list", "--repo", repo, "--state", "open", "--limit", "50", "--json", GH_FIELDS]);
+      const res = await run("gh", ["pr", "list", "--repo", repo, "--state", "open", "--limit", String(PR_LIMIT), "--json", GH_FIELDS]);
       if (!res.ok) return { repo, error: (res.stderr.trim() || "gh pr list failed").slice(0, 300) };
       try {
         const parsed: unknown = JSON.parse(res.stdout);
-        const prs = Array.isArray(parsed) ? parsed.map(normalizePr).filter((p): p is PrItem => p !== null) : [];
-        return { repo, prs };
+        const rows = Array.isArray(parsed) ? parsed : [];
+        const prs = rows.map(normalizePr).filter((p): p is PrItem => p !== null);
+        return { repo, prs, truncated: rows.length >= PR_LIMIT };
       } catch {
         return { repo, error: "could not parse gh output" };
       }
