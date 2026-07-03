@@ -5,7 +5,7 @@
 // reuses the server's sandboxed md→HTML iframe. Writes go through PUT .../write, which
 // contains the path within the project root.
 import { onBeforeUnmount, onMounted, ref, computed, nextTick, watch } from "vue";
-import { useFilesView } from "../composables/useFilesView";
+import { useFilesView, filesGotoIndex } from "../composables/useFilesView";
 import { createEditor, langKindForFilename, type CmEditor } from "./cmEditor";
 
 interface Node {
@@ -162,9 +162,24 @@ function teardown(): void {
   dirty.value = false;
   showPreview.value = false;
 }
+// `reverting` marks a route change WE triggered to undo a declined root switch, so its
+// own watcher fire is ignored instead of re-prompting.
+let reverting = false;
 watch(
   [isOpen, cwd],
-  async ([open]) => {
+  async ([open, curCwd], prev) => {
+    if (reverting) {
+      reverting = false;
+      return;
+    }
+    // Root (?cwd=) changed mid-edit with unsaved changes → confirm before discarding;
+    // declining restores the previous root so the editor + buffer stay put.
+    const prevCwd = prev?.[1] ?? null;
+    if (open && curCwd !== prevCwd && !confirmDiscard()) {
+      reverting = true;
+      filesGotoIndex(prevCwd);
+      return;
+    }
     teardown();
     if (!open) return;
     await nextTick();

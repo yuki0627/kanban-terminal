@@ -1,13 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ref } from "vue";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import FilesOverlay from "./FilesOverlay.vue";
 
 // The view is route-driven; stub useFilesView so the overlay is "open" without a router.
-vi.mock("../composables/useFilesView", () => ({
-  useFilesView: () => ({ isOpen: ref(true), cwd: ref("/proj"), close: vi.fn() }),
-  filesGotoIndex: vi.fn(),
-}));
+// A shared cwd ref lets a test drive a route-root change; filesGotoIndex mutates it too
+// (the component uses it to revert a declined root switch).
+const hoisted = vi.hoisted(() => ({ setCwd: (() => {}) as (v: string | null) => void }));
+vi.mock("../composables/useFilesView", async () => {
+  const { ref: r } = await import("vue");
+  const cwd = r<string | null>("/proj");
+  hoisted.setCwd = (v) => (cwd.value = v);
+  return {
+    useFilesView: () => ({ isOpen: r(true), cwd, close: vi.fn() }),
+    filesGotoIndex: (v: string | null) => (cwd.value = v),
+  };
+});
 
 // Don't instantiate real CodeMirror (needs a full DOM); capture the change callback so
 // we can simulate a user edit, and record setDoc/getDoc.
@@ -44,14 +51,25 @@ function must<T>(v: T | undefined, msg: string): T {
   return v;
 }
 
+// The mocked cwd ref and fakeEditor are module singletons, so an un-unmounted overlay
+// from a prior test would also react to a later test's cwd change. Track and unmount.
+const wrappers: ReturnType<typeof mount>[] = [];
+const mountOverlay = () => {
+  const w = mount(FilesOverlay);
+  wrappers.push(w);
+  return w;
+};
+
 describe("FilesOverlay", () => {
   beforeEach(() => {
     fakeEditor.setDoc.mockClear();
+    hoisted.setCwd("/proj");
     mockFs();
   });
+  afterEach(() => wrappers.splice(0).forEach((w) => w.unmount()));
 
   it("loads the root tree, opens a file, edits, and saves", async () => {
-    const w = mount(FilesOverlay);
+    const w = mountOverlay();
     await flushPromises();
     // Root entries rendered (directories first).
     expect(w.text()).toContain("src");
@@ -90,7 +108,7 @@ describe("FilesOverlay", () => {
   });
 
   it("guards against discarding unsaved edits when switching files", async () => {
-    const w = mount(FilesOverlay);
+    const w = mountOverlay();
     await flushPromises();
     const open = (name: string) =>
       must(
@@ -118,8 +136,29 @@ describe("FilesOverlay", () => {
     confirmSpy.mockRestore();
   });
 
+  it("guards a route root (cwd) change with a dirty buffer", async () => {
+    const w = mountOverlay();
+    await flushPromises();
+    await must(
+      w.findAll("button.files-row").find((b) => b.text().includes("README.md")),
+      "readme",
+    ).trigger("click");
+    await flushPromises();
+    onChange(); // mark dirty
+    await flushPromises();
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fakeEditor.destroy.mockClear();
+    hoisted.setCwd("/other-project"); // simulate the Files route changing roots
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(fakeEditor.destroy).not.toHaveBeenCalled(); // declined → no teardown, buffer kept
+    expect(w.text()).toContain("README.md"); // still showing the old root's tree
+    confirmSpy.mockRestore();
+  });
+
   it("lazy-loads a directory's children on expand", async () => {
-    const w = mount(FilesOverlay);
+    const w = mountOverlay();
     await flushPromises();
     const srcRow = must(
       w.findAll("button.files-row").find((b) => b.text().includes("src")),
@@ -132,7 +171,7 @@ describe("FilesOverlay", () => {
 
   it("surfaces a tree load error", async () => {
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch;
-    const w = mount(FilesOverlay);
+    const w = mountOverlay();
     await flushPromises();
     expect(w.text()).toContain("HTTP 500");
   });
