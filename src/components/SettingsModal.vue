@@ -1,10 +1,39 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { previewAttention } from "../composables/useAttentionSound";
 
-const props = defineProps<{ soundFile?: string | null }>();
-const emit = defineEmits<{ (e: "update-sound", file: string | null): void; (e: "close"): void }>();
+const props = defineProps<{ soundFile?: string | null; prRepos?: string[] }>();
+const emit = defineEmits<{
+  (e: "update-sound", file: string | null): void;
+  (e: "update-repos", repos: string[]): void;
+  (e: "close"): void;
+}>();
+
+// Cross-repo PR view's repos ("owner/repo"). Editable list mirroring the saved value;
+// add/remove emits the new list up (App persists it).
+const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const repos = ref<string[]>([...(props.prRepos ?? [])]);
+watch(
+  () => props.prRepos,
+  (r) => (repos.value = [...(r ?? [])]),
+);
+const newRepo = ref("");
+const newRepoValid = computed(() => {
+  const r = newRepo.value.trim();
+  return REPO_RE.test(r) && !repos.value.includes(r);
+});
+function addRepo() {
+  const r = newRepo.value.trim();
+  if (!REPO_RE.test(r) || repos.value.includes(r)) return;
+  repos.value = [...repos.value, r];
+  newRepo.value = "";
+  emit("update-repos", repos.value);
+}
+function removeRepo(r: string) {
+  repos.value = repos.value.filter((x) => x !== r);
+  emit("update-repos", repos.value);
+}
 
 // Custom attention sound, applied immediately (like the theme) — empty => the
 // built-in chime. The text box mirrors the saved value; Browse / typing apply it.
@@ -140,6 +169,29 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
         <button class="btn" type="button" :disabled="!soundPath" title="Use the built-in chime" @click="clearSound">Use chime</button>
       </div>
 
+      <h3 class="section-title">Pull request repos</h3>
+      <p class="hint">
+        Repos whose open PRs the cross-repo <strong>Pull requests</strong> view lists. Uses your <code>gh</code> login. Format: <code>owner/repo</code>.
+      </p>
+      <ul v-if="repos.length" class="repo-list">
+        <li v-for="r in repos" :key="r" class="repo-item">
+          <span class="repo-name">{{ r }}</span>
+          <button class="icon-btn" type="button" :title="`Remove ${r}`" :aria-label="`Remove ${r}`" @click="removeRepo(r)">✕</button>
+        </li>
+      </ul>
+      <div class="sound-row">
+        <input
+          v-model="newRepo"
+          class="field repo-field"
+          type="text"
+          placeholder="owner/repo"
+          aria-label="Add a repository (owner/repo)"
+          spellcheck="false"
+          @keydown.enter="addRepo"
+        />
+        <button class="btn" type="button" :disabled="!newRepoValid" @click="addRepo">Add</button>
+      </div>
+
       <div class="modal-foot">
         <span class="spacer" />
         <button class="btn btn-primary" @click="emit('close')">Close</button>
@@ -264,6 +316,33 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
 .sound-field {
   flex: 1 1 auto;
   font-family: ui-monospace, "JetBrains Mono", monospace;
+}
+.repo-field {
+  flex: 1 1 auto;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+}
+.repo-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.repo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.repo-name {
+  flex: 1 1 auto;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 .sound-actions {
   display: flex;

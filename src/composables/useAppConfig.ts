@@ -7,6 +7,11 @@ import { presetLabel, type CwdPreset } from "../components/presets";
 // other (each useAppConfig() otherwise has its own local refs).
 const soundFile = ref<string | null>(null);
 
+// Cross-repo PR list's repos — also a SINGLETON, so the settings modal (openable from
+// either view) and any future reader share one list; a save in one view is seen by the
+// other instead of each useAppConfig() keeping a divergent copy.
+const prRepos = ref<string[]>([]);
+
 // Pre-#163 recent dirs lived in localStorage (the removed useRecentDirs). They are
 // imported once into the server-side preset list on load — see migrateLegacyRecents.
 const LEGACY_RECENTS_KEY = "recent_dirs_v1";
@@ -47,6 +52,7 @@ export function useAppConfig() {
       home.value = c.home ?? null;
       if (presetsVersion === version) presets.value = Array.isArray(c.cwdPresets) ? c.cwdPresets : [];
       soundFile.value = typeof c.soundFile === "string" ? c.soundFile : null;
+      prRepos.value = Array.isArray(c.prRepos) ? c.prRepos : [];
       await migrateLegacyRecents();
     } catch {
       // the app still works; presets are just unavailable
@@ -159,5 +165,22 @@ export function useAppConfig() {
     }
   }
 
-  return { defaultCwd, home, presets, soundFile, saving, error, loadConfig, savePresets, recordPreset, removePreset, saveSound };
+  // Persist the cross-repo PR list's repos. POSTs only prRepos so the other fields
+  // (presets, sound) are untouched by the server-side partial update.
+  async function savePrRepos(next: string[]): Promise<boolean> {
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prRepos: next }),
+      });
+      if (!res.ok) throw new Error(`save failed (${res.status})`);
+      prRepos.value = (await res.json()).prRepos ?? [];
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  return { defaultCwd, home, presets, prRepos, soundFile, saving, error, loadConfig, savePresets, recordPreset, removePreset, saveSound, savePrRepos };
 }

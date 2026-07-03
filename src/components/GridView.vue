@@ -124,7 +124,7 @@ onMounted(() => {
 });
 
 // Server config: the default workspace dir + the auto-recorded dir presets + sound.
-const { defaultCwd, home, presets, soundFile, loadConfig, recordPreset, removePreset, saveSound } = useAppConfig();
+const { defaultCwd, home, presets, soundFile, prRepos, loadConfig, recordPreset, removePreset, saveSound, savePrRepos } = useAppConfig();
 const showSettings = ref(false);
 onMounted(loadConfig);
 
@@ -169,7 +169,14 @@ function closeSettings() {
       @move="onMove"
       @status="onStatus"
     />
-    <SettingsModal v-if="showSettings" :sound-file="soundFile" @update-sound="saveSound" @close="closeSettings" />
+    <SettingsModal
+      v-if="showSettings"
+      :sound-file="soundFile"
+      :pr-repos="prRepos"
+      @update-sound="saveSound"
+      @update-repos="savePrRepos"
+      @close="closeSettings"
+    />
   </div>
 </template>
 
