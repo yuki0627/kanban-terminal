@@ -12,12 +12,19 @@ type Repo = { repo: string; prs?: unknown[]; error?: string; truncated?: boolean
 type IssueRepo = { repo: string; issues?: unknown[]; error?: string; truncated?: boolean; url?: string };
 
 // The overlay fetches /api/prs and /api/issues in parallel; route the mock by path.
-function mockFetch(prs: Repo[], issues: IssueRepo[] = []) {
+// opts.failPrs / opts.failIssues make that endpoint return a non-ok response.
+function mockFetch(prs: Repo[], issues: IssueRepo[] = [], opts: { failPrs?: boolean; failIssues?: boolean } = {}) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    const repos = url.includes("/api/issues") ? issues : prs;
-    return { ok: true, json: async () => ({ repos }) };
+    const isIssues = String(input).includes("/api/issues");
+    if ((isIssues && opts.failIssues) || (!isIssues && opts.failPrs)) {
+      return { ok: false, status: 500, json: async () => ({}) };
+    }
+    return { ok: true, json: async () => ({ repos: isIssues ? issues : prs }) };
   }) as unknown as typeof fetch;
+}
+
+function pr(number: number, title: string) {
+  return { number, title, author: "alice", updatedAt: new Date().toISOString(), isDraft: false, url: `u${number}`, review: null, ci: "none" };
 }
 
 describe("PrsOverlay", () => {
@@ -73,6 +80,24 @@ describe("PrsOverlay", () => {
     const seeAll = w.get("a.prs-link");
     expect(seeAll.attributes("href")).toBe("https://github.com/octo/hello/issues");
     expect(seeAll.text()).toContain("see all open issues");
+  });
+
+  it("keeps rendering one section when the other endpoint fails", async () => {
+    // /api/issues fails → PRs must still render, issue section shows its own error.
+    mockFetch([{ repo: "octo/hello", prs: [pr(3, "still visible")] }], [], { failIssues: true });
+    const w1 = mount(PrsOverlay);
+    await flushPromises();
+    expect(w1.text()).toContain("still visible"); // PR dashboard not blanked
+    expect(w1.text()).toContain("HTTP 500"); // issue section error
+
+    // Reverse: /api/prs fails → issues still render.
+    mockFetch([], [{ repo: "octo/hello", issues: [{ number: 9, title: "issue shows", author: "bob", updatedAt: new Date().toISOString(), url: "u9" }] }], {
+      failPrs: true,
+    });
+    const w2 = mount(PrsOverlay);
+    await flushPromises();
+    expect(w2.text()).toContain("issue shows");
+    expect(w2.text()).toContain("HTTP 500");
   });
 
   it("shows a per-repo error", async () => {

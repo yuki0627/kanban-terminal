@@ -43,31 +43,35 @@ const { isOpen, close } = usePrsView();
 const repos = ref<RepoPrs[]>([]);
 const issueRepos = ref<RepoIssues[]>([]);
 const loading = ref(false);
-const error = ref<string | null>(null);
+const prsError = ref<string | null>(null);
+const issuesError = ref<string | null>(null);
 let reqId = 0;
 
-async function fetchRepos(path: string): Promise<unknown[]> {
-  const res = await fetch(path);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  return Array.isArray(data.repos) ? data.repos : [];
+// Each section loads independently so one endpoint failing (e.g. a transient
+// /api/issues error) never blanks the other — the PR dashboard keeps rendering.
+async function loadSection(path: string): Promise<{ rows: unknown[]; error: string | null }> {
+  try {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return { rows: Array.isArray(data.repos) ? data.repos : [], error: null };
+  } catch (e) {
+    return { rows: [], error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 async function load(): Promise<void> {
   const id = ++reqId;
   loading.value = true;
-  error.value = null;
-  try {
-    const [prs, issues] = await Promise.all([fetchRepos("/api/prs"), fetchRepos("/api/issues")]);
-    if (id === reqId) {
-      repos.value = prs as RepoPrs[];
-      issueRepos.value = issues as RepoIssues[];
-    }
-  } catch (e) {
-    if (id === reqId) error.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    if (id === reqId) loading.value = false;
-  }
+  prsError.value = null;
+  issuesError.value = null;
+  const [prs, issues] = await Promise.all([loadSection("/api/prs"), loadSection("/api/issues")]);
+  if (id !== reqId) return;
+  repos.value = prs.rows as RepoPrs[];
+  prsError.value = prs.error;
+  issueRepos.value = issues.rows as RepoIssues[];
+  issuesError.value = issues.error;
+  loading.value = false;
 }
 
 // Re-fetch each time the view is entered (open PRs change as work lands elsewhere).
@@ -104,12 +108,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       <span v-if="loading" class="prs-status">Loading…</span>
     </header>
     <div class="prs-content">
-      <p v-if="error" class="prs-msg prs-error">{{ error }}</p>
-      <p v-else-if="!loading && repos.length === 0" class="prs-msg">
+      <p v-if="!loading && !prsError && !issuesError && repos.length === 0 && issueRepos.length === 0" class="prs-msg">
         No repositories configured. Add <code>owner/repo</code> entries under Settings (⚙) → Pull request repos.
       </p>
       <template v-else>
         <h2 class="prs-section">Pull requests</h2>
+        <p v-if="prsError" class="prs-msg prs-error">{{ prsError }}</p>
         <section v-for="r in repos" :key="`pr-${r.repo}`" class="prs-repo">
           <h3 class="prs-repo-name">
             {{ r.repo }}
@@ -133,6 +137,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </section>
 
         <h2 class="prs-section">Issues</h2>
+        <p v-if="issuesError" class="prs-msg prs-error">{{ issuesError }}</p>
         <section v-for="r in issueRepos" :key="`iss-${r.repo}`" class="prs-repo">
           <h3 class="prs-repo-name">
             {{ r.repo }}
