@@ -28,6 +28,7 @@ function mockFs() {
           ? [
               { name: "src", dir: true, size: 0 },
               { name: "README.md", dir: false, size: 10 },
+              { name: "notes.txt", dir: false, size: 4 },
             ]
           : [{ name: "app.ts", dir: false, size: 5 }];
       return { ok: true, json: async () => ({ entries }) };
@@ -86,6 +87,35 @@ describe("FilesOverlay", () => {
     );
     expect(putCall[1]).toMatchObject({ method: "PUT" });
     expect(JSON.parse(putCall[1].body)).toEqual({ text: "edited text" });
+  });
+
+  it("guards against discarding unsaved edits when switching files", async () => {
+    const w = mount(FilesOverlay);
+    await flushPromises();
+    const open = (name: string) =>
+      must(
+        w.findAll("button.files-row").find((b) => b.text().includes(name)),
+        name,
+      ).trigger("click");
+    await open("README.md");
+    await flushPromises();
+    onChange(); // mark dirty
+    await flushPromises();
+
+    // Declining the confirm aborts the switch — the new file is not loaded.
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fakeEditor.setDoc.mockClear();
+    await open("notes.txt");
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(fakeEditor.setDoc).not.toHaveBeenCalled(); // buffer kept
+
+    // Accepting the confirm proceeds with the switch.
+    confirmSpy.mockReturnValue(true);
+    await open("notes.txt");
+    await flushPromises();
+    expect(fakeEditor.setDoc).toHaveBeenCalledWith("# hello", "notes.txt");
+    confirmSpy.mockRestore();
   });
 
   it("lazy-loads a directory's children on expand", async () => {

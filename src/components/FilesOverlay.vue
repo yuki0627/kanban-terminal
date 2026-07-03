@@ -95,8 +95,16 @@ const rows = computed(() => {
   return out;
 });
 
+// Guard any action that would drop the open buffer's unsaved edits (switching files,
+// closing the view). Returns true to proceed.
+function confirmDiscard(): boolean {
+  return !dirty.value || window.confirm("Discard unsaved changes?");
+}
+
 async function openFile(node: Node): Promise<void> {
   if (node.dir) return toggleDir(node);
+  if (node.path === openPath.value) return; // already open — no reload, no prompt
+  if (!confirmDiscard()) return;
   const id = ++reqId;
   fileError.value = null;
   showPreview.value = false;
@@ -133,8 +141,7 @@ async function save(): Promise<void> {
 }
 
 function requestClose(): void {
-  if (dirty.value && !window.confirm("Discard unsaved changes?")) return;
-  close();
+  if (confirmDiscard()) close();
 }
 
 function onKeydown(e: KeyboardEvent): void {
