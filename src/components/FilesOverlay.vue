@@ -38,6 +38,11 @@ const isMarkdown = computed(() => langKindForFilename(openName.value) === "markd
 const editorHost = ref<HTMLDivElement>();
 let editor: CmEditor | null = null;
 let reqId = 0;
+// `reverting`: a route change WE triggered to undo a declined leave/root-switch — skip
+// its own watcher fire. `bypassGuard`: the close was already confirmed (requestClose),
+// so the watcher must not prompt again.
+let reverting = false;
+let bypassGuard = false;
 
 function qs(pathRel: string): string {
   const p = new URLSearchParams();
@@ -141,7 +146,9 @@ async function save(): Promise<void> {
 }
 
 function requestClose(): void {
-  if (confirmDiscard()) close();
+  if (!confirmDiscard()) return;
+  bypassGuard = true; // already confirmed — don't let the isOpen watcher prompt again
+  close();
 }
 
 function onKeydown(e: KeyboardEvent): void {
@@ -162,9 +169,6 @@ function teardown(): void {
   dirty.value = false;
   showPreview.value = false;
 }
-// `reverting` marks a route change WE triggered to undo a declined root switch, so its
-// own watcher fire is ignored instead of re-prompting.
-let reverting = false;
 watch(
   [isOpen, cwd],
   async ([open, curCwd], prev) => {
@@ -172,14 +176,20 @@ watch(
       reverting = false;
       return;
     }
-    // Root (?cwd=) changed mid-edit with unsaved changes → confirm before discarding;
-    // declining restores the previous root so the editor + buffer stay put.
+    // Leaving the view (external nav / Back) OR changing root (?cwd=) mid-edit with
+    // unsaved changes → confirm before discarding; declining restores the previous
+    // route (re-opens /files at prevCwd) so the editor + buffer stay put. An explicit
+    // Close already confirmed (bypassGuard), so don't prompt twice.
+    const wasOpen = prev?.[0] ?? false;
     const prevCwd = prev?.[1] ?? null;
-    if (open && curCwd !== prevCwd && !confirmDiscard()) {
+    const leaving = wasOpen && !open;
+    const rootChanged = open && curCwd !== prevCwd;
+    if (!bypassGuard && (leaving || rootChanged) && !confirmDiscard()) {
       reverting = true;
       filesGotoIndex(prevCwd);
       return;
     }
+    bypassGuard = false;
     teardown();
     if (!open) return;
     await nextTick();

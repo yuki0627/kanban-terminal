@@ -5,14 +5,20 @@ import FilesOverlay from "./FilesOverlay.vue";
 // The view is route-driven; stub useFilesView so the overlay is "open" without a router.
 // A shared cwd ref lets a test drive a route-root change; filesGotoIndex mutates it too
 // (the component uses it to revert a declined root switch).
-const hoisted = vi.hoisted(() => ({ setCwd: (() => {}) as (v: string | null) => void }));
+const hoisted = vi.hoisted(() => ({
+  setCwd: (() => {}) as (v: string | null) => void,
+  setOpen: (() => {}) as (v: boolean) => void,
+}));
 vi.mock("../composables/useFilesView", async () => {
   const { ref: r } = await import("vue");
   const cwd = r<string | null>("/proj");
+  const isOpen = r(true);
   hoisted.setCwd = (v) => (cwd.value = v);
+  hoisted.setOpen = (v) => (isOpen.value = v);
   return {
-    useFilesView: () => ({ isOpen: r(true), cwd, close: vi.fn() }),
-    filesGotoIndex: (v: string | null) => (cwd.value = v),
+    useFilesView: () => ({ isOpen, cwd, close: () => (isOpen.value = false) }),
+    // Revert re-opens /files at the restored root (isOpen back to true).
+    filesGotoIndex: (v: string | null) => ((cwd.value = v), (isOpen.value = true)),
   };
 });
 
@@ -64,6 +70,7 @@ describe("FilesOverlay", () => {
   beforeEach(() => {
     fakeEditor.setDoc.mockClear();
     hoisted.setCwd("/proj");
+    hoisted.setOpen(true);
     mockFs();
   });
   afterEach(() => wrappers.splice(0).forEach((w) => w.unmount()));
@@ -154,6 +161,27 @@ describe("FilesOverlay", () => {
     expect(confirmSpy).toHaveBeenCalled();
     expect(fakeEditor.destroy).not.toHaveBeenCalled(); // declined → no teardown, buffer kept
     expect(w.text()).toContain("README.md"); // still showing the old root's tree
+    confirmSpy.mockRestore();
+  });
+
+  it("guards an external close (isOpen=false) with a dirty buffer", async () => {
+    const w = mountOverlay();
+    await flushPromises();
+    await must(
+      w.findAll("button.files-row").find((b) => b.text().includes("README.md")),
+      "readme",
+    ).trigger("click");
+    await flushPromises();
+    onChange(); // mark dirty
+    await flushPromises();
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fakeEditor.destroy.mockClear();
+    hoisted.setOpen(false); // external navigation (Back / another view) closes the overlay
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(fakeEditor.destroy).not.toHaveBeenCalled(); // declined → reverted, buffer kept
+    expect(w.text()).toContain("README.md"); // overlay still open
     confirmSpy.mockRestore();
   });
 
