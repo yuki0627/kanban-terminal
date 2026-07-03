@@ -87,13 +87,19 @@ function run(bin: string, args: string[]): Promise<{ ok: boolean; stdout: string
 export async function listPrsAcrossRepos(repos: string[]): Promise<RepoPrs[]> {
   return Promise.all(
     repos.map(async (repo): Promise<RepoPrs> => {
-      const res = await run("gh", ["pr", "list", "--repo", repo, "--state", "open", "--limit", String(PR_LIMIT), "--json", GH_FIELDS]);
+      // Fetch one MORE than we display so "there are more" is a real observation
+      // (rows > PR_LIMIT), never a false positive at exactly PR_LIMIT.
+      const res = await run("gh", ["pr", "list", "--repo", repo, "--state", "open", "--limit", String(PR_LIMIT + 1), "--json", GH_FIELDS]);
       if (!res.ok) return { repo, error: (res.stderr.trim() || "gh pr list failed").slice(0, 300) };
       try {
         const parsed: unknown = JSON.parse(res.stdout);
         const rows = Array.isArray(parsed) ? parsed : [];
-        const prs = rows.map(normalizePr).filter((p): p is PrItem => p !== null);
-        return { repo, prs, truncated: rows.length >= PR_LIMIT };
+        const truncated = rows.length > PR_LIMIT;
+        const prs = rows
+          .slice(0, PR_LIMIT)
+          .map(normalizePr)
+          .filter((p): p is PrItem => p !== null);
+        return { repo, prs, truncated };
       } catch {
         return { repo, error: "could not parse gh output" };
       }

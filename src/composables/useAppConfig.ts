@@ -7,6 +7,11 @@ import { presetLabel, type CwdPreset } from "../components/presets";
 // other (each useAppConfig() otherwise has its own local refs).
 const soundFile = ref<string | null>(null);
 
+// Cross-repo PR list's repos — also a SINGLETON, so the settings modal (openable from
+// either view) and any future reader share one list; a save in one view is seen by the
+// other instead of each useAppConfig() keeping a divergent copy.
+const prRepos = ref<string[]>([]);
+
 // Pre-#163 recent dirs lived in localStorage (the removed useRecentDirs). They are
 // imported once into the server-side preset list on load — see migrateLegacyRecents.
 const LEGACY_RECENTS_KEY = "recent_dirs_v1";
@@ -29,7 +34,6 @@ export function useAppConfig() {
   const defaultCwd = ref<string | null>(null);
   const home = ref<string | null>(null);
   const presets = ref<CwdPreset[]>([]);
-  const prRepos = ref<string[]>([]);
   const saving = ref(false);
   const error = ref<string | null>(null);
   // Bumped by every local preset write (savePresets). loadConfig captures it before
