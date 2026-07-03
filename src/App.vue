@@ -10,6 +10,7 @@ import ToolsPane from "./components/ToolsPane.vue";
 import CollectionsBrowseOverlay from "./components/CollectionsBrowseOverlay.vue";
 import AccountingOverlay from "./components/AccountingOverlay.vue";
 import WikiBrowseOverlay from "./components/WikiBrowseOverlay.vue";
+import PrsOverlay from "./components/PrsOverlay.vue";
 import GridView from "./components/GridView.vue";
 import SettingsModal from "./components/SettingsModal.vue";
 import AppToolbar from "./components/AppToolbar.vue";
@@ -145,7 +146,7 @@ onMounted(() => window.addEventListener("resize", onViewportResize));
 
 // Settings (theme + notification sound), shared with the grid view via useAppConfig
 // and opened from the toolbar's gear button.
-const { defaultCwd, loadConfig, saveSound } = useAppConfig();
+const { defaultCwd, loadConfig, saveSound, prRepos, savePrRepos } = useAppConfig();
 // Drive the single view's dir overrides off the dir the terminal ACTUALLY runs in
 // (reported by the server, which may resolve/fall back), not the static default — so
 // the badge/theme/colors always track the active session. Falls back to the default
@@ -333,7 +334,16 @@ function onSession(id: string) {
     <!-- Full-screen read-only wiki browser; opened by the toolbar's menu_book button
          (driven by useWikiBrowse). Mutually exclusive with the overlays above. -->
     <WikiBrowseOverlay />
-    <SettingsModal v-if="showSettings" :sound-file="soundFile" @update-sound="saveSound" @close="closeSettings" />
+    <!-- Full-screen cross-repo PR list; opened by the toolbar's call_merge button. -->
+    <PrsOverlay />
+    <SettingsModal
+      v-if="showSettings"
+      :sound-file="soundFile"
+      :pr-repos="prRepos"
+      @update-sound="saveSound"
+      @update-repos="savePrRepos"
+      @close="closeSettings"
+    />
   </div>
 </template>
 

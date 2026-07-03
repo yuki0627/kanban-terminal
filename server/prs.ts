@@ -1,0 +1,94 @@
+// Aggregate open PRs across the user's configured repos via the `gh` CLI (its own
+// login is the auth). One `gh pr list` per repo, run in parallel; a repo that errors
+// (missing, no access, gh not installed) yields a per-repo error instead of failing
+// the whole view. The pure normalize/rollup helpers are unit-tested without gh.
+import { spawn } from "node:child_process";
+
+export type CiState = "passing" | "failing" | "pending" | "none";
+
+export interface PrItem {
+  number: number;
+  title: string;
+  author: string;
+  updatedAt: string;
+  isDraft: boolean;
+  url: string;
+  review: string | null; // gh reviewDecision (APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / null)
+  ci: CiState;
+}
+
+export interface RepoPrs {
+  repo: string;
+  prs?: PrItem[];
+  error?: string;
+}
+
+const FAIL = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+const OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+// Collapse a PR's statusCheckRollup (mixed CheckRun {status,conclusion} + StatusContext
+// {state}) into one glanceable state: any failure wins, else any not-yet-successful
+// check → pending, else passing. Empty rollup → none.
+export function rollupCiState(checks: unknown): CiState {
+  if (!Array.isArray(checks) || checks.length === 0) return "none";
+  let anyPending = false;
+  for (const c of checks) {
+    if (!c || typeof c !== "object") continue;
+    const o = c as Record<string, unknown>;
+    const conclusion = String(o.conclusion ?? "").toUpperCase();
+    const state = String(o.state ?? "").toUpperCase();
+    if (FAIL.has(conclusion) || state === "FAILURE" || state === "ERROR") return "failing";
+    if (!(OK.has(conclusion) || state === "SUCCESS")) anyPending = true;
+  }
+  return anyPending ? "pending" : "passing";
+}
+
+export function normalizePr(raw: unknown): PrItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.number !== "number" || typeof o.url !== "string") return null;
+  const authorObj = o.author && typeof o.author === "object" ? (o.author as Record<string, unknown>) : null;
+  return {
+    number: o.number,
+    title: typeof o.title === "string" ? o.title : "",
+    author: authorObj && typeof authorObj.login === "string" ? authorObj.login : "",
+    updatedAt: typeof o.updatedAt === "string" ? o.updatedAt : "",
+    isDraft: o.isDraft === true,
+    url: o.url,
+    review: typeof o.reviewDecision === "string" && o.reviewDecision ? o.reviewDecision : null,
+    ci: rollupCiState(o.statusCheckRollup),
+  };
+}
+
+const GH_FIELDS = "number,title,author,updatedAt,isDraft,url,reviewDecision,statusCheckRollup";
+
+// The binary ("gh") is a fixed local dev tool spawned from PATH — like git/open
+// elsewhere in the server — with args as argv only (no shell). Passed as a parameter
+// (mirroring worktree-pr.ts) so it isn't a spawn-of-a-string-literal.
+function run(bin: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+    child.on("error", () => resolve({ ok: false, stdout: "", stderr: "gh not found (install the GitHub CLI and run `gh auth login`)" }));
+    child.on("close", (code) => resolve({ ok: code === 0, stdout, stderr }));
+  });
+}
+
+export async function listPrsAcrossRepos(repos: string[]): Promise<RepoPrs[]> {
+  return Promise.all(
+    repos.map(async (repo): Promise<RepoPrs> => {
+      const res = await run("gh", ["pr", "list", "--repo", repo, "--state", "open", "--limit", "50", "--json", GH_FIELDS]);
+      if (!res.ok) return { repo, error: (res.stderr.trim() || "gh pr list failed").slice(0, 300) };
+      try {
+        const parsed: unknown = JSON.parse(res.stdout);
+        const prs = Array.isArray(parsed) ? parsed.map(normalizePr).filter((p): p is PrItem => p !== null) : [];
+        return { repo, prs };
+      } catch {
+        return { repo, error: "could not parse gh output" };
+      }
+    }),
+  );
+}

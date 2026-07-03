@@ -11,6 +11,22 @@ export interface AppConfig {
   // Absolute path to a user-supplied audio file played as the attention sound, or
   // null to use the built-in synthesized chime (the default — no bundled asset).
   soundFile: string | null;
+  // GitHub repos ("owner/repo") whose open PRs the cross-repo PR view aggregates.
+  prRepos: string[];
+}
+
+// "owner/repo" only — the value is passed to `gh pr list --repo`, so reject anything
+// that isn't a plain slug (no spaces, flags, or paths). Trimmed, de-duplicated.
+const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+export function sanitizeRepos(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  for (const v of input) {
+    if (typeof v !== "string") continue;
+    const r = v.trim();
+    if (REPO_RE.test(r)) seen.add(r);
+  }
+  return [...seen];
 }
 
 // Keep only a non-empty ABSOLUTE path; anything else (relative, blank, non-string)
@@ -24,11 +40,11 @@ export function sanitizeSoundFile(input: unknown): string | null {
 
 export function loadAppConfig(file: string): AppConfig {
   try {
-    if (!existsSync(file)) return { cwdPresets: [], soundFile: null };
+    if (!existsSync(file)) return { cwdPresets: [], soundFile: null, prRepos: [] };
     const raw = JSON.parse(readFileSync(file, "utf8"));
-    return { cwdPresets: sanitizePresets(raw?.cwdPresets), soundFile: sanitizeSoundFile(raw?.soundFile) };
+    return { cwdPresets: sanitizePresets(raw?.cwdPresets), soundFile: sanitizeSoundFile(raw?.soundFile), prRepos: sanitizeRepos(raw?.prRepos) };
   } catch {
-    return { cwdPresets: [], soundFile: null };
+    return { cwdPresets: [], soundFile: null, prRepos: [] };
   }
 }
 
@@ -37,7 +53,7 @@ export function loadAppConfig(file: string): AppConfig {
 export function saveAppConfig(file: string, config: AppConfig): boolean {
   try {
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ cwdPresets: config.cwdPresets, soundFile: config.soundFile }, null, 2));
+    writeFileSync(file, JSON.stringify({ cwdPresets: config.cwdPresets, soundFile: config.soundFile, prRepos: config.prRepos }, null, 2));
     return true;
   } catch {
     return false;

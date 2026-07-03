@@ -15,7 +15,8 @@ import { mountAllRoutes, allowedToolNames, toolSummaries } from "./plugins-regis
 import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 import { initArtifactsBackend } from "./backends/artifacts.js";
-import { mountConfigRoutes } from "./config-routes.js";
+import { mountConfigRoutes, getPrRepos } from "./config-routes.js";
+import { listPrsAcrossRepos } from "./prs.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
@@ -1055,6 +1056,16 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
 // GRID-ONLY (dev_tool): backs the grid launcher's default dir + the settings
 // modal's directory presets. The single view never calls it.
 mountConfigRoutes(app, CLAUDE_CWD);
+
+// Cross-repo PR list (the /prs view): aggregate open PRs for the configured repos via
+// the server's `gh` login. Repos come from config (never the request).
+app.get("/api/prs", async (_req, res) => {
+  try {
+    res.json({ repos: await listPrsAcrossRepos(getPrRepos()) });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 // GRID-ONLY (dev_tool): the `script.json` entries a cell's launcher offers for its
 // chosen directory (?cwd=<dir>, falling back to CLAUDE_CWD). The browser shows

@@ -7,6 +7,7 @@ import { useShortcuts } from "../composables/useShortcuts";
 import { useCollectionBrowse, browseGotoIndex, browseGotoDetail } from "../composables/useCollectionBrowse";
 import { useAccountingView, accountingViewOpen } from "../composables/useAccountingView";
 import { useWikiBrowse, wikiGotoIndex } from "../composables/useWikiBrowse";
+import { usePrsView, prsGotoIndex } from "../composables/usePrsView";
 import { useSoundEnabled } from "../composables/useSoundEnabled";
 import type { Shortcut } from "../types/shortcuts";
 import type { StatusCounts } from "./gridTabs";
@@ -39,14 +40,16 @@ const { shortcuts } = useShortcuts();
 const { view: browseView } = useCollectionBrowse();
 const { isOpen: accountingOpen } = useAccountingView();
 const { isOpen: wikiOpen } = useWikiBrowse();
+const { isOpen: prsOpen } = usePrsView();
 const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
 
 const inGrid = computed(() => route.name === "terminals");
 const inSingle = computed(() => !inGrid.value);
-const chatActive = computed(() => inSingle.value && browseView.value.mode === "closed" && !accountingOpen.value && !wikiOpen.value);
+const chatActive = computed(() => inSingle.value && browseView.value.mode === "closed" && !accountingOpen.value && !wikiOpen.value && !prsOpen.value);
 const collectionsActive = computed(() => browseView.value.mode === "index" && browseView.value.kind === "collection");
 const accountingActive = computed(() => accountingOpen.value);
 const wikiActive = computed(() => wikiOpen.value);
+const prsActive = computed(() => prsOpen.value);
 function favActive(s: Shortcut): boolean {
   return browseView.value.mode === "detail" && browseView.value.kind === s.kind && browseView.value.slug === s.slug;
 }
@@ -69,6 +72,9 @@ function showAccounting(): void {
 function showWiki(): void {
   wikiGotoIndex();
 }
+function showPrs(): void {
+  prsGotoIndex();
+}
 </script>
 
 <template>
@@ -86,6 +92,9 @@ function showWiki(): void {
       </button>
       <button type="button" class="launcher-btn" :class="{ active: accountingActive }" title="Accounting" aria-label="Accounting" @click="showAccounting">
         <span class="material-symbols-outlined">account_balance</span>
+      </button>
+      <button type="button" class="launcher-btn" :class="{ active: prsActive }" title="Pull requests" aria-label="Pull requests" @click="showPrs">
+        <span class="material-symbols-outlined">call_merge</span>
       </button>
       <button type="button" class="launcher-btn" :class="{ active: wikiActive }" title="Wiki" aria-label="Wiki" @click="showWiki">
         <span class="material-symbols-outlined">menu_book</span>
