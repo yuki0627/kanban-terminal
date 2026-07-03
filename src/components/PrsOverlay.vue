@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// Full-screen cross-repo PR list, a sibling of WikiBrowseOverlay / AccountingOverlay.
-// Driven by usePrsView (the /prs route). Fetches /api/prs (open PRs for the repos set
-// in Settings, aggregated server-side via `gh`) on open and on the reload button, and
-// groups them by repo. Read-only: a row click opens the PR on GitHub in a new tab.
+// Full-screen cross-repo PR + issue list, a sibling of WikiBrowseOverlay /
+// AccountingOverlay. Driven by usePrsView (the /prs route). Fetches /api/prs and
+// /api/issues (the repos set in Settings, aggregated server-side via `gh`) on open and
+// on the reload button, grouped by repo. Read-only: a row click opens it on GitHub.
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { usePrsView } from "../composables/usePrsView";
 
@@ -23,23 +23,46 @@ interface RepoPrs {
   error?: string;
   truncated?: boolean;
 }
+interface IssueItem {
+  number: number;
+  title: string;
+  author: string;
+  updatedAt: string;
+  url: string;
+}
+interface RepoIssues {
+  repo: string;
+  issues?: IssueItem[];
+  error?: string;
+  truncated?: boolean;
+  url?: string;
+}
 
 const { isOpen, close } = usePrsView();
 
 const repos = ref<RepoPrs[]>([]);
+const issueRepos = ref<RepoIssues[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 let reqId = 0;
+
+async function fetchRepos(path: string): Promise<unknown[]> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data.repos) ? data.repos : [];
+}
 
 async function load(): Promise<void> {
   const id = ++reqId;
   loading.value = true;
   error.value = null;
   try {
-    const res = await fetch("/api/prs");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (id === reqId) repos.value = Array.isArray(data.repos) ? data.repos : [];
+    const [prs, issues] = await Promise.all([fetchRepos("/api/prs"), fetchRepos("/api/issues")]);
+    if (id === reqId) {
+      repos.value = prs as RepoPrs[];
+      issueRepos.value = issues as RepoIssues[];
+    }
   } catch (e) {
     if (id === reqId) error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -63,7 +86,7 @@ function relativeTime(iso: string): string {
 const CI_TITLE: Record<CiState, string> = { passing: "Checks passing", failing: "Checks failing", pending: "Checks running", none: "No checks" };
 const REVIEW_LABEL: Record<string, string> = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "review required" };
 
-function openPr(url: string): void {
+function openUrl(url: string): void {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 function onKeydown(e: KeyboardEvent): void {
@@ -74,10 +97,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>
-  <div v-if="isOpen" class="prs-overlay" role="region" aria-label="Pull requests">
+  <div v-if="isOpen" class="prs-overlay" role="region" aria-label="Pull requests and issues">
     <header class="prs-head">
-      <span class="prs-title">Pull requests</span>
-      <button type="button" class="prs-reload" :disabled="loading" title="Reload" aria-label="Reload PR list" @click="load">↻</button>
+      <span class="prs-title">PRs &amp; Issues</span>
+      <button type="button" class="prs-reload" :disabled="loading" title="Reload" aria-label="Reload PR and issue list" @click="load">↻</button>
       <span v-if="loading" class="prs-status">Loading…</span>
     </header>
     <div class="prs-content">
@@ -85,27 +108,53 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       <p v-else-if="!loading && repos.length === 0" class="prs-msg">
         No repositories configured. Add <code>owner/repo</code> entries under Settings (⚙) → Pull request repos.
       </p>
-      <section v-for="r in repos" :key="r.repo" class="prs-repo">
-        <h2 class="prs-repo-name">
-          {{ r.repo }}
-          <span v-if="r.prs" class="prs-count">{{ r.prs.length }}</span>
-        </h2>
-        <p v-if="r.error" class="prs-msg prs-error">{{ r.error }}</p>
-        <p v-else-if="r.prs && r.prs.length === 0" class="prs-msg prs-empty">No open PRs</p>
-        <ul v-else-if="r.prs" class="prs-list">
-          <li v-for="pr in r.prs" :key="pr.number">
-            <button type="button" class="prs-row" @click="openPr(pr.url)">
-              <span class="prs-ci" :class="`ci-${pr.ci}`" role="img" :aria-label="CI_TITLE[pr.ci]" :title="CI_TITLE[pr.ci]" />
-              <span class="prs-num">#{{ pr.number }}</span>
-              <span class="prs-name">{{ pr.title }}</span>
-              <span v-if="pr.isDraft" class="prs-tag prs-draft">draft</span>
-              <span v-if="pr.review" class="prs-tag" :class="`rev-${pr.review}`">{{ REVIEW_LABEL[pr.review] ?? pr.review.toLowerCase() }}</span>
-              <span class="prs-meta">{{ pr.author }} · {{ relativeTime(pr.updatedAt) }}</span>
-            </button>
-          </li>
-        </ul>
-        <p v-if="r.truncated" class="prs-msg prs-empty">Showing the first {{ r.prs?.length ?? 0 }} — this repo has more open PRs.</p>
-      </section>
+      <template v-else>
+        <h2 class="prs-section">Pull requests</h2>
+        <section v-for="r in repos" :key="`pr-${r.repo}`" class="prs-repo">
+          <h3 class="prs-repo-name">
+            {{ r.repo }}
+            <span v-if="r.prs" class="prs-count">{{ r.prs.length }}</span>
+          </h3>
+          <p v-if="r.error" class="prs-msg prs-error">{{ r.error }}</p>
+          <p v-else-if="r.prs && r.prs.length === 0" class="prs-msg prs-empty">No open PRs</p>
+          <ul v-else-if="r.prs" class="prs-list">
+            <li v-for="pr in r.prs" :key="pr.number">
+              <button type="button" class="prs-row" @click="openUrl(pr.url)">
+                <span class="prs-ci" :class="`ci-${pr.ci}`" role="img" :aria-label="CI_TITLE[pr.ci]" :title="CI_TITLE[pr.ci]" />
+                <span class="prs-num">#{{ pr.number }}</span>
+                <span class="prs-name">{{ pr.title }}</span>
+                <span v-if="pr.isDraft" class="prs-tag prs-draft">draft</span>
+                <span v-if="pr.review" class="prs-tag" :class="`rev-${pr.review}`">{{ REVIEW_LABEL[pr.review] ?? pr.review.toLowerCase() }}</span>
+                <span class="prs-meta">{{ pr.author }} · {{ relativeTime(pr.updatedAt) }}</span>
+              </button>
+            </li>
+          </ul>
+          <p v-if="r.truncated" class="prs-msg prs-empty">Showing the first {{ r.prs?.length ?? 0 }} — this repo has more open PRs.</p>
+        </section>
+
+        <h2 class="prs-section">Issues</h2>
+        <section v-for="r in issueRepos" :key="`iss-${r.repo}`" class="prs-repo">
+          <h3 class="prs-repo-name">
+            {{ r.repo }}
+            <span v-if="r.issues" class="prs-count">{{ r.issues.length }}</span>
+          </h3>
+          <p v-if="r.error" class="prs-msg prs-error">{{ r.error }}</p>
+          <p v-else-if="r.issues && r.issues.length === 0" class="prs-msg prs-empty">No open issues</p>
+          <ul v-else-if="r.issues" class="prs-list">
+            <li v-for="iss in r.issues" :key="iss.number">
+              <button type="button" class="prs-row" @click="openUrl(iss.url)">
+                <span class="prs-num">#{{ iss.number }}</span>
+                <span class="prs-name">{{ iss.title }}</span>
+                <span class="prs-meta">{{ iss.author }} · {{ relativeTime(iss.updatedAt) }}</span>
+              </button>
+            </li>
+          </ul>
+          <p v-if="r.truncated" class="prs-msg prs-empty">
+            Showing the latest {{ r.issues?.length ?? 0 }} —
+            <a :href="r.url" target="_blank" rel="noopener noreferrer" class="prs-link">see all open issues on GitHub</a>.
+          </p>
+        </section>
+      </template>
     </div>
   </div>
 </template>
@@ -173,6 +222,23 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 }
 .prs-empty {
   padding: 8px 4px;
+}
+.prs-section {
+  margin: 4px 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.prs-section:not(:first-child) {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.prs-link {
+  color: var(--accent, #3b82f6);
+  text-decoration: underline;
 }
 .prs-repo {
   margin-bottom: 20px;
