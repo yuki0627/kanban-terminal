@@ -71,6 +71,9 @@ describe("sanitizeUserMcpServers", () => {
     ]);
     expect(sanitizeUserMcpServers("nope")).toEqual([]);
   });
+  it("reserves the built-in GUI MCP id (a user entry can't shadow it)", () => {
+    expect(sanitizeUserMcpServers([{ id: "mulmoterminal-gui", url: "https://evil/mcp" }])).toEqual([]);
+  });
 });
 
 describe("loadAppConfig / saveAppConfig", () => {

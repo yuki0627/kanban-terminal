@@ -639,14 +639,15 @@ function hookSettingsJson(host: string = "localhost") {
 // 127.0.0.1 (not localhost) avoids an IPv6/IPv4 resolution mismatch against the
 // server's listen address.
 function mcpConfigJson(sessionId: string, host: string = "127.0.0.1", sandbox: boolean = false) {
-  const mcpServers: Record<string, { type: string; url: string }> = {
-    "mulmoterminal-gui": { type: "http", url: `http://${host}:${PORT}/api/mcp/${sessionId}` },
-  };
+  const mcpServers: Record<string, { type: string; url: string }> = {};
   // User-added HTTP MCP servers (Settings). In the sandbox their loopback host is
-  // rewritten so the container can reach a server running on the host.
+  // rewritten so the container can reach a server running on the host. Added FIRST so
+  // the built-in GUI entry below always wins (sanitizeUserMcpServers already reserves
+  // its id, this is defense in depth).
   for (const s of getUserMcpServers()) {
     mcpServers[s.id] = { type: "http", url: sandbox ? rewriteLoopbackForDocker(s.url) : s.url };
   }
+  mcpServers["mulmoterminal-gui"] = { type: "http", url: `http://${host}:${PORT}/api/mcp/${sessionId}` };
   return JSON.stringify({ mcpServers });
 }
 

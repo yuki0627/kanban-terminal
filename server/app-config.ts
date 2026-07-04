@@ -41,6 +41,9 @@ export interface AppConfig {
 const MCP_ID_RE = /^[A-Za-z0-9_-]+$/;
 const MCP_URL_RE = /^https?:\/\/\S+$/;
 const MCP_SERVERS_MAX = 20;
+// The built-in GUI MCP server name — reserved so a user entry can't shadow it and
+// break mcp__mulmoterminal-gui__* tool routing.
+const RESERVED_MCP_IDS = new Set(["mulmoterminal-gui"]);
 export function sanitizeUserMcpServers(input: unknown): UserMcpServer[] {
   if (!Array.isArray(input)) return [];
   const seen = new Set<string>();
@@ -50,7 +53,7 @@ export function sanitizeUserMcpServers(input: unknown): UserMcpServer[] {
     const o = v as Record<string, unknown>;
     const id = typeof o.id === "string" ? o.id.trim() : "";
     const url = typeof o.url === "string" ? o.url.trim() : "";
-    if (!MCP_ID_RE.test(id) || !MCP_URL_RE.test(url) || seen.has(id)) continue;
+    if (!MCP_ID_RE.test(id) || RESERVED_MCP_IDS.has(id) || !MCP_URL_RE.test(url) || seen.has(id)) continue;
     seen.add(id);
     out.push({ id, url });
     if (out.length >= MCP_SERVERS_MAX) break;
