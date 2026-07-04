@@ -15,7 +15,7 @@ import { mountAllRoutes, allowedToolNames, toolSummaries } from "./plugins-regis
 import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 import { initArtifactsBackend } from "./backends/artifacts.js";
-import { mountConfigRoutes, getPrRepos, getLaunchers } from "./config-routes.js";
+import { mountConfigRoutes, getPrRepos, getLaunchers, getUserMcpServers } from "./config-routes.js";
 import { mountFilesBrowseRoutes } from "./files-browse.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
 import {
@@ -25,6 +25,7 @@ import {
   buildDockerRunArgs,
   writeSandboxClaudeConfig,
   cleanupSandbox,
+  rewriteLoopbackForDocker,
   SANDBOX_HOST,
 } from "./sandbox.js";
 import { listPrsAcrossRepos } from "./prs.js";
@@ -637,15 +638,16 @@ function hookSettingsJson(host: string = "localhost") {
 // needed — the agent just makes an HTTP call back to this server. Using
 // 127.0.0.1 (not localhost) avoids an IPv6/IPv4 resolution mismatch against the
 // server's listen address.
-function mcpConfigJson(sessionId: string, host: string = "127.0.0.1") {
-  return JSON.stringify({
-    mcpServers: {
-      "mulmoterminal-gui": {
-        type: "http",
-        url: `http://${host}:${PORT}/api/mcp/${sessionId}`,
-      },
-    },
-  });
+function mcpConfigJson(sessionId: string, host: string = "127.0.0.1", sandbox: boolean = false) {
+  const mcpServers: Record<string, { type: string; url: string }> = {
+    "mulmoterminal-gui": { type: "http", url: `http://${host}:${PORT}/api/mcp/${sessionId}` },
+  };
+  // User-added HTTP MCP servers (Settings). In the sandbox their loopback host is
+  // rewritten so the container can reach a server running on the host.
+  for (const s of getUserMcpServers()) {
+    mcpServers[s.id] = { type: "http", url: sandbox ? rewriteLoopbackForDocker(s.url) : s.url };
+  }
+  return JSON.stringify({ mcpServers });
 }
 
 // Claude stores each project's sessions under ~/.claude/projects/<encoded-cwd>/,
@@ -1557,8 +1559,10 @@ function spawnClaudePty(
     settings: hookSettingsJson(sandbox ? SANDBOX_HOST : "localhost"),
     permissionMode: CLAUDE_PERMISSION_MODE,
     attachGuiMcp,
-    mcpConfig: mcpConfigJson(sessionId, sandbox ? SANDBOX_HOST : "127.0.0.1"),
-    guiMcpTools: GUI_MCP_TOOLS,
+    mcpConfig: mcpConfigJson(sessionId, sandbox ? SANDBOX_HOST : "127.0.0.1", sandbox),
+    // Auto-allow the GUI tools + the user's own configured MCP servers (mcp__<id>), so
+    // their tools don't trip a permission prompt on every call.
+    guiMcpTools: [GUI_MCP_TOOLS, ...getUserMcpServers().map((s) => `mcp__${s.id}`)].join(","),
     initialPrompt,
   });
 

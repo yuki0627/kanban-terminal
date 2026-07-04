@@ -147,7 +147,7 @@ onMounted(() => window.addEventListener("resize", onViewportResize));
 
 // Settings (theme + notification sound), shared with the grid view via useAppConfig
 // and opened from the toolbar's gear button.
-const { defaultCwd, loadConfig, saveSound, prRepos, savePrRepos, launchers, saveLaunchers } = useAppConfig();
+const { defaultCwd, loadConfig, saveSound, prRepos, savePrRepos, launchers, saveLaunchers, userMcpServers, saveUserMcpServers } = useAppConfig();
 // Drive the single view's dir overrides off the dir the terminal ACTUALLY runs in
 // (reported by the server, which may resolve/fall back), not the static default — so
 // the badge/theme/colors always track the active session. Falls back to the default
@@ -344,9 +344,11 @@ function onSession(id: string) {
       :sound-file="soundFile"
       :pr-repos="prRepos"
       :launchers="launchers"
+      :user-mcp-servers="userMcpServers"
       @update-sound="saveSound"
       @update-repos="savePrRepos"
       @update-launchers="saveLaunchers"
+      @update-user-mcp="saveUserMcpServers"
       @close="closeSettings"
     />
   </div>
