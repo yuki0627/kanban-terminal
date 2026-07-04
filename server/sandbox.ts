@@ -27,11 +27,14 @@ export function sandboxEnabled(): boolean {
   return v === "1" || v === "true";
 }
 
-// Windows is unsupported: the same-path bind mount (`-v <cwd>:<cwd>`, which keeps the
-// transcript encoding identical to the host) yields a non-POSIX container path (`C:\...`)
-// that Docker rejects for Linux containers. macOS + Linux hosts only.
+// macOS only for Phase 1 (the only platform verified). Docker Desktop maps bind-mount
+// ownership transparently there, so running as the image's uid 1000 Just Works. Linux is
+// gated off because the spawn passes no `--user`, so bind-mounted host files would be
+// written as uid 1000 (ownership failures on non-1000 hosts — proper uid mapping is a
+// follow-up, #202). Windows is gated off because the same-path mount (`-v <cwd>:<cwd>`)
+// isn't a valid Linux container path. Both fall back to the host spawn.
 export function sandboxPlatformSupported(): boolean {
-  return process.platform !== "win32";
+  return process.platform === "darwin";
 }
 
 // Rewrite a host-loopback URL so it's reachable from inside the container. Same regex

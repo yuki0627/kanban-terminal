@@ -18,11 +18,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # how the host runs the newest `claude`.
 RUN npm install -g @anthropic-ai/claude-code
 
-# Run as the unprivileged `node` user (uid 1000). On macOS Docker Desktop the bind-mount
-# ownership is mapped transparently, so this Just Works. On Linux the spawn does not pass
-# `--user`, so bind-mounted files are created as uid 1000 (a mismatch on non-1000 hosts —
-# proper uid handling is Phase 5, #202). Windows is unsupported (the host `cwd` isn't a
-# valid Linux container path) and the server falls back to the host spawn.
+# Run as the unprivileged `node` user (uid 1000). Phase 1 is macOS-only: Docker Desktop
+# maps bind-mount ownership transparently there. The server gates the sandbox off on Linux
+# (no `--user` yet → uid-1000 ownership mismatch) and Windows (host paths aren't valid
+# Linux container paths), falling back to the host spawn — see Phase 5 (#202).
 USER node
 ENV HOME=/home/node
 WORKDIR /home/node/workspace

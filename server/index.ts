@@ -1992,7 +1992,7 @@ server.listen(PORT, () => {
   }
   if (sandboxEnabled()) {
     if (!sandboxPlatformSupported()) {
-      console.log("[sandbox] MULMOTERMINAL_SANDBOX set but Windows is unsupported — using host spawn");
+      console.log("[sandbox] MULMOTERMINAL_SANDBOX set but only supported on macOS for now — using host spawn");
     } else {
       console.log(
         dockerAvailable()
