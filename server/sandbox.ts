@@ -1,7 +1,11 @@
 // Docker sandbox for the SINGLE-VIEW interactive Claude session (opt-in, default off).
-// Runs `claude` inside a container so an untrusted workspace can't touch the host; the
-// container reaches the host's GUI MCP + activity hooks over host.docker.internal. The
-// grid keeps its host + tmux path — sandbox and tmux are alternative spawn wrappers.
+// Runs `claude` inside a container to CONTAIN it: it can't reach the host filesystem
+// outside the bind-mounts, host processes, or arbitrary host ports. It is NOT full
+// isolation — the project directory and ~/.claude are bind-mounted READ-WRITE by design
+// (Claude edits your code and writes its transcript/auth), so those specific host paths
+// stay mutable from inside. The container reaches the host's GUI MCP + activity hooks
+// over host.docker.internal. The grid keeps its host + tmux path — sandbox and tmux are
+// alternative spawn wrappers.
 //
 // Verified in Phase 0 (#202): a sandboxed claude authenticates via the mounted ~/.claude
 // and connects to the host GUI MCP over host.docker.internal.
@@ -36,11 +40,12 @@ function run(bin: string, args: string[]): { status: number | null } {
   return { status: spawnSync(bin, args, { stdio: "ignore" }).status };
 }
 
-// Is Docker usable (daemon reachable)? Cached — a missing/stopped daemon means the
-// caller should fall back to the host spawn rather than hang.
-let cachedDockerOk: boolean | null = null;
+// Is Docker usable (daemon reachable)? Only a POSITIVE result is cached — a failed check
+// (e.g. the daemon still starting when the server boots) is retried on the next spawn, so
+// transient unavailability doesn't permanently disable sandboxing until a restart.
+let cachedDockerOk = false;
 export function dockerAvailable(): boolean {
-  if (cachedDockerOk === null) cachedDockerOk = run("docker", ["info"]).status === 0;
+  if (!cachedDockerOk) cachedDockerOk = run("docker", ["info"]).status === 0;
   return cachedDockerOk;
 }
 

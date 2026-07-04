@@ -19,8 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g @anthropic-ai/claude-code
 
 # Run as the unprivileged `node` user (uid 1000). On macOS/Windows Docker Desktop the
-# bind-mount ownership is mapped transparently; on Linux, `docker run --user <uid>:<gid>`
-# is added by the host to match (see the sandbox spawn args / Phase 5).
+# bind-mount ownership is mapped transparently, so this Just Works. Linux is NOT yet
+# supported: the spawn does not pass `--user`, so bind-mounted files would be created as
+# uid 1000 (a mismatch on non-1000 hosts). Proper Linux uid handling is Phase 5 (#202).
 USER node
 ENV HOME=/home/node
 WORKDIR /home/node/workspace
