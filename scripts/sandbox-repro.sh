@@ -21,7 +21,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # 1. Build the sandbox image if it isn't present.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[repro] building $IMAGE ..."
-  docker build -f "$REPO_ROOT/Dockerfile.sandbox" -t "$IMAGE" "$REPO_ROOT"
+  # --load: with the buildx container driver (Docker's default) the result otherwise
+  # stays in the build cache and never lands in the local image store.
+  docker build --load -f "$REPO_ROOT/Dockerfile.sandbox" -t "$IMAGE" "$REPO_ROOT"
 fi
 
 # 2. Rewrite the two host-loopback configs (MCP + hooks) to reach the host from inside
