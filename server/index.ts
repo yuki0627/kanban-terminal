@@ -18,7 +18,7 @@ import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes, getPrRepos, getLaunchers } from "./config-routes.js";
 import { mountFilesBrowseRoutes } from "./files-browse.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
-import { sandboxEnabled, dockerAvailable, buildDockerRunArgs, removeSandboxContainer, SANDBOX_HOST } from "./sandbox.js";
+import { sandboxEnabled, dockerAvailable, buildDockerRunArgs, writeSandboxClaudeConfig, cleanupSandbox, SANDBOX_HOST } from "./sandbox.js";
 import { listPrsAcrossRepos } from "./prs.js";
 import { listIssuesAcrossRepos } from "./issues.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
@@ -547,8 +547,9 @@ function reap(id: string) {
   // explicit close / idle reap actually stops the program (no orphan within a live
   // server). A server crash never runs this, so sessions survive that (the point).
   if (entry.tmux) tmuxKillSession(id);
-  // A sandbox container likewise outlives its killed `docker run` client — force-remove it.
-  if (entry.sandbox) removeSandboxContainer(id);
+  // A sandbox container likewise outlives its killed `docker run` client — force-remove
+  // it (and drop the throwaway per-session config).
+  if (entry.sandbox) cleanupSandbox(id);
   pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
 }
 
@@ -1559,8 +1560,9 @@ function spawnClaudePty(
   // a live tmux session for this id (survived a restart) reattaches; else create it.
   let entry: PtyEntry;
   if (sandbox) {
-    removeSandboxContainer(sessionId); // clear any stale container with this name
-    const term = spawnPty("docker", buildDockerRunArgs(sessionId, args, cwd), cwd);
+    cleanupSandbox(sessionId); // clear any stale container/config with this name
+    const claudeConfig = writeSandboxClaudeConfig(sessionId, cwd);
+    const term = spawnPty("docker", buildDockerRunArgs(sessionId, args, cwd, claudeConfig), cwd);
     console.log(`[pty] spawned claude (pid=${term.pid} via docker sandbox) in ${cwd}`);
     entry = { term, ws, buffer: "", cwd, sandbox: true };
   } else {

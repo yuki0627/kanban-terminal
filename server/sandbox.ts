@@ -6,7 +6,7 @@
 // Verified in Phase 0 (#202): a sandboxed claude authenticates via the mounted ~/.claude
 // and connects to the host GUI MCP over host.docker.internal.
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { writeFileSync, rmSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -44,21 +44,50 @@ export function dockerAvailable(): boolean {
   return cachedDockerOk;
 }
 
-// Best-effort remove a sandbox container (clear a stale one before spawn, or on reap —
-// killing the `docker run` client alone can leave the container behind).
-export function removeSandboxContainer(sessionId: string): void {
+// A per-session ~/.claude.json for the container. We deliberately do NOT mount the
+// host's ~/.claude.json: it records a `native` install at ~/.local/bin (which doesn't
+// exist in the container, so claude warns "missing or broken"), and mounting it
+// read-write would let the container mutate the user's global config. Instead we mount
+// auth via ~/.claude/.credentials.json (the dir) and a minimal generated config that
+// marks onboarding done and pre-trusts the workspace (so no theme / trust prompts).
+// Under the app's own (user-owned) home, not a world-writable temp dir.
+const SANDBOX_DIR = path.join(os.homedir(), ".mulmoterminal", "sandbox");
+export function sandboxClaudeConfigPath(sessionId: string): string {
+  return path.join(SANDBOX_DIR, `claude-${sessionId}.json`);
+}
+
+export function writeSandboxClaudeConfig(sessionId: string, cwd: string): string {
+  mkdirSync(SANDBOX_DIR, { recursive: true });
+  const file = sandboxClaudeConfigPath(sessionId);
+  const config = {
+    hasCompletedOnboarding: true,
+    theme: "dark",
+    hasSeenAutoModeEntryWarning: true,
+    // cwd is mounted at its SAME path in the container, so this key matches there.
+    projects: {
+      [cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1, allowedTools: [] },
+    },
+  };
+  writeFileSync(file, JSON.stringify(config));
+  return file;
+}
+
+// Best-effort teardown: force-remove the container (killing the `docker run` client
+// alone can leave it behind) and delete the throwaway per-session config. Used before a
+// spawn (clear stale) and on reap.
+export function cleanupSandbox(sessionId: string): void {
   run("docker", ["rm", "-f", sandboxContainerName(sessionId)]);
+  rmSync(sandboxClaudeConfigPath(sessionId), { force: true });
 }
 
 // The `docker run` argv that runs interactive `claude` in the sandbox. The workspace is
 // bind-mounted at its SAME absolute path so claude's transcript encodes identically to
 // the host (~/.claude/projects/<encoded-cwd>) — resume interoperates with host sessions.
-// ~/.claude (+ .claude.json) is mounted for auth + transcripts. `claudeArgs` already have
-// their --settings/--mcp-config URLs rewritten to host.docker.internal by the caller.
-export function buildDockerRunArgs(sessionId: string, claudeArgs: string[], cwd: string): string[] {
+// ~/.claude (dir) is mounted for auth + transcripts; `claudeConfigPath` is the generated
+// per-session ~/.claude.json. `claudeArgs` already have their --settings/--mcp-config
+// URLs rewritten to host.docker.internal by the caller.
+export function buildDockerRunArgs(sessionId: string, claudeArgs: string[], cwd: string, claudeConfigPath: string): string[] {
   const claudeDir = path.join(os.homedir(), ".claude");
-  const claudeJson = path.join(os.homedir(), ".claude.json");
-  const jsonMount = existsSync(claudeJson) ? ["-v", `${claudeJson}:${CONTAINER_HOME}/.claude.json`] : [];
   return [
     "run",
     "--rm",
@@ -69,11 +98,14 @@ export function buildDockerRunArgs(sessionId: string, claudeArgs: string[], cwd:
     "host.docker.internal:host-gateway",
     "-e",
     `HOME=${CONTAINER_HOME}`,
+    "-e",
+    "DISABLE_AUTOUPDATER=1", // ephemeral container — never self-update the CLI
     "-v",
     `${cwd}:${cwd}`,
     "-v",
     `${claudeDir}:${CONTAINER_HOME}/.claude`,
-    ...jsonMount,
+    "-v",
+    `${claudeConfigPath}:${CONTAINER_HOME}/.claude.json`,
     "-w",
     cwd,
     IMAGE,
