@@ -18,6 +18,15 @@ import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes, getPrRepos, getLaunchers } from "./config-routes.js";
 import { mountFilesBrowseRoutes } from "./files-browse.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
+import {
+  sandboxEnabled,
+  sandboxPlatformSupported,
+  dockerAvailable,
+  buildDockerRunArgs,
+  writeSandboxClaudeConfig,
+  cleanupSandbox,
+  SANDBOX_HOST,
+} from "./sandbox.js";
 import { listPrsAcrossRepos } from "./prs.js";
 import { listIssuesAcrossRepos } from "./issues.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
@@ -70,6 +79,9 @@ interface PtyEntry {
   // True when `term` is a tmux client (persistent): killing it only detaches, so reap
   // must kill the tmux session to actually end the program.
   tmux?: boolean;
+  // True when `term` is a `docker run` client (single-view sandbox): reap force-removes
+  // the container, since killing the client alone can leave it running.
+  sandbox?: boolean;
 }
 
 interface KnownSession {
@@ -543,6 +555,9 @@ function reap(id: string) {
   // explicit close / idle reap actually stops the program (no orphan within a live
   // server). A server crash never runs this, so sessions survive that (the point).
   if (entry.tmux) tmuxKillSession(id);
+  // A sandbox container likewise outlives its killed `docker run` client — force-remove
+  // it (and drop the throwaway per-session config).
+  if (entry.sandbox) cleanupSandbox(id);
   pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
 }
 
@@ -599,8 +614,8 @@ function setWaiting(id: string, waiting: boolean, event?: string) {
 // per-session tool-call history that the GUI's tools pane shows. A failed tool
 // fires PostToolUseFailure (NOT PostToolUse), so we register both to complete the
 // entry either way — otherwise a failed call would stay stuck on "running".
-function hookSettingsJson() {
-  const cmd = `curl -s -X POST http://localhost:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
+function hookSettingsJson(host: string = "localhost") {
+  const cmd = `curl -s -X POST http://${host}:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
   const entry = [{ hooks: [{ type: "command", command: cmd }] }];
   // Tool hooks take a matcher; "" matches all tools.
   const toolEntry = [{ matcher: "", hooks: [{ type: "command", command: cmd }] }];
@@ -622,12 +637,12 @@ function hookSettingsJson() {
 // needed — the agent just makes an HTTP call back to this server. Using
 // 127.0.0.1 (not localhost) avoids an IPv6/IPv4 resolution mismatch against the
 // server's listen address.
-function mcpConfigJson(sessionId: string) {
+function mcpConfigJson(sessionId: string, host: string = "127.0.0.1") {
   return JSON.stringify({
     mcpServers: {
       "mulmoterminal-gui": {
         type: "http",
-        url: `http://127.0.0.1:${PORT}/api/mcp/${sessionId}`,
+        url: `http://${host}:${PORT}/api/mcp/${sessionId}`,
       },
     },
   });
@@ -1529,27 +1544,40 @@ function spawnClaudePty(
   // Only --resume when the session has an on-disk transcript — claude doesn't write
   // a session's .jsonl until its first prompt, so a started-but-unused session can't
   // be resumed; we restart fresh (reusing the id via --session-id) instead.
+  // Sandbox only the SINGLE-VIEW interactive session: attachGuiMcp=true excludes grid
+  // dev terminals (?gui=0), and ws!==null excludes hidden background/translation workers.
+  // Falls back to the host spawn if the Docker daemon isn't reachable.
+  const sandbox = sandboxEnabled() && sandboxPlatformSupported() && attachGuiMcp && ws !== null && dockerAvailable();
   const canResume = resume !== null && sessionExistsOnDisk(resume, cwd);
   const args = buildClaudeArgs({
     sessionId,
     resume,
     canResume,
-    settings: hookSettingsJson(),
+    // In the sandbox the hooks + GUI MCP are reached over host.docker.internal.
+    settings: hookSettingsJson(sandbox ? SANDBOX_HOST : "localhost"),
     permissionMode: CLAUDE_PERMISSION_MODE,
     attachGuiMcp,
-    mcpConfig: mcpConfigJson(sessionId),
+    mcpConfig: mcpConfigJson(sessionId, sandbox ? SANDBOX_HOST : "127.0.0.1"),
     guiMcpTools: GUI_MCP_TOOLS,
     initialPrompt,
   });
 
   console.log(`[ws] client connected (${canResume ? "resume" : "new"} ${sessionId})`);
 
-  // Persistent: a live tmux session for this id (survived a restart) is reattached and
-  // the args above are ignored; otherwise it's created running claude with them.
-  const { term, tmux } = ptySpawn(sessionId, CLAUDE_BIN, args, cwd, true);
-  console.log(`[pty] spawned claude (pid=${term.pid}${tmux ? " via tmux" : ""}) in ${cwd}`);
-
-  const entry: PtyEntry = { term, ws, buffer: "", cwd, tmux };
+  // Sandbox → run claude inside a fresh container (no tmux). Otherwise the host path:
+  // a live tmux session for this id (survived a restart) reattaches; else create it.
+  let entry: PtyEntry;
+  if (sandbox) {
+    cleanupSandbox(sessionId); // clear any stale container/config with this name
+    const claudeConfig = writeSandboxClaudeConfig(sessionId, cwd);
+    const term = spawnPty("docker", buildDockerRunArgs(sessionId, args, cwd, claudeConfig), cwd);
+    console.log(`[pty] spawned claude (pid=${term.pid} via docker sandbox) in ${cwd}`);
+    entry = { term, ws, buffer: "", cwd, sandbox: true };
+  } else {
+    const { term, tmux } = ptySpawn(sessionId, CLAUDE_BIN, args, cwd, true);
+    console.log(`[pty] spawned claude (pid=${term.pid}${tmux ? " via tmux" : ""}) in ${cwd}`);
+    entry = { term, ws, buffer: "", cwd, tmux };
+  }
   ptys.set(sessionId, entry);
 
   if (!canResume) {
@@ -1586,7 +1614,7 @@ function spawnClaudePty(
   if (draftText) setTimeout(typeDraft, DRAFT_FALLBACK_MS);
 
   // PTY -> browser (buffering a bounded tail for reattach).
-  term.onData((data) => {
+  entry.term.onData((data) => {
     entry.buffer = (entry.buffer + data).slice(-OUTPUT_BUFFER_LIMIT);
     if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
       entry.ws.send(JSON.stringify({ type: "output", data }));
@@ -1602,7 +1630,7 @@ function spawnClaudePty(
     }
   });
 
-  term.onExit(({ exitCode, signal }) => {
+  entry.term.onExit(({ exitCode, signal }) => {
     console.log(`[pty] exited code=${exitCode} signal=${signal}`);
     if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
       entry.ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
@@ -1961,6 +1989,17 @@ server.listen(PORT, () => {
     console.log(`[tmux] persistence on${detail}`);
   } else {
     console.log("[tmux] not found — terminals are not persistent across a server restart");
+  }
+  if (sandboxEnabled()) {
+    if (!sandboxPlatformSupported()) {
+      console.log("[sandbox] MULMOTERMINAL_SANDBOX set but only supported on macOS for now — using host spawn");
+    } else {
+      console.log(
+        dockerAvailable()
+          ? "[sandbox] on — single-view Claude runs in a Docker container"
+          : "[sandbox] MULMOTERMINAL_SANDBOX set but Docker daemon unreachable — using host spawn",
+      );
+    }
   }
 });
 

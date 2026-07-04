@@ -136,6 +136,28 @@ survive (tmux itself is gone). Command-cell scripts are ephemeral and not persis
 
 ---
 
+## Docker sandbox (experimental, single view)
+
+Set **`MULMOTERMINAL_SANDBOX=1`** (and have Docker running) to run the **single-view**
+Claude session inside a container instead of on the host, while Claude still reaches the
+app's GUI MCP + activity hooks over `host.docker.internal`. Build the image first:
+`docker build -f Dockerfile.sandbox -t mulmoterminal-sandbox .` (override the name with
+`MULMOTERMINAL_SANDBOX_IMAGE`).
+
+This **contains** Claude — it can't reach the host filesystem outside the mounts, host
+processes, or arbitrary host ports. It is **not full isolation**: the **workspace** and
+**`~/.claude`** are bind-mounted **read-write** by design (so Claude edits your project
+and stays logged in, and transcripts interoperate with host sessions), so those specific
+paths stay mutable from inside. The sandbox is **non-persistent** (the container is
+`--rm`, tied to the session), **opt-in and single-view only** — the grid keeps its host +
+tmux path, and with the flag unset (or Docker unavailable) everything runs on the host
+exactly as before. **macOS only** for now — on Linux (bind-mount uid ownership) and
+Windows (host paths aren't valid Linux container paths) it falls back to the host spawn;
+both are follow-ups. Adding arbitrary user MCP servers to the sandbox is in progress
+(see #202).
+
+---
+
 ## Tech stack
 
 | Layer    | Technology |
