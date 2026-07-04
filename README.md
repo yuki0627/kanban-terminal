@@ -151,8 +151,10 @@ and stays logged in, and transcripts interoperate with host sessions), so those 
 paths stay mutable from inside. The sandbox is **non-persistent** (the container is
 `--rm`, tied to the session), **opt-in and single-view only** — the grid keeps its host +
 tmux path, and with the flag unset (or Docker unavailable) everything runs on the host
-exactly as before. **macOS/Windows Docker Desktop only** for now (Linux uid mapping is not
-yet handled). Adding arbitrary user MCP servers to the sandbox is in progress (see #202).
+exactly as before. Verified on **macOS**; Linux should work but bind-mounted files are
+owned by the container's uid (uid mapping is a follow-up); **Windows is unsupported** (the
+same-path bind mount yields a non-POSIX container path) and falls back to the host spawn.
+Adding arbitrary user MCP servers to the sandbox is in progress (see #202).
 
 ---
 

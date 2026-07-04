@@ -18,7 +18,15 @@ import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes, getPrRepos, getLaunchers } from "./config-routes.js";
 import { mountFilesBrowseRoutes } from "./files-browse.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
-import { sandboxEnabled, dockerAvailable, buildDockerRunArgs, writeSandboxClaudeConfig, cleanupSandbox, SANDBOX_HOST } from "./sandbox.js";
+import {
+  sandboxEnabled,
+  sandboxPlatformSupported,
+  dockerAvailable,
+  buildDockerRunArgs,
+  writeSandboxClaudeConfig,
+  cleanupSandbox,
+  SANDBOX_HOST,
+} from "./sandbox.js";
 import { listPrsAcrossRepos } from "./prs.js";
 import { listIssuesAcrossRepos } from "./issues.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
@@ -1539,7 +1547,7 @@ function spawnClaudePty(
   // Sandbox only the SINGLE-VIEW interactive session: attachGuiMcp=true excludes grid
   // dev terminals (?gui=0), and ws!==null excludes hidden background/translation workers.
   // Falls back to the host spawn if the Docker daemon isn't reachable.
-  const sandbox = sandboxEnabled() && attachGuiMcp && ws !== null && dockerAvailable();
+  const sandbox = sandboxEnabled() && sandboxPlatformSupported() && attachGuiMcp && ws !== null && dockerAvailable();
   const canResume = resume !== null && sessionExistsOnDisk(resume, cwd);
   const args = buildClaudeArgs({
     sessionId,
@@ -1983,11 +1991,15 @@ server.listen(PORT, () => {
     console.log("[tmux] not found — terminals are not persistent across a server restart");
   }
   if (sandboxEnabled()) {
-    console.log(
-      dockerAvailable()
-        ? "[sandbox] on — single-view Claude runs in a Docker container"
-        : "[sandbox] MULMOTERMINAL_SANDBOX set but Docker daemon unreachable — using host spawn",
-    );
+    if (!sandboxPlatformSupported()) {
+      console.log("[sandbox] MULMOTERMINAL_SANDBOX set but Windows is unsupported — using host spawn");
+    } else {
+      console.log(
+        dockerAvailable()
+          ? "[sandbox] on — single-view Claude runs in a Docker container"
+          : "[sandbox] MULMOTERMINAL_SANDBOX set but Docker daemon unreachable — using host spawn",
+      );
+    }
   }
 });
 

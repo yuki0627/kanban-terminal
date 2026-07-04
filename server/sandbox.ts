@@ -27,6 +27,13 @@ export function sandboxEnabled(): boolean {
   return v === "1" || v === "true";
 }
 
+// Windows is unsupported: the same-path bind mount (`-v <cwd>:<cwd>`, which keeps the
+// transcript encoding identical to the host) yields a non-POSIX container path (`C:\...`)
+// that Docker rejects for Linux containers. macOS + Linux hosts only.
+export function sandboxPlatformSupported(): boolean {
+  return process.platform !== "win32";
+}
+
 // Rewrite a host-loopback URL so it's reachable from inside the container. Same regex
 // MulmoClaude uses: anchored at the scheme, only localhost/127.0.0.1 followed by :/ or end.
 export function rewriteLoopbackForDocker(url: string): string {
