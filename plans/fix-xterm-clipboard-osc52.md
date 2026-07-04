@@ -37,4 +37,6 @@ Claude Code の自動コピーが実際にクリップボードへ入る（`loca
 
 - 主因は OSC 52。マウスモードOFFの素シェルで Cmd+C も効かせたい場合は別途 `attachCustomKeyEventHandler` で
   xterm 選択をコピーする配線も可能だが、本 issue の症状（Claude Code のコピー）はアドオン導入で解決する。
-- OSC 52 は端末プログラムがクリップボードへ書ける経路。ここでは Claude Code を信頼する前提で許可。
+- OSC 52 は端末プログラムがクリップボードを読み書きできる経路。**write のみ許可し read は無効化**
+  （`readText` は常に `""`）。OSC 52 read（`ESC ] 52 ; <sel> ; ?`）はユーザーのクリップボードを端末側へ
+  返す漏洩経路であり、コピー機能に read は不要（貼り付けはブラウザの Cmd+V）。（Codex レビュー指摘）

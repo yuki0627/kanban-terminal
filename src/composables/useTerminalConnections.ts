@@ -83,13 +83,11 @@ function setStatus(c: Conn, s: ConnStatus) {
 // Route the empty (and "c") selection to the system clipboard so the auto-copy lands.
 export const isSystemClipboard = (selection: string): boolean => selection === "" || selection === "c";
 const clipboardProvider: IClipboardProvider = {
-  async readText(selection) {
-    if (!isSystemClipboard(selection)) return "";
-    try {
-      return await navigator.clipboard.readText();
-    } catch {
-      return ""; // clipboard blocked (no focus / permission)
-    }
+  // OSC 52 clipboard READ is disabled: letting a terminal program read the user's
+  // clipboard (`ESC ] 52 ; <sel> ; ?`) is an exfiltration vector, and nothing here
+  // needs it (paste uses the browser's native Cmd+V). This is write-only.
+  readText() {
+    return "";
   },
   async writeText(selection, text) {
     if (!isSystemClipboard(selection)) return;
