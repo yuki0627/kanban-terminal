@@ -16,6 +16,7 @@ import { buildGuiMcpServer } from "./mcp/broker.js";
 import { initMarkdownBackend } from "./backends/markdown.js";
 import { initArtifactsBackend } from "./backends/artifacts.js";
 import { mountConfigRoutes, getPrRepos, getLaunchers } from "./config-routes.js";
+import { mountFilesBrowseRoutes } from "./files-browse.js";
 import { listPrsAcrossRepos } from "./prs.js";
 import { listIssuesAcrossRepos } from "./issues.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
@@ -1057,6 +1058,11 @@ app.get("/api/tool-calls/:sessionId", async (req, res) => {
 // GRID-ONLY (dev_tool): backs the grid launcher's default dir + the settings
 // modal's directory presets. The single view never calls it.
 mountConfigRoutes(app, CLAUDE_CWD);
+
+// Project-scoped file browsing + editing for the full-screen Files view
+// (GET /api/files/browse/{list,text,md}, PUT .../write — all ?cwd=&path=). Each
+// terminal browses its own session's project dir; paths are contained within it.
+mountFilesBrowseRoutes(app, { defaultCwd: CLAUDE_CWD });
 
 // Cross-repo PR list (the /prs view): aggregate open PRs for the configured repos via
 // the server's `gh` login. Repos come from config (never the request).

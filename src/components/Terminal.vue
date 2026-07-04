@@ -7,6 +7,7 @@ import { badgeStyleFor } from "./dirBadge";
 import { useVoiceInput } from "../composables/useVoiceInput";
 import * as conn from "../composables/useTerminalConnections";
 import RunMenu from "./RunMenu.vue";
+import { filesGotoIndex } from "../composables/useFilesView";
 
 // `null` => start a fresh session; otherwise resume the given session id.
 // `connectKey` increments on every user action so re-selecting the same
@@ -231,6 +232,15 @@ onUnmounted(() => {
         </button>
         <button type="button" class="icon-btn" title="Insert a file path" aria-label="Insert a file path" @click="pickFile">
           <span class="material-symbols-outlined">attach_file</span>
+        </button>
+        <button
+          type="button"
+          class="icon-btn"
+          title="Browse & edit this project's files"
+          aria-label="Open the file explorer"
+          @click="filesGotoIndex(serverCwd)"
+        >
+          <span class="material-symbols-outlined">folder_open</span>
         </button>
       </div>
     </div>

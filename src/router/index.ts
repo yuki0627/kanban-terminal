@@ -21,6 +21,9 @@ export const routes: RouteRecordRaw[] = [
   { path: "/feeds/:slug", name: "feedDetail", component: Stub },
   { path: "/accounting", name: "accounting", component: Stub },
   { path: "/prs", name: "prs", component: Stub },
+  // Full-screen file explorer + editor, rooted at a project dir (?cwd=). Opened from a
+  // terminal header's Files button.
+  { path: "/files", name: "files", component: Stub },
   // Read-only wiki browser (Phase 3 of plans/feat-wiki.md). The open PAGE is the URL;
   // graph + lint are their own sub-routes, mirroring MulmoClaude's /wiki paths.
   { path: "/wiki", name: "wiki", component: Stub },

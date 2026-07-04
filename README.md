@@ -287,6 +287,22 @@ command, so the file is the allowlist of what can run.
 
 ---
 
+## Files view (browse & edit)
+
+Every terminal header has a **📁 Files** button that opens a full-screen file explorer
+rooted at **that terminal's project directory** — so after Claude says "wrote `foo.md`"
+you can jump straight there to read or edit it. The left pane is a lazy-loaded directory
+tree; clicking a file opens it in a **CodeMirror** editor (Markdown / JS-TS / JSON
+highlighting, everything else as plain text). Markdown files get a **Preview** toggle
+that renders via the server's sandboxed `…/md` HTML. **Save** (or ⌘/Ctrl-S) writes back.
+
+All reads and writes go through `GET/PUT /api/files/browse/*?cwd=&path=`, and every
+`path` is **contained within the project root** (server-side) — `..`/absolute escapes
+are rejected for reads and writes alike, so editing can't reach outside the directory
+the terminal is pointed at.
+
+---
+
 ## Server API specification
 
 Base URL: `http://localhost:$PORT` (default `http://localhost:34567`).
