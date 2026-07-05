@@ -144,7 +144,8 @@ export function resolveSandboxAuthArgs(): string[] {
   }
   if (process.env.SANDBOX_SSH_AGENT_FORWARD === "1") {
     // The socket lives inside Docker Desktop's VM, not the host FS — don't existsSync it.
-    args.push("-v", `${DESKTOP_SSH_SOCK}:/ssh-agent`, "-e", "SSH_AUTH_SOCK=/ssh-agent");
+    // `:ro` keeps the read-only guarantee; agent forwarding is socket I/O, not file writes.
+    args.push("-v", `${DESKTOP_SSH_SOCK}:/ssh-agent:ro`, "-e", "SSH_AUTH_SOCK=/ssh-agent");
   }
   return args;
 }

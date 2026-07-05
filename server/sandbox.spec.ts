@@ -117,7 +117,11 @@ describe("resolveSandboxAuthArgs (opt-in, env-gated)", () => {
     delete process.env.SANDBOX_MOUNT_CONFIGS;
     process.env.SANDBOX_SSH_AGENT_FORWARD = "1";
     const args = resolveSandboxAuthArgs();
-    expect(args).toContain("/run/host-services/ssh-auth.sock:/ssh-agent");
+    expect(args).toContain("/run/host-services/ssh-auth.sock:/ssh-agent:ro"); // read-only, like every credential mount
     expect(args).toContain("SSH_AUTH_SOCK=/ssh-agent");
+    // Every -v this function emits must be read-only.
+    args.forEach((a, i) => {
+      if (args[i - 1] === "-v") expect(a.endsWith(":ro")).toBe(true);
+    });
   });
 });
