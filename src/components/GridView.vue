@@ -129,8 +129,22 @@ onMounted(() => {
 });
 
 // Server config: the default workspace dir + the auto-recorded dir presets + sound.
-const { defaultCwd, home, presets, soundFile, prRepos, launchers, loadConfig, recordPreset, removePreset, saveSound, savePrRepos, saveLaunchers } =
-  useAppConfig();
+const {
+  defaultCwd,
+  home,
+  presets,
+  soundFile,
+  prRepos,
+  launchers,
+  userMcpServers,
+  loadConfig,
+  recordPreset,
+  removePreset,
+  saveSound,
+  savePrRepos,
+  saveLaunchers,
+  saveUserMcpServers,
+} = useAppConfig();
 const showSettings = ref(false);
 onMounted(loadConfig);
 
@@ -182,9 +196,11 @@ function closeSettings() {
       :sound-file="soundFile"
       :pr-repos="prRepos"
       :launchers="launchers"
+      :user-mcp-servers="userMcpServers"
       @update-sound="saveSound"
       @update-repos="savePrRepos"
       @update-launchers="saveLaunchers"
+      @update-user-mcp="saveUserMcpServers"
       @close="closeSettings"
     />
   </div>

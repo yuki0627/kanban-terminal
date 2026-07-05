@@ -1,6 +1,7 @@
 import { ref } from "vue";
 import { presetLabel, type CwdPreset } from "../components/presets";
 import type { Launcher } from "../components/launchers";
+import type { UserMcpServer } from "../components/userMcp";
 
 // The custom attention-sound file is a SINGLETON ref shared across every
 // useAppConfig() caller — the beep player lives in the single view while the
@@ -16,6 +17,10 @@ const prRepos = ref<string[]>([]);
 // Cell-launcher commands (shell/codex/…) — SINGLETON so the grid's cell launchers and
 // the settings editor (openable from either view) share one list.
 const launchers = ref<Launcher[]>([]);
+
+// User-added HTTP MCP servers merged into the single-view session's --mcp-config —
+// SINGLETON like the others.
+const userMcpServers = ref<UserMcpServer[]>([]);
 
 // Pre-#163 recent dirs lived in localStorage (the removed useRecentDirs). They are
 // imported once into the server-side preset list on load — see migrateLegacyRecents.
@@ -59,6 +64,7 @@ export function useAppConfig() {
       soundFile.value = typeof c.soundFile === "string" ? c.soundFile : null;
       prRepos.value = Array.isArray(c.prRepos) ? c.prRepos : [];
       launchers.value = Array.isArray(c.launchers) ? c.launchers : [];
+      userMcpServers.value = Array.isArray(c.userMcpServers) ? c.userMcpServers : [];
       await migrateLegacyRecents();
     } catch {
       // the app still works; presets are just unavailable
@@ -205,12 +211,29 @@ export function useAppConfig() {
     }
   }
 
+  // Persist the user MCP servers. POSTs only userMcpServers (partial update).
+  async function saveUserMcpServers(next: UserMcpServer[]): Promise<boolean> {
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userMcpServers: next }),
+      });
+      if (!res.ok) throw new Error(`save failed (${res.status})`);
+      userMcpServers.value = (await res.json()).userMcpServers ?? [];
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   return {
     defaultCwd,
     home,
     presets,
     prRepos,
     launchers,
+    userMcpServers,
     soundFile,
     saving,
     error,
@@ -221,5 +244,6 @@ export function useAppConfig() {
     saveSound,
     savePrRepos,
     saveLaunchers,
+    saveUserMcpServers,
   };
 }
