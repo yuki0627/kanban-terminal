@@ -9,6 +9,8 @@ import {
   buildDockerRunArgs,
   writeSandboxClaudeConfig,
   sandboxClaudeConfigPath,
+  parseMountConfigNames,
+  resolveSandboxAuthArgs,
 } from "./sandbox";
 
 describe("rewriteLoopbackForDocker", () => {
@@ -79,5 +81,37 @@ describe("writeSandboxClaudeConfig", () => {
     expect(cfg.hasCompletedOnboarding).toBe(true);
     expect(cfg.projects["/Users/me/proj"]).toMatchObject({ hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true });
     expect(cfg.installMethod).toBeUndefined(); // no `native` install → no "missing or broken" warning
+  });
+});
+
+describe("parseMountConfigNames (credentials allowlist)", () => {
+  it("keeps only the known names (gh, gitconfig), drops unknown/blank", () => {
+    expect(parseMountConfigNames("gh, gitconfig")).toEqual(["gh", "gitconfig"]);
+    expect(parseMountConfigNames("gh,evil,../etc,gitconfig")).toEqual(["gh", "gitconfig"]);
+    expect(parseMountConfigNames("")).toEqual([]);
+    expect(parseMountConfigNames(undefined)).toEqual([]);
+  });
+});
+
+describe("resolveSandboxAuthArgs (opt-in, env-gated)", () => {
+  const prevConfigs = process.env.SANDBOX_MOUNT_CONFIGS;
+  const prevSsh = process.env.SANDBOX_SSH_AGENT_FORWARD;
+  afterEach(() => {
+    if (prevConfigs === undefined) delete process.env.SANDBOX_MOUNT_CONFIGS;
+    else process.env.SANDBOX_MOUNT_CONFIGS = prevConfigs;
+    if (prevSsh === undefined) delete process.env.SANDBOX_SSH_AGENT_FORWARD;
+    else process.env.SANDBOX_SSH_AGENT_FORWARD = prevSsh;
+  });
+  it("is empty when neither env is set (no impact by default)", () => {
+    delete process.env.SANDBOX_MOUNT_CONFIGS;
+    delete process.env.SANDBOX_SSH_AGENT_FORWARD;
+    expect(resolveSandboxAuthArgs()).toEqual([]);
+  });
+  it("forwards the ssh-agent socket read-only when SANDBOX_SSH_AGENT_FORWARD=1", () => {
+    delete process.env.SANDBOX_MOUNT_CONFIGS;
+    process.env.SANDBOX_SSH_AGENT_FORWARD = "1";
+    const args = resolveSandboxAuthArgs();
+    expect(args).toContain("/run/host-services/ssh-auth.sock:/ssh-agent");
+    expect(args).toContain("SSH_AUTH_SOCK=/ssh-agent");
   });
 });

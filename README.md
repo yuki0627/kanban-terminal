@@ -156,6 +156,14 @@ Windows (host paths aren't valid Linux container paths) it falls back to the hos
 both are follow-ups. Adding arbitrary user MCP servers to the sandbox is in progress
 (see #202).
 
+**Host credentials (opt-in).** By default the sandbox has no host credentials. To let the
+sandboxed Claude use `gh`/`git`, set **`SANDBOX_MOUNT_CONFIGS=gh,gitconfig`** — a **fixed
+allowlist** (you pick names, never arbitrary paths): `gh` mounts `~/.config/gh` read-only
+and passes a `GH_TOKEN` (from `gh auth token`, since macOS keeps it in the Keychain), and
+`gitconfig` mounts `~/.gitconfig` read-only. Set **`SANDBOX_SSH_AGENT_FORWARD=1`** to
+forward the SSH agent socket (the keys never enter the container). Both are read only when
+building the sandbox spawn, so they have no effect unless `MULMOTERMINAL_SANDBOX` is on.
+
 ---
 
 ## Tech stack
