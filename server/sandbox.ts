@@ -10,7 +10,7 @@
 // Verified in Phase 0 (#202): a sandboxed claude authenticates via the mounted ~/.claude
 // and connects to the host GUI MCP over host.docker.internal.
 import { spawnSync } from "node:child_process";
-import { writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
@@ -95,6 +95,61 @@ export function cleanupSandbox(sessionId: string): void {
   rmSync(sandboxClaudeConfigPath(sessionId), { force: true });
 }
 
+// --- Opt-in host credentials for the sandbox ---
+// A FIXED allowlist: the user picks names via SANDBOX_MOUNT_CONFIGS (comma-separated),
+// never arbitrary paths, and each is mounted READ-ONLY. macOS-scoped like the sandbox.
+const CONFIG_MOUNTS: Record<string, { host: () => string; container: string }> = {
+  gh: { host: () => path.join(os.homedir(), ".config", "gh"), container: `${CONTAINER_HOME}/.config/gh` },
+  gitconfig: { host: () => path.join(os.homedir(), ".gitconfig"), container: `${CONTAINER_HOME}/.gitconfig` },
+};
+
+// Known allowlist names from the csv; unknown names dropped and duplicates collapsed
+// (a repeated name would otherwise emit a duplicate -v mount and fail `docker run`).
+export function parseMountConfigNames(csv: string | undefined): string[] {
+  const names = (csv ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    // Object.hasOwn, not `in`: `in` would accept prototype keys (__proto__, constructor,
+    // toString) whose CONFIG_MOUNTS[name] has no .host() → a startup crash from env input.
+    .filter((s) => Object.hasOwn(CONFIG_MOUNTS, s));
+  return [...new Set(names)];
+}
+
+function runCapture(bin: string, args: string[]): { status: number | null; stdout: string } {
+  const r = spawnSync(bin, args, { encoding: "utf8" });
+  return { status: r.status, stdout: r.stdout ?? "" };
+}
+
+// gh on macOS keeps its token in the Keychain (not ~/.config/gh/hosts.yml), so mounting
+// the config dir alone won't authenticate gh / git-over-https. Best-effort: pass the
+// token as GH_TOKEN so it works inside the container.
+function ghTokenArgs(): string[] {
+  const r = runCapture("gh", ["auth", "token"]);
+  const token = r.status === 0 ? r.stdout.trim() : "";
+  return token ? ["-e", `GH_TOKEN=${token}`] : [];
+}
+
+// Docker Desktop (macOS) exposes the host ssh-agent at this fixed in-VM socket path.
+const DESKTOP_SSH_SOCK = "/run/host-services/ssh-auth.sock";
+
+// Extra `docker run` args for opt-in host credentials (all env-gated + read-only). Only
+// reached from buildDockerRunArgs (the sandbox path), so it has no effect otherwise.
+export function resolveSandboxAuthArgs(): string[] {
+  const args: string[] = [];
+  for (const name of parseMountConfigNames(process.env.SANDBOX_MOUNT_CONFIGS)) {
+    const m = CONFIG_MOUNTS[name];
+    const host = m.host();
+    if (existsSync(host)) args.push("-v", `${host}:${m.container}:ro`);
+    if (name === "gh") args.push(...ghTokenArgs());
+  }
+  if (process.env.SANDBOX_SSH_AGENT_FORWARD === "1") {
+    // The socket lives inside Docker Desktop's VM, not the host FS — don't existsSync it.
+    // `:ro` keeps the read-only guarantee; agent forwarding is socket I/O, not file writes.
+    args.push("-v", `${DESKTOP_SSH_SOCK}:/ssh-agent:ro`, "-e", "SSH_AUTH_SOCK=/ssh-agent");
+  }
+  return args;
+}
+
 // The `docker run` argv that runs interactive `claude` in the sandbox. The workspace is
 // bind-mounted at its SAME absolute path so claude's transcript encodes identically to
 // the host (~/.claude/projects/<encoded-cwd>) — resume interoperates with host sessions.
@@ -121,6 +176,8 @@ export function buildDockerRunArgs(sessionId: string, claudeArgs: string[], cwd:
     `${claudeDir}:${CONTAINER_HOME}/.claude`,
     "-v",
     `${claudeConfigPath}:${CONTAINER_HOME}/.claude.json`,
+    // Opt-in host credentials (gh / gitconfig / SSH agent) — empty unless env-enabled.
+    ...resolveSandboxAuthArgs(),
     "-w",
     cwd,
     IMAGE,
