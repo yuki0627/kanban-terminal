@@ -1,3 +1,23 @@
+# kanban-terminal
+
+A kanban board over live [Claude Code](https://claude.com/claude-code) terminal
+sessions: every session is a card, and hook-driven agent activity moves cards
+between lanes automatically — real work pulls a card to **In Progress**, and the
+moment the agent needs a human it lands in **In Review**. To Do / Done / Canceled
+are human decisions, reached by dragging; a manually finished card is protected
+from being pulled back by status noise. Open a card to work in its live terminal
+(the board is the `/kanban` view in the toolbar).
+
+Built as a fork of [MulmoTerminal](https://github.com/receptron/mulmoterminal)
+(MIT, by [receptron](https://github.com/receptron)), which provides the terminal
+foundation this project deliberately does NOT rebuild: real server-side PTYs,
+tmux-backed persistence (sessions survive server restarts), three-tier session
+resume (live PTY → tmux reattach → `claude --resume`), and hook-driven
+working/waiting activity streaming. Everything below this line is inherited
+from MulmoTerminal and still applies.
+
+---
+
 # mulmoterminal
 
 A browser-based terminal for running [Claude Code](https://claude.com/claude-code)

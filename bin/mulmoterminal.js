@@ -24,21 +24,22 @@ const MAX_BIND_RETRIES = 5;
 // server/index.ts (PORT_IN_USE_EXIT_CODE).
 const PORT_IN_USE_EXIT_CODE = 75;
 
-// Single source of truth: read the version from the shipped package.json so
-// `--version` never drifts from the published version.
-const { version: VERSION } = createRequire(import.meta.url)("../package.json");
+// Single source of truth: read the version AND name from the shipped
+// package.json so `--version`, the log prefix, and the update check never
+// drift from the published package (the launcher itself is fork-agnostic).
+const { version: VERSION, name: PKG_NAME } = createRequire(import.meta.url)("../package.json");
 
-const log = (msg) => console.log(`\x1b[36m[mulmoterminal]\x1b[0m ${msg}`);
-const error = (msg) => console.error(`\x1b[31m[mulmoterminal]\x1b[0m ${msg}`);
+const log = (msg) => console.log(`\x1b[36m[${PKG_NAME}]\x1b[0m ${msg}`);
+const error = (msg) => console.error(`\x1b[31m[${PKG_NAME}]\x1b[0m ${msg}`);
 
 // Non-blocking notice when a newer version is published — `npm i -g` never
 // auto-updates. Opt out via MULMOTERMINAL_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
 function checkForUpdate() {
   if (process.env.MULMOTERMINAL_NO_UPDATE_CHECK || process.env.NO_UPDATE_NOTIFIER) return;
-  fetchLatestVersion()
+  fetchLatestVersion(PKG_NAME)
     .then((latest) => {
       if (latest && isNewerVersion(latest, VERSION)) {
-        log(`\x1b[33mUpdate available: ${VERSION} → ${latest}  ·  run: npm i -g mulmoterminal\x1b[0m`);
+        log(`\x1b[33mUpdate available: ${VERSION} → ${latest}  ·  run: npm i -g ${PKG_NAME}\x1b[0m`);
       }
     })
     .catch(() => {

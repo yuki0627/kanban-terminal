@@ -1,24 +1,24 @@
 {
-  "name": "mulmoterminal",
-  "version": "0.6.2",
-  "description": "MulmoTerminal — browser terminal + GUI panel for Claude Code. One command to start.",
+  "name": "kanban-terminal02",
+  "version": "0.1.0",
+  "description": "kanban-terminal — a kanban board over Claude Code terminal sessions, built on MulmoTerminal. One command to start.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/receptron/mulmoterminal.git"
+    "url": "git+https://github.com/townfm/kanban-terminal02.git"
   },
   "keywords": [
     "claude",
     "claude-code",
     "terminal",
-    "gui",
+    "kanban",
     "ai",
     "agent",
-    "mulmoterminal"
+    "kanban-terminal"
   ],
   "bin": {
-    "mulmoterminal": "bin/mulmoterminal.js"
+    "kanban-terminal02": "bin/mulmoterminal.js"
   },
   "files": [
     "bin/",
