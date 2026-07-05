@@ -91,6 +91,9 @@ describe("parseMountConfigNames (credentials allowlist)", () => {
     expect(parseMountConfigNames("")).toEqual([]);
     expect(parseMountConfigNames(undefined)).toEqual([]);
   });
+  it("collapses duplicate names (no duplicate -v mount → no docker error)", () => {
+    expect(parseMountConfigNames("gh,gh,gitconfig,gh")).toEqual(["gh", "gitconfig"]);
+  });
 });
 
 describe("resolveSandboxAuthArgs (opt-in, env-gated)", () => {

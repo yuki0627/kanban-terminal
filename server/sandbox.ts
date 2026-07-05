@@ -103,12 +103,14 @@ const CONFIG_MOUNTS: Record<string, { host: () => string; container: string }> =
   gitconfig: { host: () => path.join(os.homedir(), ".gitconfig"), container: `${CONTAINER_HOME}/.gitconfig` },
 };
 
-// Known allowlist names from the csv; unknown names are dropped (pure — for tests).
+// Known allowlist names from the csv; unknown names dropped and duplicates collapsed
+// (a repeated name would otherwise emit a duplicate -v mount and fail `docker run`).
 export function parseMountConfigNames(csv: string | undefined): string[] {
-  return (csv ?? "")
+  const names = (csv ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s in CONFIG_MOUNTS);
+  return [...new Set(names)];
 }
 
 function runCapture(bin: string, args: string[]): { status: number | null; stdout: string } {
