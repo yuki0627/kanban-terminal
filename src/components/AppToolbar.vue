@@ -44,7 +44,8 @@ const { isOpen: prsOpen } = usePrsView();
 const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
 
 const inGrid = computed(() => route.name === "terminals");
-const inSingle = computed(() => !inGrid.value);
+const inKanban = computed(() => route.name === "kanban");
+const inSingle = computed(() => !inGrid.value && !inKanban.value);
 const chatActive = computed(() => inSingle.value && browseView.value.mode === "closed" && !accountingOpen.value && !wikiOpen.value && !prsOpen.value);
 const collectionsActive = computed(() => browseView.value.mode === "index" && browseView.value.kind === "collection");
 const accountingActive = computed(() => accountingOpen.value);
@@ -59,6 +60,9 @@ function showChat(): void {
 }
 function showGrid(): void {
   router.push("/terminals");
+}
+function showKanban(): void {
+  router.push("/kanban");
 }
 function showCollections(): void {
   browseGotoIndex("collection");
@@ -79,13 +83,16 @@ function showPrs(): void {
 
 <template>
   <header class="toolbar">
-    <span class="toolbar-title">MulmoTerminal</span>
+    <span class="toolbar-title">kanban-terminal</span>
     <nav class="launcher" aria-label="Views">
       <button type="button" class="launcher-btn" :class="{ active: chatActive }" title="Chat" aria-label="Chat" @click="showChat">
         <span class="material-symbols-outlined">chat</span>
       </button>
       <button type="button" class="launcher-btn" :class="{ active: inGrid }" title="Grid (multiple terminals)" aria-label="Grid view" @click="showGrid">
         <span class="material-symbols-outlined">grid_view</span>
+      </button>
+      <button type="button" class="launcher-btn" :class="{ active: inKanban }" title="Kanban board" aria-label="Kanban board" @click="showKanban">
+        <span class="material-symbols-outlined">view_kanban</span>
       </button>
       <button type="button" class="launcher-btn" :class="{ active: collectionsActive }" title="Collections" aria-label="Collections" @click="showCollections">
         <span class="material-symbols-outlined">apps</span>

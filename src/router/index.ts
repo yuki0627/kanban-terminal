@@ -15,6 +15,8 @@ const Stub = defineComponent({ name: "RouteStub", render: () => null });
 export const routes: RouteRecordRaw[] = [
   { path: "/", name: "chat", component: Stub },
   { path: "/terminals", name: "terminals", component: Stub },
+  // Kanban board: sessions as cards in lanes, auto-moved by agent activity.
+  { path: "/kanban", name: "kanban", component: Stub },
   { path: "/collections", name: "collections", component: Stub },
   { path: "/collections/:slug", name: "collectionDetail", component: Stub },
   { path: "/feeds", name: "feeds", component: Stub },

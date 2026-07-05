@@ -13,6 +13,7 @@ import WikiBrowseOverlay from "./components/WikiBrowseOverlay.vue";
 import PrsOverlay from "./components/PrsOverlay.vue";
 import FilesOverlay from "./components/FilesOverlay.vue";
 import GridView from "./components/GridView.vue";
+import KanbanView from "./components/KanbanView.vue";
 import SettingsModal from "./components/SettingsModal.vue";
 import AppToolbar from "./components/AppToolbar.vue";
 import { useSessions, type Filter } from "./composables/useSessions";
@@ -30,6 +31,7 @@ import { useUnloadGuard, reportActiveTerminals } from "./composables/useUnloadGu
 // (chat + the collection/accounting overlays) lives under the single-view shell.
 const route = useRoute();
 const isGrid = computed(() => route.name === "terminals");
+const isKanban = computed(() => route.name === "kanban");
 
 // A script picked from the terminal header's Run menu runs in the grid (command
 // cells live only there): stash it and switch to the grid, which picks it up.
@@ -261,6 +263,7 @@ function onSession(id: string) {
 
 <template>
   <GridView v-if="isGrid" />
+  <KanbanView v-else-if="isKanban" />
   <div v-else class="shell">
     <AppToolbar @settings="showSettings = true" />
     <div :class="['app', layout === 'horizontal' ? 'app-horizontal' : 'app-vertical']">
