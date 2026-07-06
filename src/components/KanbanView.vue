@@ -166,11 +166,9 @@ function createCard() {
 
 // ---- expanded overlay ----
 const connectKey = ref(0);
-const startedCards = ref(new Set<string>());
 const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
 const activeCard = computed(() => state.value.cards.find((c) => c.id === state.value.expanded) ?? null);
 const overlayOpen = computed(() => activeCard.value !== null);
-const terminalStarted = computed(() => !!activeCard.value && (startedCards.value.has(activeCard.value.id) || !!activeCard.value.terminal.sessionId));
 const overlaySlot = computed(() => (activeCard.value ? `card-${activeCard.value.id}` : "card-none"));
 const nameDraft = ref("");
 const memoDraft = ref("");
@@ -191,29 +189,18 @@ function openCard(cardId: string) {
 function closeOverlay() {
   state.value = setExpanded(state.value, null);
 }
-function startTerminal() {
-  const card = activeCard.value;
-  if (!card) return;
-  const next = new Set(startedCards.value);
-  next.add(card.id);
-  startedCards.value = next;
-  connectKey.value++;
-}
 function onTerminalSession(sessionId: string) {
   const card = activeCard.value;
   if (!card) return;
   commit(updateCard(state.value, card.id, { terminal: { ...card.terminal, sessionId } }));
   void loadMemory();
 }
-function terminateCardTerminal() {
+function restartCardTerminal() {
   const card = activeCard.value;
   if (!card) return;
   terminalRef.value?.terminate();
-  const nextStarted = new Set(startedCards.value);
-  nextStarted.delete(card.id);
-  startedCards.value = nextStarted;
   commit(updateCard(state.value, card.id, { terminal: { ...card.terminal, sessionId: null } }));
-  void loadMemory();
+  connectKey.value++;
 }
 function saveCardText() {
   const card = activeCard.value;
@@ -221,7 +208,7 @@ function saveCardText() {
   commit(updateCard(state.value, card.id, { name: nameDraft.value.trim() || card.name, memo: memoDraft.value }));
 }
 
-watch(terminalStarted, (open) => reportActiveTerminals("kanban", open ? 1 : 0), { immediate: true });
+watch(overlayOpen, (open) => reportActiveTerminals("kanban", open ? 1 : 0), { immediate: true });
 
 // ---- memory visibility ----
 const memoryBySession = ref(new Map<string, number>());
@@ -387,11 +374,11 @@ onUnmounted(() => {
             v-if="activeCard.terminal.sessionId"
             type="button"
             class="overlay-close"
-            title="Terminate terminal"
-            aria-label="Terminate terminal"
-            @click="terminateCardTerminal"
+            title="Restart terminal"
+            aria-label="Restart terminal"
+            @click="restartCardTerminal"
           >
-            <span class="material-symbols-outlined">stop_circle</span>
+            <span class="material-symbols-outlined">restart_alt</span>
           </button>
           <button type="button" class="overlay-close" title="Close card" aria-label="Close card" @click="closeOverlay">
             <span class="material-symbols-outlined">close</span>
@@ -401,7 +388,6 @@ onUnmounted(() => {
           <textarea v-model="memoDraft" class="memo" placeholder="Memo" aria-label="Memo" @change="saveCardText" />
           <div class="terminal-panel">
             <TerminalView
-              v-if="terminalStarted"
               ref="terminalRef"
               :key="overlaySlot"
               class="overlay-terminal"
@@ -414,10 +400,6 @@ onUnmounted(() => {
               :connect-key="connectKey"
               @session="onTerminalSession"
             />
-            <button v-else type="button" class="start-terminal" @click="startTerminal">
-              <span class="material-symbols-outlined">terminal</span>
-              <span>Start terminal</span>
-            </button>
           </div>
         </div>
       </div>
@@ -778,25 +760,6 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
 }
-.start-terminal {
-  margin: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-base);
-  color: var(--text);
-  cursor: pointer;
-}
-.start-terminal:hover {
-  background: var(--bg-hover);
-}
-.start-terminal .material-symbols-outlined {
-  font-size: 18px;
-}
-
 .create-card {
   width: min(460px, 92vw);
   display: flex;

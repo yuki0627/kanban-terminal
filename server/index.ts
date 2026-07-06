@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
 import { mountBoardRoutes } from "./board-routes.js";
-import { applyCardStatus, loadBoard, saveBoard, type CellStatus } from "./board-store.js";
+import { applyCardStatus, loadBoard, saveBoard, type BoardState, type Card, type CellStatus } from "./board-store.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
@@ -100,6 +100,9 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 // "default" / "acceptEdits" / "bypassPermissions" / "plan") when needed.
 const CLAUDE_PERMISSION_MODE = process.env.CLAUDE_PERMISSION_MODE || "auto";
 const CLAUDE_CWD = process.env.CLAUDE_CWD || process.cwd();
+const DEFAULT_LAUNCH_CMD = process.env.SHELL || "/bin/sh";
+const PTY_COLS = 120;
+const PTY_ROWS = 30;
 
 // CLAUDE_CWD is the workspace used as the PTY cwd and as the root for persisted
 // session state, so it must exist before we spawn anything into it.
@@ -264,6 +267,51 @@ function bindTerminalSessionToCard(cardId: string, sessionId: string, cwd: strin
     cards: board.cards.map((c) => (c.id === cardId ? { ...c, terminal: nextTerminal, updatedAt: Date.now() } : c)),
   };
   if (saveBoard(next)) publishBoardUpdate();
+}
+
+function cardWorkspace(board: BoardState, card: Card): string {
+  if (card.terminal.cwd) return resolveWorkspace(card.terminal.cwd);
+  const projectRoot = card.projectId ? board.projects.find((p) => p.id === card.projectId)?.root : null;
+  return resolveWorkspace(projectRoot ?? os.homedir());
+}
+
+function cardTerminalAlive(sessionId: string | null): boolean {
+  return !!sessionId && (ptys.has(sessionId) || tmuxHasSession(sessionId));
+}
+
+function ensureCardTerminal(board: BoardState, card: Card): Card {
+  const cwd = cardWorkspace(board, card);
+  if (card.archived) return card;
+  if (cardTerminalAlive(card.terminal.sessionId)) {
+    if (card.terminal.sessionId) {
+      cardTerminalSessions.add(card.terminal.sessionId);
+      terminalSessionToCard.set(card.terminal.sessionId, card.id);
+    }
+    return card.terminal.cwd === cwd ? card : { ...card, terminal: { ...card.terminal, cwd, agentKind: "shell" }, updatedAt: Date.now() };
+  }
+
+  const sessionId = randomUUID();
+  cardTerminalSessions.add(sessionId);
+  terminalSessionToCard.set(sessionId, card.id);
+  try {
+    spawnLauncherPty(sessionId, null, DEFAULT_LAUNCH_CMD, cwd, card.id);
+  } catch (err) {
+    console.error(`[card-terminal] failed to start shell for ${card.id}: ${messageOf(err)}`);
+    cardTerminalSessions.delete(sessionId);
+    terminalSessionToCard.delete(sessionId);
+    return card;
+  }
+  return { ...card, terminal: { ...card.terminal, sessionId, agentKind: "shell", cwd }, updatedAt: Date.now() };
+}
+
+function ensureBoardTerminals(board: BoardState): BoardState {
+  let changed = false;
+  const cards = board.cards.map((card) => {
+    const next = ensureCardTerminal(board, card);
+    changed ||= next !== card;
+    return next;
+  });
+  return changed ? { ...board, cards } : board;
 }
 
 // Tear down a session's PTY and bookkeeping, then notify subscribers. The
@@ -887,11 +935,19 @@ app.get("/api/memory", async (_req, res) => {
 
 const server = http.createServer(app);
 pubsub = createPubSub(server, isAllowedOrigin);
-mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions });
+mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions, prepareBoard: ensureBoardTerminals });
 
 // Wire the notification REST surface for the toolbar bell.
 await initNotifier({ workspace: CLAUDE_CWD, pubsub });
 await ensureClaudeShim();
+{
+  const board = loadBoard();
+  const prepared = ensureBoardTerminals(board);
+  if (prepared !== board) {
+    saveBoard(prepared);
+    hydrateCardTerminalSessions();
+  }
+}
 
 const processPollTimer = setInterval(pollCardProcessSignals, 2000);
 processPollTimer.unref?.();
@@ -975,9 +1031,6 @@ function sanitizeDraftText(text: string): string {
 // opposite: it is NOT auto-submitted — once claude's UI is ready the text is typed
 // into the input box (no Enter) so the user can review / edit / send it. Pass one or
 // the other, never both.
-const PTY_COLS = 120;
-const PTY_ROWS = 30;
-
 // pty.spawn with the binary as a PARAMETER (never a string literal at the call site),
 // so the tmux/shell/claude spawns aren't flagged as spawn-of-a-string-literal.
 function spawnPty(bin: string, args: string[], cwd: string): IPty {
@@ -1160,7 +1213,7 @@ function resolveLauncher(index: number): { label: string; command: string } | nu
 // transcript, or resume. The command is run via the login shell with `exec` so it
 // becomes the single foreground process ($SHELL, codex, etc.) — env vars in the
 // command (e.g. $SHELL) expand, and the process stays interactive in the PTY.
-function spawnLauncherPty(sessionId: string, ws: WebSocket, command: string, cwd: string, cardId: string | null = null): PtyEntry {
+function spawnLauncherPty(sessionId: string, ws: WebSocket | null, command: string, cwd: string, cardId: string | null = null): PtyEntry {
   const isWindows = process.platform === "win32";
   const shell = isWindows ? "powershell.exe" : process.env.SHELL || "/bin/bash";
   const launchCommand = cardId ? withCardShellEnv(command, cardId, sessionId) : command;
@@ -1364,8 +1417,6 @@ function closeWithError(ws: WebSocket, message: string): void {
 // The command a launcher runs when spawned fresh. On a tmux reattach it's ignored
 // (tmux new-session -A attaches the running program), so a surviving session with no
 // resolvable launcher index still reattaches via this harmless fallback.
-const DEFAULT_LAUNCH_CMD = process.env.SHELL || "/bin/sh";
-
 // Reattach a same-process live PTY, else spawn a launcher (which itself reattaches a
 // surviving tmux session or creates one). `command` is the resolved launcher command,
 // or the fallback for a tmux reattach with no launcher index.
