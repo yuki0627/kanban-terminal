@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Archive UI proposals</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --page: #0f141b;
+        --page-ink: #d7dee8;
+        --page-muted: #8f9aaa;
+        --window: #0b1117;
+        --titlebar: #0a1016;
+        --sidebar: #151b23;
+        --sidebar-line: #2b343f;
+        --board: #10161e;
+        --lane: #141b24;
+        --lane-line: #262f3a;
+        --card: #1b232d;
+        --card-line: #303b47;
+        --text: #d8e2ed;
+        --muted: #93a0b0;
+        --dim: #5c6675;
+        --blue: #4d8dfb;
+        --blue-text: #bcd3ff;
+        --blue-bg: #16233d;
+        --amber: #e2a53a;
+        --amber-text: #f2d6a2;
+        --amber-bg: #2c2413;
+        --green: #34b56f;
+        --purple: #8b7bf0;
+        --red: #e0596a;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--page-ink);
+        background: var(--page);
+      }
+
+      .page {
+        display: grid;
+        gap: 28px;
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 28px 24px 60px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .brief {
+        display: grid;
+        gap: 8px;
+        max-width: 920px;
+      }
+
+      .brief h1 {
+        font-size: 22px;
+      }
+
+      .brief p {
+        color: var(--page-muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .proposal {
+        display: grid;
+        gap: 10px;
+      }
+
+      .proposal-head {
+        display: grid;
+        gap: 4px;
+      }
+
+      .proposal-head h2 {
+        color: #eef3fa;
+        font-size: 16px;
+      }
+
+      .proposal-head p {
+        color: var(--page-muted);
+        font-size: 12.5px;
+        line-height: 1.6;
+        max-width: 760px;
+      }
+
+      .tradeoffs {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+
+      .tradeoffs b {
+        color: var(--page-ink);
+        font-weight: 600;
+      }
+
+      .mock-window {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid #2b3441;
+        border-radius: 12px;
+        background: var(--window);
+        box-shadow: 0 18px 40px rgb(0 0 0 / 34%);
+      }
+
+      .native-bar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        height: 40px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--sidebar-line);
+        background: var(--titlebar);
+      }
+
+      .traffic {
+        display: flex;
+        gap: 8px;
+      }
+
+      .traffic span {
+        width: 11px;
+        height: 11px;
+        border-radius: 999px;
+      }
+
+      .traffic .red {
+        background: #ff4d5a;
+      }
+
+      .traffic .yellow {
+        background: #ffc21a;
+      }
+
+      .traffic .green {
+        background: #30ce55;
+      }
+
+      .native-bar .title {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .app-frame {
+        display: grid;
+        grid-template-columns: 190px minmax(0, 1fr);
+        height: 460px;
+      }
+
+      .sidebar {
+        display: grid;
+        align-content: start;
+        gap: 2px;
+        padding: 14px 10px;
+        border-right: 1px solid var(--sidebar-line);
+        background: var(--sidebar);
+      }
+
+      .sidebar-title {
+        padding: 0 8px 8px;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+      }
+
+      .project-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 8px;
+        border-radius: 7px;
+        font-size: 12.5px;
+      }
+
+      .project-row.active {
+        background: #1d2632;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        flex-shrink: 0;
+      }
+
+      .dot.blue {
+        background: var(--blue);
+      }
+
+      .dot.green {
+        background: var(--green);
+      }
+
+      .dot.purple {
+        background: var(--purple);
+      }
+
+      .dot.gray {
+        background: var(--dim);
+      }
+
+      .board-area {
+        position: relative;
+        display: grid;
+        grid-template-rows: 44px minmax(0, 1fr);
+        min-width: 0;
+        background: var(--board);
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--lane-line);
+      }
+
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 26px;
+        padding: 0 9px;
+        border-radius: 7px;
+        border: 1px solid var(--card-line);
+        background: #1a222c;
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+
+      .icon-btn.highlight {
+        border-color: #3a4658;
+        color: var(--page-ink);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 15px;
+        height: 15px;
+        padding: 0 4px;
+        border-radius: 999px;
+        background: var(--amber);
+        color: #241a06;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .lanes {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 1px;
+        background: var(--lane-line);
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .lane {
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        padding: 10px 8px;
+        background: var(--lane);
+        overflow: hidden;
+      }
+
+      .lane-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 10.5px;
+        color: var(--dim);
+        letter-spacing: 0.04em;
+        padding: 0 2px 2px;
+      }
+
+      .card {
+        display: grid;
+        gap: 4px;
+        padding: 8px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--card-line);
+        background: var(--card);
+        font-size: 11.5px;
+      }
+
+      .card .name {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--page-ink);
+      }
+
+      .card .memo {
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+
+      .card.working {
+        border-color: #345389;
+      }
+
+      .card.review {
+        border-color: #6b5a2a;
+      }
+
+      /* ---- shared archive-list styling (used across proposals) ---- */
+      .arc-row {
+        display: grid;
+        grid-template-columns: 16px 8px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 9px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--card-line);
+        background: #171e27;
+        font-size: 12px;
+      }
+
+      .arc-row .name {
+        color: var(--page-ink);
+      }
+
+      .arc-row .meta {
+        color: var(--dim);
+        font-size: 10.5px;
+      }
+
+      .chk {
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        border: 1px solid #445168;
+        background: #131924;
+      }
+
+      .chk.on {
+        background: var(--blue);
+        border-color: var(--blue);
+      }
+
+      .restore-btn {
+        padding: 4px 9px;
+        border-radius: 6px;
+        border: 1px solid #3a4658;
+        background: #1e2733;
+        color: var(--page-ink);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+
+      .search {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 7px;
+        border: 1px solid var(--card-line);
+        background: #10161f;
+        color: var(--dim);
+        font-size: 11.5px;
+      }
+
+      /* ---- A: right-side drawer ---- */
+      .scrim {
+        position: absolute;
+        inset: 44px 0 0 0;
+        background: rgb(6 9 13 / 55%);
+      }
+
+      .drawer {
+        position: absolute;
+        top: 44px;
+        right: 0;
+        bottom: 0;
+        width: 300px;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+        gap: 10px;
+        padding: 14px;
+        border-left: 1px solid var(--lane-line);
+        background: #121822;
+        box-shadow: -18px 0 34px rgb(0 0 0 / 40%);
+      }
+
+      .drawer h3 {
+        font-size: 13px;
+        color: var(--page-ink);
+      }
+
+      .drawer-list {
+        display: grid;
+        gap: 7px;
+        align-content: start;
+        overflow: hidden;
+      }
+
+      .bulk-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: var(--blue-bg);
+        color: var(--blue-text);
+        font-size: 11px;
+      }
+
+      /* ---- B: dedicated overlay ---- */
+      .overlay {
+        position: absolute;
+        inset: 44px 16px 16px;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+        gap: 12px;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid #33405233;
+        background: #10151d;
+        box-shadow: 0 24px 60px rgb(0 0 0 / 55%);
+      }
+
+      .overlay-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .filter-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .chip {
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--card-line);
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .chip.active {
+        border-color: var(--blue);
+        color: var(--blue-text);
+        background: var(--blue-bg);
+      }
+
+      .tile-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        align-content: start;
+        overflow: hidden;
+      }
+
+      .tile {
+        display: grid;
+        gap: 6px;
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid var(--card-line);
+        background: #171e27;
+        font-size: 11.5px;
+      }
+
+      .tile .name {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--page-ink);
+      }
+
+      .tile .memo {
+        color: var(--muted);
+        font-size: 10.5px;
+        line-height: 1.4;
+      }
+
+      .tile .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 2px;
+        color: var(--dim);
+        font-size: 10px;
+      }
+
+      /* ---- C: end-of-lanes collapsible band ---- */
+      .lanes-with-band {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr)) 168px;
+        gap: 1px;
+        background: var(--lane-line);
+        overflow: hidden;
+      }
+
+      .band {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 8px;
+        padding: 10px 8px;
+        background: #12171f;
+      }
+
+      .band-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 10.5px;
+        color: var(--dim);
+      }
+
+      .band .card {
+        opacity: 0.62;
+        filter: grayscale(35%);
+      }
+
+      .band-collapsed {
+        position: absolute;
+        top: 44px;
+        right: 0;
+        bottom: 0;
+        width: 34px;
+        display: grid;
+        justify-items: center;
+        align-content: start;
+        gap: 10px;
+        padding-top: 14px;
+        background: #12171f;
+        border-left: 1px solid var(--lane-line);
+        color: var(--dim);
+        font-size: 10px;
+        writing-mode: vertical-rl;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="brief">
+        <h1 id="page-title">Archive UI proposals</h1>
+        <p>
+          <code>docs/00-goal.md</code> の確認済み仕様「Archive はレーンとは別のカード属性。archived
+          カードは通常ボードから消え、ボード右上の Archive 一覧から開く・復元できる。Archive
+          まわりの UI は使い勝手を工夫すること」に対する 3 案。いずれもボード右上に入口を置き、
+          カードを Archive しても他のレーンには影響しない前提は共通。並び順(数字)は優劣ではなく比較のための番号。
+        </p>
+      </section>
+
+      <!-- ============ Proposal 1: Right-side drawer ============ -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <h2>1. 右上トレイ + ドロワー</h2>
+          <p>
+            ツールバー右端の Archive アイコン(件数バッジ付き)をクリックすると、ボードを覆わずに右側からドロワーが
+            スライドイン。検索・複数選択・一括 Restore を備えるが、幅は控えめで「ちょっと覗いて戻す」用途に向く。
+          </p>
+        </div>
+        <div class="tradeoffs">
+          <span><b>強み:</b> ボードを離れない・開閉が軽い・実装コストが低い</span>
+          <span><b>弱み:</b> 件数が多いとスクロールが長くなる・プレビュー情報が少ない</span>
+        </div>
+        <div class="mock-window">
+          <div class="native-bar">
+            <div class="traffic"><span class="red"></span><span class="yellow"></span><span class="green"></span></div>
+            <div class="title">kanban-terminal</div>
+          </div>
+          <div class="app-frame">
+            <aside class="sidebar">
+              <div class="sidebar-title">PROJECTS</div>
+              <div class="project-row active"><span class="dot blue"></span>kanban-terminal</div>
+              <div class="project-row"><span class="dot green"></span>wave-score</div>
+              <div class="project-row"><span class="dot gray"></span>Project なし</div>
+            </aside>
+            <div class="board-area">
+              <div class="toolbar">
+                <button class="icon-btn">♪ 通知音</button>
+                <button class="icon-btn highlight">🗄 Archive <span class="badge">7</span></button>
+                <button class="icon-btn">⚙ Settings</button>
+              </div>
+              <div class="lanes">
+                <div class="lane">
+                  <div class="lane-head">TO DO</div>
+                  <div class="card"><div class="name">README 更新</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">IN PROGRESS</div>
+                  <div class="card working"><div class="name">◆ フックレス化</div><div class="memo">claude 実行中</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">IN REVIEW</div>
+                  <div class="card review"><div class="name">◆ Archive UI 検討</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">DONE</div>
+                  <div class="card"><div class="name">Projects sidebar</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">CANCELED</div>
+                </div>
+              </div>
+              <div class="scrim"></div>
+              <div class="drawer">
+                <h3>Archive (7)</h3>
+                <div class="search">🔍 検索…</div>
+                <div class="drawer-list">
+                  <div class="arc-row">
+                    <span class="chk on"></span><span class="dot blue"></span>
+                    <span class="name">旧: worktree 実験</span>
+                    <button class="restore-btn">Restore</button>
+                  </div>
+                  <div class="arc-row">
+                    <span class="chk"></span><span class="dot green"></span>
+                    <span class="name">wave-score バグ修正</span>
+                    <button class="restore-btn">Restore</button>
+                  </div>
+                  <div class="arc-row">
+                    <span class="chk"></span><span class="dot gray"></span>
+                    <span class="name">お試し: vim 設定</span>
+                    <button class="restore-btn">Restore</button>
+                  </div>
+                  <div class="arc-row">
+                    <span class="chk"></span><span class="dot blue"></span>
+                    <span class="name">npm publish 準備</span>
+                    <button class="restore-btn">Restore</button>
+                  </div>
+                </div>
+                <div class="bulk-bar"><span>1 件選択中</span><span>まとめて Restore</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- ============ Proposal 2: Dedicated overlay ============ -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <h2>2. 専用オーバーレイ + 検索・フィルタ</h2>
+          <p>
+            カード展開ウィンドウと同じ視覚言語(オーバーレイ)で、ほぼ全画面の専用ビューを開く。カードはタイル状で
+            memo の抜粋・archived 日時まで見え、Project フィルタとテキスト検索を上部に常設。件数が多くなるプロジェクトの
+            「昔のカードを探して戻す」用途に強い。
+          </p>
+        </div>
+        <div class="tradeoffs">
+          <span><b>強み:</b> 情報密度が高い・大量カードでも探しやすい・展開ウィンドウと一貫した体験</span>
+          <span><b>弱み:</b> 開閉のステップがドロワーよりやや重い・実装コストが中〜大</span>
+        </div>
+        <div class="mock-window">
+          <div class="native-bar">
+            <div class="traffic"><span class="red"></span><span class="yellow"></span><span class="green"></span></div>
+            <div class="title">kanban-terminal</div>
+          </div>
+          <div class="app-frame">
+            <aside class="sidebar">
+              <div class="sidebar-title">PROJECTS</div>
+              <div class="project-row active"><span class="dot blue"></span>kanban-terminal</div>
+              <div class="project-row"><span class="dot green"></span>wave-score</div>
+              <div class="project-row"><span class="dot gray"></span>Project なし</div>
+            </aside>
+            <div class="board-area">
+              <div class="toolbar">
+                <button class="icon-btn">♪ 通知音</button>
+                <button class="icon-btn highlight">🗄 Archive <span class="badge">7</span></button>
+                <button class="icon-btn">⚙ Settings</button>
+              </div>
+              <div class="lanes">
+                <div class="lane">
+                  <div class="lane-head">TO DO</div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">IN PROGRESS</div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">IN REVIEW</div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">DONE</div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">CANCELED</div>
+                </div>
+              </div>
+              <div class="overlay">
+                <div class="overlay-head">
+                  <h3>Archive — 7 件</h3>
+                  <div class="search" style="width: 220px">🔍 検索…</div>
+                </div>
+                <div class="filter-row">
+                  <span class="chip active">すべて</span>
+                  <span class="chip">kanban-terminal</span>
+                  <span class="chip">wave-score</span>
+                  <span class="chip">Project なし</span>
+                </div>
+                <div class="tile-grid">
+                  <div class="tile">
+                    <div class="name"><span class="dot blue"></span>旧: worktree 実験</div>
+                    <div class="memo">worktree 隔離を試した名残。使い道なし。</div>
+                    <div class="footer"><span>7/1 archived</span><button class="restore-btn">Restore</button></div>
+                  </div>
+                  <div class="tile">
+                    <div class="name"><span class="dot green"></span>wave-score バグ修正</div>
+                    <div class="memo">スコア集計のオフバイワン修正、リリース済み。</div>
+                    <div class="footer"><span>6/28 archived</span><button class="restore-btn">Restore</button></div>
+                  </div>
+                  <div class="tile">
+                    <div class="name"><span class="dot gray"></span>お試し: vim 設定</div>
+                    <div class="memo">dotfiles の実験用シェル。</div>
+                    <div class="footer"><span>6/20 archived</span><button class="restore-btn">Restore</button></div>
+                  </div>
+                </div>
+                <div class="bulk-bar"><span>0 件選択中</span><span>まとめて Restore</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- ============ Proposal 3: End-of-lanes collapsible band ============ -->
+      <article class="proposal">
+        <div class="proposal-head">
+          <h2>3. レーン末尾の折りたたみ帯</h2>
+          <p>
+            5 レーンの右端に、Archive を「6 本目のレーンのような帯」として常設する。既定は折りたたみ(薄い縦帯 +
+            件数)で、クリックで展開するとグレースケールのカードが並ぶ。ドラッグでレーンへ戻す操作も同じ盤面上で完結する
+            — モーダルを開かないぶん「ボードは一枚」という一目性を最も壊さない案。
+          </p>
+        </div>
+        <div class="tradeoffs">
+          <span><b>強み:</b> ボードの一体感を保つ・ドラッグ操作の一貫性・折りたたみ時は場所を取らない</span>
+          <span><b>弱み:</b> 展開時にレーン表示が狭くなる・検索/フィルタは別途置き場が必要</span>
+        </div>
+        <div class="mock-window">
+          <div class="native-bar">
+            <div class="traffic"><span class="red"></span><span class="yellow"></span><span class="green"></span></div>
+            <div class="title">kanban-terminal</div>
+          </div>
+          <div class="app-frame">
+            <aside class="sidebar">
+              <div class="sidebar-title">PROJECTS</div>
+              <div class="project-row active"><span class="dot blue"></span>kanban-terminal</div>
+              <div class="project-row"><span class="dot green"></span>wave-score</div>
+              <div class="project-row"><span class="dot gray"></span>Project なし</div>
+            </aside>
+            <div class="board-area">
+              <div class="toolbar">
+                <button class="icon-btn">♪ 通知音</button>
+                <button class="icon-btn">⚙ Settings</button>
+              </div>
+              <div class="lanes-with-band">
+                <div class="lane">
+                  <div class="lane-head">TO DO</div>
+                  <div class="card"><div class="name">README 更新</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">IN PROGRESS</div>
+                  <div class="card working"><div class="name">◆ フックレス化</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">IN REVIEW</div>
+                  <div class="card review"><div class="name">◆ Archive UI 検討</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">DONE</div>
+                  <div class="card"><div class="name">Projects sidebar</div></div>
+                </div>
+                <div class="lane">
+                  <div class="lane-head">CANCELED</div>
+                </div>
+                <div class="band">
+                  <div class="band-head"><span>ARCHIVE · 7</span><span>▸ 折りたたむ</span></div>
+                  <div style="display: grid; gap: 6px; overflow: hidden">
+                    <div class="card"><div class="name">旧: worktree 実験</div></div>
+                    <div class="card"><div class="name">wave-score バグ修正</div></div>
+                    <div class="card"><div class="name">お試し: vim 設定</div></div>
+                    <div class="card"><div class="name">npm publish 準備</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </main>
+  </body>
+</html>
