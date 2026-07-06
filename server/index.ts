@@ -11,6 +11,7 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
+import { mountBoardRoutes } from "./board-routes.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
@@ -26,7 +27,7 @@ import {
 } from "./transcript.js";
 import { mountOpenDirRoute } from "./open-dir.js";
 import { mountGitRemoteRoute } from "./gitRemote.js";
-import { mountPickFileRoute } from "./pick-file.js";
+import { mountPickFileRoute, mountPickDirectoryRoute } from "./pick-file.js";
 import { initNotifier, mountNotificationRoutes } from "./backends/notifier.js";
 import { SPA_FALLBACK_RE } from "./spa-fallback.js";
 
@@ -548,6 +549,7 @@ mountGitRemoteRoute(app, { isAllowedOrigin });
 // path(s) — how a browser tab inserts a real filesystem path into the terminal
 // (the browser hides paths from drag/drop and <input type=file>).
 mountPickFileRoute(app, { isAllowedOrigin });
+mountPickDirectoryRoute(app, { isAllowedOrigin });
 
 // GRID-ONLY (dev_tool): initial per-session status + last prompt, so a grid cell
 // can render its header immediately (live updates then arrive via the "sessions"
@@ -684,6 +686,7 @@ app.get("/api/sessions", async (req, res) => {
 
 const server = http.createServer(app);
 pubsub = createPubSub(server, isAllowedOrigin);
+mountBoardRoutes(app, { pubsub });
 
 // Wire the notification REST surface for the toolbar bell.
 await initNotifier({ workspace: CLAUDE_CWD, pubsub });

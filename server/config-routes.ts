@@ -13,10 +13,12 @@ import { loadAppConfig, saveAppConfig, sanitizeSoundFile, sanitizeLaunchers, typ
 const CONFIG_FILE = path.join(os.homedir(), ".mulmoterminal", "config.json");
 let config: AppConfig = loadAppConfig(CONFIG_FILE);
 
-// The launch commands a grid cell offers — read live so /ws/launch resolves a launcher
-// index against the current list without a restart.
+const BUILTIN_LAUNCHERS: Launcher[] = [{ label: "Shell", command: process.env.SHELL || "/bin/sh" }];
+
+// The launch commands a card offers — read live so /ws/launch resolves a launcher
+// index against the current list without a restart. Index 0 is the built-in shell.
 export function getLaunchers(): Launcher[] {
-  return config.launchers;
+  return [...BUILTIN_LAUNCHERS, ...config.launchers];
 }
 
 export function mountConfigRoutes(app: Express, claudeCwd: string): void {
@@ -25,7 +27,7 @@ export function mountConfigRoutes(app: Express, claudeCwd: string): void {
       cwd: claudeCwd,
       cwdPresets: config.cwdPresets,
       soundFile: config.soundFile,
-      launchers: config.launchers,
+      launchers: getLaunchers(),
       home: os.homedir(),
     });
   });
@@ -53,7 +55,7 @@ export function mountConfigRoutes(app: Express, claudeCwd: string): void {
       cwd: claudeCwd,
       cwdPresets: config.cwdPresets,
       soundFile: config.soundFile,
-      launchers: config.launchers,
+      launchers: getLaunchers(),
     });
   });
 
