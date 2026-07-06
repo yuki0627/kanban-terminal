@@ -24,6 +24,7 @@ const props = defineProps<{
   cwd?: string | null;
   devTerminal?: boolean;
   cardTerminal?: boolean;
+  cardId?: string | null;
   command?: { index: number } | null;
   // A configured launcher (shell/codex/command) — persistent & reattachable, connects
   // to /ws/launch instead of resuming a Claude session.
@@ -53,6 +54,7 @@ function currentTarget(): conn.ConnTarget {
     cwd: props.cwd ?? null,
     devTerminal: !!props.devTerminal,
     cardTerminal: !!props.cardTerminal,
+    cardId: props.cardId ?? null,
     command: props.command ?? null,
     launcher: props.launcher ?? null,
   };

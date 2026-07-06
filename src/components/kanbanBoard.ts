@@ -1,6 +1,6 @@
-// The kanban board maps terminal-backed cards into five lanes and moves Claude
-// cards automatically as live agent activity changes. To Do / Done / Canceled
-// remain human decisions; idle is the absence of a signal, never a destination.
+// The kanban board maps terminal-backed cards into five lanes. Process and agent
+// signals move cards automatically; To Do / Done / Canceled remain human decisions.
+// idle is the absence of a signal, never a destination.
 
 import type { CellStatus } from "./activityStatus";
 
@@ -97,7 +97,7 @@ function parseCard(raw: unknown): KanbanCard | null {
     unread: raw.unread === true,
     terminal: {
       sessionId,
-      agentKind: isAgentKind(terminal.agentKind) ? terminal.agentKind : "claude",
+      agentKind: isAgentKind(terminal.agentKind) ? terminal.agentKind : "shell",
       cwd: typeof terminal.cwd === "string" ? terminal.cwd : null,
     },
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : now,

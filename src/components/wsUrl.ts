@@ -8,14 +8,16 @@ export interface TerminalWsUrlInput {
   cwd?: string | null; // launch in this directory
   devTerminal?: boolean; // grid dev terminal: keep it out of the chat sidebar
   cardTerminal?: boolean; // kanban card terminal: never idle-reap on detach
+  cardId?: string | null; // kanban card id for server-side board signals
 }
 
-export function buildTerminalWsUrl({ host, secure, sessionId, cwd, devTerminal, cardTerminal }: TerminalWsUrlInput): string {
+export function buildTerminalWsUrl({ host, secure, sessionId, cwd, devTerminal, cardTerminal, cardId }: TerminalWsUrlInput): string {
   const params = new URLSearchParams();
   if (sessionId) params.set("session", sessionId);
   if (cwd) params.set("cwd", cwd);
   if (devTerminal) params.set("dev", "1");
   if (cardTerminal) params.set("card", "1");
+  if (cardId) params.set("cardId", cardId);
   const qs = params.toString();
   const suffix = qs ? `?${qs}` : "";
   const proto = secure ? "wss:" : "ws:";
@@ -47,17 +49,19 @@ export interface LaunchWsUrlInput {
   cwd?: string | null;
   launcher: number; // position in the configured launcher list (the server resolves it)
   cardTerminal?: boolean;
+  cardId?: string | null;
 }
 
 // The launcher-terminal endpoint (a configured shell/codex/command). Persistent &
 // reattachable like /ws: the browser sends the launcher INDEX (config is the allowlist)
 // plus the session id to reattach. On a cold spawn the server resolves the index.
-export function buildLaunchWsUrl({ host, secure, sessionId, cwd, launcher, cardTerminal }: LaunchWsUrlInput): string {
+export function buildLaunchWsUrl({ host, secure, sessionId, cwd, launcher, cardTerminal, cardId }: LaunchWsUrlInput): string {
   const params = new URLSearchParams();
   if (sessionId) params.set("session", sessionId);
   if (cwd) params.set("cwd", cwd);
   params.set("launcher", String(launcher));
   if (cardTerminal) params.set("card", "1");
+  if (cardId) params.set("cardId", cardId);
   const proto = secure ? "wss:" : "ws:";
   return `${proto}//${host}/ws/launch?${params.toString()}`;
 }

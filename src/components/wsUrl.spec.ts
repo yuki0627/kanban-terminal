@@ -21,8 +21,10 @@ describe("buildTerminalWsUrl", () => {
   });
 
   it("marks kanban card terminals", () => {
-    const url = buildTerminalWsUrl({ host: "h", secure: false, sessionId: null, cardTerminal: true });
-    expect(new URL(url).searchParams.get("card")).toBe("1");
+    const url = buildTerminalWsUrl({ host: "h", secure: false, sessionId: null, cardTerminal: true, cardId: "card-1" });
+    const params = new URL(url).searchParams;
+    expect(params.get("card")).toBe("1");
+    expect(params.get("cardId")).toBe("card-1");
   });
 
   it("fresh session (null id): no session param", () => {
@@ -74,8 +76,10 @@ describe("buildLaunchWsUrl", () => {
   });
 
   it("marks launcher card terminals", () => {
-    const url = buildLaunchWsUrl({ host: "h", secure: false, sessionId: null, launcher: 0, cardTerminal: true });
-    expect(new URL(url).searchParams.get("card")).toBe("1");
+    const url = buildLaunchWsUrl({ host: "h", secure: false, sessionId: null, launcher: 0, cardTerminal: true, cardId: "card-1" });
+    const params = new URL(url).searchParams;
+    expect(params.get("card")).toBe("1");
+    expect(params.get("cardId")).toBe("card-1");
   });
 
   it("uses wss when secure", () => {

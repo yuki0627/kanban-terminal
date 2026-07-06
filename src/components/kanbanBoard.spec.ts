@@ -57,6 +57,11 @@ describe("initialKanbanState", () => {
     expect(restored.projects[0]).toMatchObject({ id: "p1", root: "/work/app", sidebarVisible: true });
     expect(restored.cards[0]).toMatchObject({ id: "c1", terminal: { sessionId: "s1", agentKind: "claude", cwd: null } });
   });
+
+  it("defaults untyped cards to shell terminals", () => {
+    const restored = initialKanbanState({ cards: [{ id: "c1", name: "Task" }] });
+    expect(restored.cards[0].terminal.agentKind).toBe("shell");
+  });
 });
 
 describe("applyStatus", () => {

@@ -12,8 +12,8 @@ import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
 import { mountBoardRoutes } from "./board-routes.js";
-import { loadBoard } from "./board-store.js";
-import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
+import { applyCardStatus, loadBoard, saveBoard, type CellStatus } from "./board-store.js";
+import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
@@ -111,6 +111,7 @@ const MULMOTERMINAL_HOME = path.join(os.homedir(), ".mulmoterminal");
 // anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
 // a value that claude re-parses as a flag) into the spawned process.
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CARD_ID_RE = /^[A-Za-z0-9_.:-]{1,160}$/;
 
 // Session ids that belong to the multi-terminal GRID — dev terminals, spawned with
 // dev=1 (see the query handling in the WS connection handler). They're
@@ -128,10 +129,18 @@ const DEV_TERMINAL_SESSIONS_FILE = path.join(MULMOTERMINAL_HOME, "dev-terminal-s
 // underlying PTY. Hydrate persisted card session ids and mark fresh card sockets
 // carrying ?card=1 before spawning.
 const cardTerminalSessions = new Set<string>();
+const terminalSessionToCard = new Map<string, string>();
+const agentSessionToCard = new Map<string, string>();
+const l2StatusBySession = new Map<string, CellStatus>();
+const l3StatusByCard = new Map<string, CellStatus>();
 function hydrateCardTerminalSessions(): void {
   cardTerminalSessions.clear();
+  terminalSessionToCard.clear();
   for (const card of loadBoard().cards) {
-    if (card.terminal.sessionId) cardTerminalSessions.add(card.terminal.sessionId);
+    if (card.terminal.sessionId) {
+      cardTerminalSessions.add(card.terminal.sessionId);
+      terminalSessionToCard.set(card.terminal.sessionId, card.id);
+    }
   }
 }
 hydrateCardTerminalSessions();
@@ -224,6 +233,39 @@ const OUTPUT_BUFFER_LIMIT = 64 * 1024;
 // Assigned once the HTTP server exists (createPubSub needs it).
 let pubsub: ReturnType<typeof createPubSub> | null = null;
 
+const BOARD_CHANNEL = "board";
+const CLAUDE_SHIM_DIR = path.join(os.homedir(), ".kanban-terminal", "shims");
+
+function sanitizeCardId(cardId: string | null): string | null {
+  return cardId && CARD_ID_RE.test(cardId) ? cardId : null;
+}
+
+function publishBoardUpdate(): void {
+  hydrateCardTerminalSessions();
+  pubsub?.publish(BOARD_CHANNEL, {});
+}
+
+function applyBoardSignal(cardId: string, status: CellStatus): void {
+  const board = loadBoard();
+  const next = applyCardStatus(board, cardId, status);
+  if (next === board) return;
+  if (saveBoard(next)) publishBoardUpdate();
+}
+
+function bindTerminalSessionToCard(cardId: string, sessionId: string, cwd: string): void {
+  terminalSessionToCard.set(sessionId, cardId);
+  const board = loadBoard();
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card) return;
+  const nextTerminal = { ...card.terminal, sessionId, agentKind: "shell" as const, cwd };
+  if (card.terminal.sessionId === sessionId && card.terminal.cwd === cwd && card.terminal.agentKind === "shell") return;
+  const next = {
+    ...board,
+    cards: board.cards.map((c) => (c.id === cardId ? { ...c, terminal: nextTerminal, updatedAt: Date.now() } : c)),
+  };
+  if (saveBoard(next)) publishBoardUpdate();
+}
+
 // Tear down a session's PTY and bookkeeping, then notify subscribers. The
 // `activity` entry is dropped too — UNLESS it still carries `waiting`, which is
 // what keeps a finished/needs-attention background session bold (via its
@@ -308,6 +350,9 @@ function reap(id: string) {
   if (!entry) return; // already reaped
   ptys.delete(id);
   cardTerminalSessions.delete(id);
+  terminalSessionToCard.delete(id);
+  agentSessionToCard.delete(id);
+  l2StatusBySession.delete(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
@@ -374,11 +419,72 @@ function setWaiting(id: string, waiting: boolean, event?: string) {
   if (waiting) armReapForDetached(id);
 }
 
+async function ensureClaudeShim(): Promise<void> {
+  const shim = `#!/bin/sh
+shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+real=""
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+  [ -n "$dir" ] || dir=.
+  [ "$dir" = "$shim_dir" ] && continue
+  if [ -x "$dir/claude" ]; then
+    real="$dir/claude"
+    break
+  fi
+done
+IFS=$old_ifs
+if [ -z "$real" ]; then
+  echo "kanban-terminal: real claude command not found after PATH shim" >&2
+  exit 127
+fi
+
+has_session=0
+has_settings=0
+for arg in "$@"; do
+  case "$arg" in
+    --session-id|--session-id=*|--resume|--resume=*) has_session=1 ;;
+    --settings|--settings=*) has_settings=1 ;;
+  esac
+done
+
+extra_args=""
+if [ "$has_session" -eq 0 ]; then
+  if command -v uuidgen >/dev/null 2>&1; then
+    sid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  else
+    sid=$(node -e 'console.log(require("crypto").randomUUID())')
+  fi
+  extra_args="$extra_args --session-id $sid"
+fi
+
+settings=\${KANBAN_TERMINAL_CLAUDE_SETTINGS:-}
+if [ "$has_settings" -eq 0 ] && [ -n "$settings" ]; then
+  set -- --settings "$settings" "$@"
+fi
+
+if [ -n "$extra_args" ]; then
+  # shellcheck disable=SC2086
+  exec "$real" $extra_args "$@"
+fi
+exec "$real" "$@"
+`;
+  await fs.mkdir(CLAUDE_SHIM_DIR, { recursive: true });
+  const file = path.join(CLAUDE_SHIM_DIR, "claude");
+  await fs.writeFile(file, shim, { mode: 0o755 });
+  // eslint-disable-next-line sonarjs/file-permissions -- the PATH shim must be executable by the current user.
+  await fs.chmod(file, 0o755);
+}
+
 // Hook config injected via `claude --settings <json>`. Each event POSTs the full
 // hook payload to /api/hook. UserPromptSubmit => working, Stop => idle,
 // Notification => waiting for input.
 function hookSettingsJson(host: string = "localhost") {
-  const cmd = `curl -s -X POST http://${host}:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
+  const injectCardId =
+    `node -e 'const fs=require("fs");const raw=fs.readFileSync(0,"utf8");` +
+    `const body=raw?JSON.parse(raw):{};const card=process.env.KANBAN_TERMINAL_CARD_ID;` +
+    `if(card) body.card_id=card;process.stdout.write(JSON.stringify(body));'`;
+  const cmd = `${injectCardId} | curl -s -X POST http://${host}:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
   const entry = [{ hooks: [{ type: "command", command: cmd }] }];
   return JSON.stringify({
     hooks: {
@@ -414,6 +520,63 @@ function resolveWorkspace(cwd: string | null): string {
     }
   }
   return CLAUDE_CWD;
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+function withCardShellEnv(command: string, cardId: string, sessionId: string): string {
+  const pathValue = `${CLAUDE_SHIM_DIR}${path.delimiter}${process.env.PATH ?? ""}`;
+  const env = {
+    PATH: pathValue,
+    KANBAN_TERMINAL_CARD_ID: cardId,
+    KANBAN_TERMINAL_TERMINAL_SESSION_ID: sessionId,
+    KANBAN_TERMINAL_CLAUDE_SETTINGS: hookSettingsJson(),
+  };
+  const assignments = Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`);
+  return `env ${assignments.join(" ")} ${command}`;
+}
+
+const SHELL_COMMANDS = new Set(
+  ["sh", "bash", "zsh", "fish", "nu", "xonsh", "dash", "ksh", "tcsh", "csh", "powershell", "pwsh", path.basename(process.env.SHELL || "")]
+    .filter(Boolean)
+    .map((v) => v.toLowerCase()),
+);
+const CLAUDE_COMMANDS = new Set(["claude", path.basename(CLAUDE_BIN)].filter(Boolean).map((v) => v.toLowerCase()));
+
+function normalizedCommand(command: string): string {
+  return path.basename(command).toLowerCase();
+}
+
+function isShellCommand(command: string): boolean {
+  return SHELL_COMMANDS.has(normalizedCommand(command));
+}
+
+function isClaudeCommand(command: string): boolean {
+  const base = normalizedCommand(command);
+  return CLAUDE_COMMANDS.has(base) || base.includes("claude");
+}
+
+function suppressL2Signal(cardId: string, command: string, status: CellStatus): boolean {
+  return status === "working" && isClaudeCommand(command) && l3StatusByCard.has(cardId);
+}
+
+function pollOneCardProcess(sessionId: string): void {
+  const cardId = terminalSessionToCard.get(sessionId);
+  if (!cardId) return;
+  const command = tmuxPaneCurrentCommand(sessionId);
+  if (!command) return;
+  const status: CellStatus = isShellCommand(command) ? "done" : "working";
+  const previous = l2StatusBySession.get(sessionId);
+  l2StatusBySession.set(sessionId, status);
+  if (previous === status || suppressL2Signal(cardId, command, status)) return;
+  if (!previous && status !== "working") return;
+  applyBoardSignal(cardId, status);
+}
+
+function pollCardProcessSignals(): void {
+  if (tmuxAvailable()) for (const sessionId of cardTerminalSessions) pollOneCardProcess(sessionId);
 }
 
 // The most recent user prompt from a resumed session's on-disk transcript, so a
@@ -489,17 +652,25 @@ app.get(SPA_FALLBACK_RE, (_req, res) => res.sendFile(path.join(__dirname, "../di
 
 // Activity hooks update a session's working / needs-attention flags.
 // `foreground` (a ws is attached => being viewed) suppresses the attention flag.
-function handleActivityHook(sessionId: string, event: string, foreground: boolean) {
+function handleActivityHook(sessionId: string, event: string, foreground: boolean, cardId: string | null) {
+  let cardStatus: CellStatus | null = null;
   if (event === "UserPromptSubmit") {
     setWorking(sessionId, true, event);
+    cardStatus = "working";
   } else if (event === "Stop") {
     // A background session that finished a turn has output the user hasn't seen
     // yet (and is ready for another message) — flag it for attention.
     if (!foreground) setWaiting(sessionId, true, event);
     setWorking(sessionId, false, event);
+    cardStatus = "done";
   } else if (event === "Notification") {
     // Background session waiting for input (permission / question / idle).
     if (!foreground) setWaiting(sessionId, true, event);
+    cardStatus = "blocked";
+  }
+  if (cardId && cardStatus) {
+    l3StatusByCard.set(cardId, cardStatus);
+    applyBoardSignal(cardId, cardStatus);
   }
 }
 
@@ -525,6 +696,9 @@ app.post("/api/hook", async (req, res) => {
   const sessionId = body.session_id;
   const event = body.hook_event_name;
   if (sessionId) {
+    const hookCardId = sanitizeCardId(typeof body.card_id === "string" ? body.card_id : null);
+    if (hookCardId) agentSessionToCard.set(sessionId, hookCardId);
+    const cardId = hookCardId ?? agentSessionToCard.get(sessionId) ?? null;
     const entry = ptys.get(sessionId);
     const foreground = !!(entry && entry.ws);
     // Update the displayed prompt BEFORE handleActivityHook so the activity publish
@@ -533,7 +707,7 @@ app.post("/api/hook", async (req, res) => {
       const cwd = typeof body.cwd === "string" ? body.cwd : entry?.cwd;
       await trackPromptForHeader(sessionId, body.prompt.trim().slice(0, LAST_PROMPT_CAP), cwd);
     }
-    handleActivityHook(sessionId, event, foreground);
+    handleActivityHook(sessionId, event, foreground, cardId);
     console.log(`[hook] ${event} for ${sessionId}`);
   }
   res.json({ ok: true });
@@ -717,6 +891,10 @@ mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions });
 
 // Wire the notification REST surface for the toolbar bell.
 await initNotifier({ workspace: CLAUDE_CWD, pubsub });
+await ensureClaudeShim();
+
+const processPollTimer = setInterval(pollCardProcessSignals, 2000);
+processPollTimer.unref?.();
 
 // Terminal WebSocket. Uses noServer + manual upgrade routing so it shares the
 // HTTP server with socket.io (the pub/sub at /ws/pubsub) without the two
@@ -982,10 +1160,11 @@ function resolveLauncher(index: number): { label: string; command: string } | nu
 // transcript, or resume. The command is run via the login shell with `exec` so it
 // becomes the single foreground process ($SHELL, codex, etc.) — env vars in the
 // command (e.g. $SHELL) expand, and the process stays interactive in the PTY.
-function spawnLauncherPty(sessionId: string, ws: WebSocket, command: string, cwd: string): PtyEntry {
+function spawnLauncherPty(sessionId: string, ws: WebSocket, command: string, cwd: string, cardId: string | null = null): PtyEntry {
   const isWindows = process.platform === "win32";
   const shell = isWindows ? "powershell.exe" : process.env.SHELL || "/bin/bash";
-  const args = isWindows ? ["-NoLogo", "-Command", command] : ["-lc", `exec ${command}`];
+  const launchCommand = cardId ? withCardShellEnv(command, cardId, sessionId) : command;
+  const args = isWindows ? ["-NoLogo", "-Command", launchCommand] : ["-lc", `exec ${launchCommand}`];
   // Persistent: reattaches a surviving tmux session (command ignored) or creates one.
   const { term, tmux } = ptySpawn(sessionId, shell, args, cwd, true);
   console.log(`[pty] spawned launcher (pid=${term.pid}${tmux ? " via tmux" : ""}) in ${cwd}: ${command}`);
@@ -1190,9 +1369,44 @@ const DEFAULT_LAUNCH_CMD = process.env.SHELL || "/bin/sh";
 // Reattach a same-process live PTY, else spawn a launcher (which itself reattaches a
 // surviving tmux session or creates one). `command` is the resolved launcher command,
 // or the fallback for a tmux reattach with no launcher index.
-function startLaunchEntry(sessionId: string, ws: WebSocket, live: PtyEntry | undefined, command: string, cwd: string): PtyEntry {
+function startLaunchEntry(sessionId: string, ws: WebSocket, live: PtyEntry | undefined, command: string, cwd: string, cardId: string | null): PtyEntry {
   if (live) return reattachPty(live, ws, sessionId);
-  return spawnLauncherPty(sessionId, ws, command, cwd);
+  return spawnLauncherPty(sessionId, ws, command, cwd, cardId);
+}
+
+interface LaunchRequest {
+  requested: string | null;
+  cwd: string;
+  index: number;
+  isCardTerminal: boolean;
+  cardId: string | null;
+}
+
+function parseLaunchRequest(req: http.IncomingMessage): LaunchRequest {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const raw = url.searchParams.get("session");
+  const indexRaw = url.searchParams.get("launcher");
+  const isCardTerminal = url.searchParams.get("card") === "1";
+  return {
+    requested: raw && SESSION_ID_RE.test(raw) ? raw : null,
+    cwd: resolveWorkspace(url.searchParams.get("cwd")),
+    index: indexRaw !== null && /^\d+$/.test(indexRaw) ? Number(indexRaw) : NaN,
+    isCardTerminal,
+    cardId: isCardTerminal ? sanitizeCardId(url.searchParams.get("cardId")) : null,
+  };
+}
+
+function resolveLaunchState(requested: string | null): { live: PtyEntry | undefined; tmuxAlive: boolean; sessionId: string } {
+  const reattachId = requested && ptys.has(requested) ? requested : null;
+  const live = reattachId ? ptys.get(reattachId) : undefined;
+  const tmuxAlive = !live && !!requested && tmuxHasSession(requested);
+  const sessionId = reattachId ?? (tmuxAlive && requested ? requested : randomUUID());
+  return { live, tmuxAlive, sessionId };
+}
+
+function resolveLaunchCommand(live: PtyEntry | undefined, tmuxAlive: boolean, index: number): string | null {
+  if (live || tmuxAlive) return DEFAULT_LAUNCH_CMD;
+  return resolveLauncher(index)?.command ?? null;
 }
 
 // Launcher terminal (?launcher=<index>&cwd=<dir>, ?session=<id> to reattach): run a
@@ -1200,32 +1414,20 @@ function startLaunchEntry(sessionId: string, ws: WebSocket, live: PtyEntry | und
 // lifecycle (reattach + reap grace + handleClientClose) but with no hooks/transcript,
 // and is marked a dev-terminal session so it stays out of the unscoped session list.
 runLaunchWss.on("connection", (ws, req) => {
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const raw = url.searchParams.get("session");
-  const requested = raw && SESSION_ID_RE.test(raw) ? raw : null;
-  const cwd = resolveWorkspace(url.searchParams.get("cwd"));
-  const indexRaw = url.searchParams.get("launcher");
-  const index = indexRaw !== null && /^\d+$/.test(indexRaw) ? Number(indexRaw) : NaN;
-  const isCardTerminal = url.searchParams.get("card") === "1";
+  const request = parseLaunchRequest(req);
+  const { live, tmuxAlive, sessionId } = resolveLaunchState(request.requested);
+  const command = resolveLaunchCommand(live, tmuxAlive, request.index);
+  if (!command) return closeWithError(ws, "Launcher not found — check Settings → Launch commands.");
 
-  const reattachId = requested && ptys.has(requested) ? requested : null;
-  const live = reattachId ? ptys.get(reattachId) : undefined;
-  // A tmux session that outlived a server restart: reattach it (keep the id; the
-  // running program is picked up via `tmux new-session -A`, ignoring the command).
-  const tmuxAlive = !live && !!requested && tmuxHasSession(requested);
-  // A live PTY / surviving tmux session reattaches regardless of the index; only a fresh
-  // spawn needs the launcher resolved (the pty already IS the chosen program on reattach).
-  const launcher = live || tmuxAlive ? null : resolveLauncher(index);
-  if (!live && !tmuxAlive && !launcher) return closeWithError(ws, "Launcher not found — check Settings → Launch commands.");
-
-  const sessionId = reattachId ?? (tmuxAlive && requested ? requested : randomUUID());
-  if (isCardTerminal) cardTerminalSessions.add(sessionId);
+  const effectiveCwd = live?.cwd ?? request.cwd;
+  if (request.isCardTerminal) cardTerminalSessions.add(sessionId);
+  if (request.cardId) bindTerminalSessionToCard(request.cardId, sessionId, effectiveCwd);
   markDevTerminalSession(sessionId);
-  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd: live?.cwd ?? cwd }));
+  ws.send(JSON.stringify({ type: "session", id: sessionId, cwd: effectiveCwd }));
 
   let entry: PtyEntry;
   try {
-    entry = startLaunchEntry(sessionId, ws, live, launcher?.command ?? DEFAULT_LAUNCH_CMD, cwd);
+    entry = startLaunchEntry(sessionId, ws, live, command, request.cwd, request.cardId);
   } catch (err) {
     console.error(`[ws/launch] failed to start ${sessionId}: ${messageOf(err)}`);
     return closeWithError(ws, "Failed to start the launch command.");

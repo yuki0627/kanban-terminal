@@ -3,21 +3,18 @@ import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import AppToolbar from "./AppToolbar.vue";
 import SettingsModal from "./SettingsModal.vue";
 import TerminalView from "./Terminal.vue";
-import { useSessions } from "../composables/useSessions";
 import { useAppConfig } from "../composables/useAppConfig";
 import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
-import { activityStatus, type CellStatus } from "./activityStatus";
+import type { CellStatus } from "./activityStatus";
 import {
   LANES,
   emptyKanbanState,
   initialKanbanState,
-  syncSessions,
   moveCard,
   setExpanded,
   laneCards,
   updateCard,
-  type AgentKind,
   type KanbanCard,
   type KanbanState,
   type LaneId,
@@ -71,27 +68,11 @@ function commit(next: KanbanState) {
   void persistBoard(next);
 }
 
-const { sessions, loading: sessionsLoading, error: sessionsError } = useSessions();
-watch(
-  [sessions, sessionsLoading, sessionsError, boardLoading],
-  ([list, isSessionsLoading, sessionLoadError, isBoardLoading]) => {
-    if (isBoardLoading || isSessionsLoading || sessionLoadError) return;
-    const next = syncSessions(
-      state.value,
-      list.map((s) => ({ id: s.id, status: activityStatus(s.working, s.waiting, s.event), title: s.title })),
-    );
-    if (next !== state.value) commit(next);
-  },
-  { immediate: true, deep: true },
-);
-
-const titleById = computed(() => new Map(sessions.value.map((s) => [s.id, s.title])));
-const statusById = computed(() => new Map<string, CellStatus>(sessions.value.map((s) => [s.id, activityStatus(s.working, s.waiting, s.event)])));
 function cardTitle(card: KanbanCard): string {
-  return card.name || (card.terminal.sessionId ? titleById.value.get(card.terminal.sessionId) : null) || card.id.slice(0, 8);
+  return card.name || card.id.slice(0, 8);
 }
 function cardStatus(card: KanbanCard): CellStatus {
-  return card.terminal.sessionId ? (statusById.value.get(card.terminal.sessionId) ?? "idle") : "idle";
+  return card.lastStatus;
 }
 
 // ---- projects sidebar ----
@@ -155,10 +136,10 @@ function toggleProject(projectId: string | null) {
 }
 
 // ---- card creation ----
-const creatingCard = ref<{ projectId: string | null; name: string; memo: string; agentKind: AgentKind } | null>(null);
+const creatingCard = ref<{ projectId: string | null; name: string; memo: string } | null>(null);
 const { soundFile, loadConfig, saveSound, home } = useAppConfig();
 function openCreate(projectId: string | null) {
-  creatingCard.value = { projectId, name: "", memo: "", agentKind: "claude" };
+  creatingCard.value = { projectId, name: "", memo: "" };
 }
 function createCard() {
   const draft = creatingCard.value;
@@ -168,12 +149,12 @@ function createCard() {
   const card: KanbanCard = {
     id: newId("card"),
     projectId: draft.projectId,
-    name: draft.name.trim() || (draft.agentKind === "claude" ? "New Claude task" : "New shell task"),
+    name: draft.name.trim() || "New terminal",
     memo: draft.memo,
     lane: "todo",
     archived: false,
     unread: false,
-    terminal: { sessionId: null, agentKind: draft.agentKind, cwd: project?.root ?? home.value ?? null },
+    terminal: { sessionId: null, agentKind: "shell", cwd: project?.root ?? home.value ?? null },
     createdAt: now,
     updatedAt: now,
     manual: false,
@@ -312,8 +293,8 @@ onUnmounted(() => {
   <div class="shell">
     <AppToolbar @settings="showSettings = true" />
     <div class="memory-strip" aria-label="Terminal memory">Memory {{ formatMemory(totalRssKb) }}</div>
-    <div v-if="boardError || sessionsError" class="board-error" role="alert">{{ boardError || sessionsError }}</div>
-    <div v-else-if="boardLoading || sessionsLoading" class="board-error">Loading...</div>
+    <div v-if="boardError" class="board-error" role="alert">{{ boardError }}</div>
+    <div v-else-if="boardLoading" class="board-error">Loading...</div>
     <div class="workspace">
       <aside :class="['projects', { collapsed: sidebarCollapsed }]" aria-label="Projects">
         <button
@@ -391,7 +372,6 @@ onUnmounted(() => {
               <span class="card-dot" aria-hidden="true" />
               <span class="card-title">{{ cardTitle(c) }}</span>
               <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
-              <span v-if="c.terminal.agentKind === 'shell'" class="card-kind" title="Shell">sh</span>
               <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
             </article>
           </div>
@@ -429,13 +409,14 @@ onUnmounted(() => {
               :session-id="activeCard.terminal.sessionId"
               :cwd="activeCard.terminal.cwd"
               card-terminal
-              :launcher="activeCard.terminal.agentKind === 'shell' ? { index: 0 } : null"
+              :card-id="activeCard.id"
+              :launcher="{ index: 0 }"
               :connect-key="connectKey"
               @session="onTerminalSession"
             />
             <button v-else type="button" class="start-terminal" @click="startTerminal">
               <span class="material-symbols-outlined">terminal</span>
-              <span>{{ activeCard.terminal.agentKind === "shell" ? "Start shell" : "Start Claude" }}</span>
+              <span>Start terminal</span>
             </button>
           </div>
         </div>
@@ -452,14 +433,6 @@ onUnmounted(() => {
         </header>
         <input v-model="creatingCard.name" class="field" placeholder="Card name" aria-label="Card name" @keydown.enter="createCard" />
         <textarea v-model="creatingCard.memo" class="field memo-field" placeholder="Memo" aria-label="Memo" />
-        <div class="kind-row" role="radiogroup" aria-label="Terminal kind">
-          <button type="button" class="kind-btn" :class="{ active: creatingCard.agentKind === 'claude' }" @click="creatingCard.agentKind = 'claude'">
-            Claude
-          </button>
-          <button type="button" class="kind-btn" :class="{ active: creatingCard.agentKind === 'shell' }" @click="creatingCard.agentKind = 'shell'">
-            Shell
-          </button>
-        </div>
         <div class="create-actions">
           <button type="button" class="btn" @click="creatingCard = null">Cancel</button>
           <button type="button" class="btn btn-primary" @click="createCard">Create</button>
@@ -700,12 +673,6 @@ onUnmounted(() => {
 .card.unread .card-title {
   font-weight: 700;
 }
-.card-kind {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-}
 .card-memory {
   flex: 0 0 auto;
   color: var(--text-muted);
@@ -862,24 +829,6 @@ onUnmounted(() => {
 .memo-field {
   min-height: 90px;
   resize: vertical;
-}
-.kind-row {
-  display: inline-flex;
-  align-self: flex-start;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  overflow: hidden;
-}
-.kind-btn {
-  padding: 7px 12px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.kind-btn.active {
-  background: var(--accent-bg);
-  color: var(--on-accent);
 }
 .create-actions {
   display: flex;
