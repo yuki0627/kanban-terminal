@@ -30,6 +30,7 @@ export interface ConnTarget {
   sessionId: string | null;
   cwd: string | null;
   devTerminal: boolean;
+  cardTerminal?: boolean;
   command: { index: number } | null;
   // A configured launcher (shell/codex/command). Unlike `command` this is a PERSISTENT
   // session — it reconnects on drop and reattaches by session id, like a Claude cell.
@@ -167,8 +168,9 @@ function scheduleReconnect(c: Conn) {
 function connUrl(target: ConnTarget, resumeId: string | null, secure: boolean): string {
   const host = location.host;
   if (target.command) return buildRunWsUrl({ host, secure, index: target.command.index, cwd: target.cwd });
-  if (target.launcher) return buildLaunchWsUrl({ host, secure, sessionId: resumeId, cwd: target.cwd, launcher: target.launcher.index });
-  return buildTerminalWsUrl({ host, secure, sessionId: resumeId, cwd: target.cwd, devTerminal: target.devTerminal });
+  if (target.launcher)
+    return buildLaunchWsUrl({ host, secure, sessionId: resumeId, cwd: target.cwd, launcher: target.launcher.index, cardTerminal: target.cardTerminal });
+  return buildTerminalWsUrl({ host, secure, sessionId: resumeId, cwd: target.cwd, devTerminal: target.devTerminal, cardTerminal: target.cardTerminal });
 }
 
 function connect(c: Conn) {

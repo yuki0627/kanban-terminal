@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
 import { mountBoardRoutes } from "./board-routes.js";
+import { loadBoard } from "./board-store.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
@@ -30,6 +31,7 @@ import { mountGitRemoteRoute } from "./gitRemote.js";
 import { mountPickFileRoute, mountPickDirectoryRoute } from "./pick-file.js";
 import { initNotifier, mountNotificationRoutes } from "./backends/notifier.js";
 import { SPA_FALLBACK_RE } from "./spa-fallback.js";
+import { currentProcessRows, sumProcessTreeRss } from "./process-memory.js";
 
 // Per-session activity flags, driven by Claude hooks (see /api/hook).
 interface Activity {
@@ -121,6 +123,18 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 // resume picker (/api/sessions?cwd=…) must keep listing these so they stay resumable.
 const devTerminalSessions = new Set<string>();
 const DEV_TERMINAL_SESSIONS_FILE = path.join(MULMOTERMINAL_HOME, "dev-terminal-sessions.json");
+
+// Card terminals are suspend-by-default: a detached socket must not idle-reap the
+// underlying PTY. Hydrate persisted card session ids and mark fresh card sockets
+// carrying ?card=1 before spawning.
+const cardTerminalSessions = new Set<string>();
+function hydrateCardTerminalSessions(): void {
+  cardTerminalSessions.clear();
+  for (const card of loadBoard().cards) {
+    if (card.terminal.sessionId) cardTerminalSessions.add(card.terminal.sessionId);
+  }
+}
+hydrateCardTerminalSessions();
 
 // Hydrate the set once at boot (best-effort — absent on first run / unreadable =>
 // empty). Exposed as a promise so readers/writers can wait for it: a request served
@@ -293,6 +307,7 @@ function reap(id: string) {
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
   ptys.delete(id);
+  cardTerminalSessions.delete(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
@@ -684,9 +699,21 @@ app.get("/api/sessions", async (req, res) => {
   }
 });
 
+app.get("/api/memory", async (_req, res) => {
+  try {
+    const rows = await currentProcessRows();
+    const sessions = [...ptys.entries()]
+      .filter(([id]) => cardTerminalSessions.has(id))
+      .map(([sessionId, entry]) => ({ sessionId, rssKb: sumProcessTreeRss(rows, entry.term.pid) }));
+    res.json({ totalRssKb: sessions.reduce((sum, item) => sum + item.rssKb, 0), sessions });
+  } catch (err) {
+    res.status(500).json({ error: messageOf(err) });
+  }
+});
+
 const server = http.createServer(app);
 pubsub = createPubSub(server, isAllowedOrigin);
-mountBoardRoutes(app, { pubsub });
+mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions });
 
 // Wire the notification REST surface for the toolbar bell.
 await initNotifier({ workspace: CLAUDE_CWD, pubsub });
@@ -1017,6 +1044,10 @@ function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   // Ignore if a newer client already reattached to this session.
   if (entry.ws !== ws) return;
   entry.ws = null;
+  if (cardTerminalSessions.has(sessionId)) {
+    console.log(`[ws] suspended card terminal ${sessionId}`);
+    return;
+  }
   // Keep a working session alive indefinitely, give a session that needs the user
   // the long grace, and reap a genuinely idle one after the short grace. A reload
   // reconnects in a moment and re-attaches (cancelling the reap) regardless.
@@ -1055,6 +1086,7 @@ wss.on("connection", (ws, req) => {
   const cwd = resolveWorkspace(url.searchParams.get("cwd"));
 
   const isDevTerminal = url.searchParams.get("dev") === "1";
+  const isCardTerminal = url.searchParams.get("card") === "1";
 
   // Decide the effective session id BEFORE telling the browser. A requested id
   // is honored only if it can actually be served: a live pty (reattach) or an
@@ -1065,6 +1097,7 @@ wss.on("connection", (ws, req) => {
   // re-persists, so the reload just reopens a working terminal seamlessly.
   const { reattachId, resume, sessionId } = resolveClaudeSession(requested, cwd);
   const live = reattachId ? ptys.get(reattachId) : undefined;
+  if (isCardTerminal) cardTerminalSessions.add(sessionId);
 
   // A dev terminal is a multi-terminal GRID cell: remember its session id so
   // it's excluded from the chat sidebar (see devTerminalSessions). This is the single
@@ -1173,6 +1206,7 @@ runLaunchWss.on("connection", (ws, req) => {
   const cwd = resolveWorkspace(url.searchParams.get("cwd"));
   const indexRaw = url.searchParams.get("launcher");
   const index = indexRaw !== null && /^\d+$/.test(indexRaw) ? Number(indexRaw) : NaN;
+  const isCardTerminal = url.searchParams.get("card") === "1";
 
   const reattachId = requested && ptys.has(requested) ? requested : null;
   const live = reattachId ? ptys.get(reattachId) : undefined;
@@ -1185,6 +1219,7 @@ runLaunchWss.on("connection", (ws, req) => {
   if (!live && !tmuxAlive && !launcher) return closeWithError(ws, "Launcher not found — check Settings → Launch commands.");
 
   const sessionId = reattachId ?? (tmuxAlive && requested ? requested : randomUUID());
+  if (isCardTerminal) cardTerminalSessions.add(sessionId);
   markDevTerminalSession(sessionId);
   ws.send(JSON.stringify({ type: "session", id: sessionId, cwd: live?.cwd ?? cwd }));
 

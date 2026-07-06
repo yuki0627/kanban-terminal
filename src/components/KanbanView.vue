@@ -186,6 +186,7 @@ function createCard() {
 // ---- expanded overlay ----
 const connectKey = ref(0);
 const startedCards = ref(new Set<string>());
+const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
 const activeCard = computed(() => state.value.cards.find((c) => c.id === state.value.expanded) ?? null);
 const overlayOpen = computed(() => activeCard.value !== null);
 const terminalStarted = computed(() => !!activeCard.value && (startedCards.value.has(activeCard.value.id) || !!activeCard.value.terminal.sessionId));
@@ -221,6 +222,17 @@ function onTerminalSession(sessionId: string) {
   const card = activeCard.value;
   if (!card) return;
   commit(updateCard(state.value, card.id, { terminal: { ...card.terminal, sessionId } }));
+  void loadMemory();
+}
+function terminateCardTerminal() {
+  const card = activeCard.value;
+  if (!card) return;
+  terminalRef.value?.terminate();
+  const nextStarted = new Set(startedCards.value);
+  nextStarted.delete(card.id);
+  startedCards.value = nextStarted;
+  commit(updateCard(state.value, card.id, { terminal: { ...card.terminal, sessionId: null } }));
+  void loadMemory();
 }
 function saveCardText() {
   const card = activeCard.value;
@@ -229,6 +241,31 @@ function saveCardText() {
 }
 
 watch(terminalStarted, (open) => reportActiveTerminals("kanban", open ? 1 : 0), { immediate: true });
+
+// ---- memory visibility ----
+const memoryBySession = ref(new Map<string, number>());
+const totalRssKb = ref(0);
+function formatMemory(kb: number): string {
+  if (kb <= 0) return "0 MB";
+  return `${Math.max(1, Math.round(kb / 1024))} MB`;
+}
+function cardMemory(card: KanbanCard): string | null {
+  const sessionId = card.terminal.sessionId;
+  if (!sessionId) return null;
+  const kb = memoryBySession.value.get(sessionId) ?? 0;
+  return kb > 0 ? formatMemory(kb) : null;
+}
+async function loadMemory() {
+  try {
+    const res = await fetch("/api/memory");
+    if (!res.ok) return;
+    const data = (await res.json()) as { totalRssKb?: number; sessions?: Array<{ sessionId: string; rssKb: number }> };
+    totalRssKb.value = typeof data.totalRssKb === "number" ? data.totalRssKb : 0;
+    memoryBySession.value = new Map((data.sessions ?? []).map((item) => [item.sessionId, item.rssKb]));
+  } catch {
+    // best-effort metric
+  }
+}
 
 // ---- drag & drop ----
 const dragging = ref<string | null>(null);
@@ -254,22 +291,27 @@ const showSettings = ref(false);
 const pubsub = usePubSub();
 let unsubscribeBoard: (() => void) | undefined;
 let offReconnect: (() => void) | undefined;
+let memoryTimer: ReturnType<typeof setInterval> | undefined;
 
 onMounted(() => {
   loadConfig();
   loadBoard();
+  loadMemory();
+  memoryTimer = setInterval(loadMemory, 10_000);
   unsubscribeBoard = pubsub.subscribe(BOARD_CHANNEL, () => void loadBoard());
   offReconnect = pubsub.onReconnect(() => void loadBoard());
 });
 onUnmounted(() => {
   unsubscribeBoard?.();
   offReconnect?.();
+  if (memoryTimer) clearInterval(memoryTimer);
 });
 </script>
 
 <template>
   <div class="shell">
     <AppToolbar @settings="showSettings = true" />
+    <div class="memory-strip" aria-label="Terminal memory">Memory {{ formatMemory(totalRssKb) }}</div>
     <div v-if="boardError || sessionsError" class="board-error" role="alert">{{ boardError || sessionsError }}</div>
     <div v-else-if="boardLoading || sessionsLoading" class="board-error">Loading...</div>
     <div class="workspace">
@@ -348,6 +390,7 @@ onUnmounted(() => {
             >
               <span class="card-dot" aria-hidden="true" />
               <span class="card-title">{{ cardTitle(c) }}</span>
+              <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
               <span v-if="c.terminal.agentKind === 'shell'" class="card-kind" title="Shell">sh</span>
               <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
             </article>
@@ -360,6 +403,16 @@ onUnmounted(() => {
       <div class="overlay-card">
         <header class="overlay-header" :style="{ borderTopColor: projectFor(activeCard)?.color ?? NONE_COLOR }">
           <input v-model="nameDraft" class="overlay-title-input" aria-label="Card name" @change="saveCardText" />
+          <button
+            v-if="activeCard.terminal.sessionId"
+            type="button"
+            class="overlay-close"
+            title="Terminate terminal"
+            aria-label="Terminate terminal"
+            @click="terminateCardTerminal"
+          >
+            <span class="material-symbols-outlined">stop_circle</span>
+          </button>
           <button type="button" class="overlay-close" title="Close card" aria-label="Close card" @click="closeOverlay">
             <span class="material-symbols-outlined">close</span>
           </button>
@@ -369,11 +422,13 @@ onUnmounted(() => {
           <div class="terminal-panel">
             <TerminalView
               v-if="terminalStarted"
+              ref="terminalRef"
               :key="overlaySlot"
               class="overlay-terminal"
               :persist-key="overlaySlot"
               :session-id="activeCard.terminal.sessionId"
               :cwd="activeCard.terminal.cwd"
+              card-terminal
               :launcher="activeCard.terminal.agentKind === 'shell' ? { index: 0 } : null"
               :connect-key="connectKey"
               @session="onTerminalSession"
@@ -430,6 +485,15 @@ onUnmounted(() => {
   color: var(--text-muted);
   font-family: system-ui, sans-serif;
   font-size: 13px;
+}
+.memory-strip {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
 }
 
 .workspace {
@@ -637,6 +701,12 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .card-kind {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.card-memory {
   flex: 0 0 auto;
   color: var(--text-muted);
   font-family: ui-monospace, monospace;
