@@ -27,6 +27,14 @@ mulmoterminal のターミナル基盤を無傷で温存することが本プロ
   `useDynamicFavicon` / `useFaviconState` / `useNotifications` と関連サーバー部
   (attention sound の配信)。
 
+**keep の意味は「挙動の維持」であり「ファイル不可侵」ではない。**
+keep 対象ファイルが削除対象(Phase 1)を import している場合、その参照を外す
+最小の外科的変更は行ってよい(むしろ Phase 1 の完了条件上、必須)。
+その際、keep 対象の本来の挙動が変わらないことをテストと実起動で確認する。
+例: `useNotifications.ts` の collection deep-link 連携は削除し、
+音・favicon・入力待ち通知の挙動はそのまま維持する。
+禁止しているのは、keep 対象の**本来の挙動の変更**と「ついでの」リファクタである。
+
 ## フェーズ構成
 
 1 PR・フェーズごとに 1 コミット以上。**各フェーズの終わりに必ず
