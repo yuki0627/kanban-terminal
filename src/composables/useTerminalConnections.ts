@@ -69,7 +69,7 @@ const RECONNECT_MAX_MS = 5000;
 // The heavy per-slot runtime (non-reactive — Vue never needs to track these).
 const conns = new Map<string, Conn>();
 
-// The reactive projection the view binds to (status pill, RunMenu cwd). Keyed by
+// The reactive projection the view binds to (status pill, server cwd). Keyed by
 // the same slot key; a slot that hasn't connected yet (or was released) is absent.
 export const connView = reactive(new Map<string, { status: ConnStatus; serverCwd: string | null }>());
 
@@ -247,7 +247,7 @@ function handleMessage(c: Conn, event: MessageEvent) {
   } else if (msg.type === "error") {
     // Server-declared terminal failure (CLI missing, command unresolvable). Not
     // transient — reconnecting would re-trigger the failed spawn, so stop and
-    // surface a stable error. Emit `exit` so a CommandCell can offer a re-run.
+    // surface a stable error. Emit `exit` so the owning view can react.
     c.sawExit = true;
     const detail = typeof msg.message === "string" ? msg.message : "failed to start";
     c.term.write(`\r\n\x1b[31m[${detail}]\x1b[0m\r\n`);

@@ -5,8 +5,6 @@ import { dropTextFromUriList, toInsertText } from "./dropPaths";
 import { useTheme, currentTermTheme, termThemeFor, type ThemeId } from "../composables/useTheme";
 import { badgeStyleFor } from "./dirBadge";
 import * as conn from "../composables/useTerminalConnections";
-import RunMenu from "./RunMenu.vue";
-import { filesGotoIndex } from "../composables/useFilesView";
 
 // `null` => start a fresh session; otherwise resume the given session id.
 // `connectKey` increments on every user action so re-selecting the same
@@ -16,8 +14,6 @@ import { filesGotoIndex } from "../composables/useFilesView";
 // `command` switches the terminal to a plain shell command (the grid's Run menu):
 // it connects to /ws/run with the script index instead of resuming a Claude
 // session, and never auto-reconnects (the ephemeral process can't be resumed).
-// `runMenu` adds a ▶ Run dropdown to the header (the single view) that lists the
-// open project's script.json and emits the picked command for the parent to run.
 // `persistKey` opts this terminal into a durable connection (kept alive across
 // unmount via useTerminalConnections, keyed by this stable slot id — the grid cell's
 // uid or the single view). Absent => an ephemeral slot torn down on unmount (command
@@ -31,7 +27,6 @@ const props = defineProps<{
   // A configured launcher (shell/codex/command) — persistent & reattachable, connects
   // to /ws/launch instead of resuming a Claude session.
   launcher?: { index: number } | null;
-  runMenu?: boolean;
   persistKey?: string | null;
   // Per-directory overrides from <cwd>/.mulmoterminal.json. `dirTheme` pins this
   // terminal's xterm palette (overriding the app-wide theme for this cell only);
@@ -45,7 +40,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "session" | "cwd", value: string): void;
   (e: "exit"): void;
-  (e: "run", command: { index: number; label: string; cwd: string | null }): void;
 }>();
 
 // The durable runtime (socket + xterm) lives in the manager, keyed by a stable slot
@@ -65,9 +59,6 @@ function currentTarget(): conn.ConnTarget {
 const terminalRef = ref<HTMLDivElement>();
 // Connection status + server-resolved cwd are projected reactively from the manager.
 const status = computed(() => conn.connView.get(slotKey)?.status ?? "connecting");
-// The server-resolved cwd of the connected session (the open project), used by the
-// Run menu so it lists THAT directory's scripts. Falls back to the requested cwd.
-const serverCwd = computed(() => conn.connView.get(slotKey)?.serverCwd ?? props.cwd ?? null);
 const dragOver = ref(false);
 const { themeId } = useTheme();
 
@@ -193,19 +184,9 @@ onUnmounted(() => {
       <span class="title">Terminal</span>
       <span v-if="dirName" class="dir-badge" :style="dirBadgeStyle" :title="dirName">{{ dirName }}</span>
       <span :class="['status', status]">{{ status }}</span>
-      <RunMenu v-if="runMenu" :cwd="serverCwd" @run="(c) => emit('run', c)" />
       <div class="header-actions">
         <button type="button" class="icon-btn" title="Insert a file path" aria-label="Insert a file path" @click="pickFile">
           <span class="material-symbols-outlined">attach_file</span>
-        </button>
-        <button
-          type="button"
-          class="icon-btn"
-          title="Browse & edit this project's files"
-          aria-label="Open the file explorer"
-          @click="filesGotoIndex(serverCwd)"
-        >
-          <span class="material-symbols-outlined">folder_open</span>
         </button>
       </div>
     </div>

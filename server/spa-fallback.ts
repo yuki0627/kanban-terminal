@@ -1,7 +1,7 @@
 // The SPA-fallback matcher for vue-router history mode. index.html is served for any
 // client-side route — i.e. everything EXCEPT the /api prefix, which is where every
 // server HTTP endpoint lives. WebSocket upgrades
-// (/ws, /ws/run, /ws/pubsub) bypass Express via server.on("upgrade"), and static
+// (/ws, /ws/run, /ws/launch, /ws/pubsub) bypass Express via server.on("upgrade"), and static
 // assets are served by express.static before this runs — so reserving /api alone is
 // enough. A GET to an unknown /api path is excluded here and falls through to a 404
 // (never the SPA shell), so a mistyped API path fails loudly instead of returning HTML.

@@ -4,9 +4,8 @@ import { isClientRoute } from "./spa-fallback";
 describe("SPA fallback matcher", () => {
   it("serves the SPA shell for client routes", () => {
     expect(isClientRoute("/")).toBe(true);
-    expect(isClientRoute("/terminals")).toBe(true);
     expect(isClientRoute("/kanban")).toBe(true);
-    expect(isClientRoute("/files")).toBe(true);
+    expect(isClientRoute("/some/client/path")).toBe(true);
   });
 
   it("never shadows the /api prefix", () => {

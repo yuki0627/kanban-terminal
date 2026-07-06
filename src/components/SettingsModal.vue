@@ -1,43 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
+import { ref, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { previewAttention } from "../composables/useAttentionSound";
-import type { Launcher } from "./launchers";
 
-const props = defineProps<{ soundFile?: string | null; launchers?: Launcher[] }>();
+const props = defineProps<{ soundFile?: string | null }>();
 const emit = defineEmits<{
   (e: "update-sound", file: string | null): void;
-  (e: "update-launchers", launchers: Launcher[]): void;
   (e: "close"): void;
 }>();
-
-// Cell-launcher commands (label + command). Editable list mirroring the saved value;
-// add/remove emits the new list up (App persists it).
-const launcherList = ref<Launcher[]>([...(props.launchers ?? [])]);
-watch(
-  () => props.launchers,
-  (l) => (launcherList.value = [...(l ?? [])]),
-);
-const newLauncherLabel = ref("");
-const newLauncherCommand = ref("");
-const newLauncherValid = computed(() => {
-  const label = newLauncherLabel.value.trim();
-  const command = newLauncherCommand.value.trim();
-  return !!label && !!command && !launcherList.value.some((l) => l.label === label);
-});
-function addLauncher() {
-  const label = newLauncherLabel.value.trim();
-  const command = newLauncherCommand.value.trim();
-  if (!label || !command || launcherList.value.some((l) => l.label === label)) return;
-  launcherList.value = [...launcherList.value, { label, command }];
-  newLauncherLabel.value = "";
-  newLauncherCommand.value = "";
-  emit("update-launchers", launcherList.value);
-}
-function removeLauncher(label: string) {
-  launcherList.value = launcherList.value.filter((l) => l.label !== label);
-  emit("update-launchers", launcherList.value);
-}
 
 // Custom attention sound, applied immediately (like the theme) — empty => the
 // built-in chime. The text box mirrors the saved value; Browse / typing apply it.
@@ -171,40 +141,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
       <div class="sound-actions">
         <button class="btn" type="button" title="Play the current sound" @click="testSound">▶ Test</button>
         <button class="btn" type="button" :disabled="!soundPath" title="Use the built-in chime" @click="clearSound">Use chime</button>
-      </div>
-
-      <h3 class="section-title">Launch commands</h3>
-      <p class="hint">
-        Programs a grid cell can launch besides Claude — a plain shell, <code>codex</code>, any interactive command. They run in the cell's directory as a
-        persistent terminal. Example: <code>Shell</code> → <code>$SHELL</code>, <code>Codex</code> → <code>codex</code>.
-      </p>
-      <ul v-if="launcherList.length" class="repo-list">
-        <li v-for="l in launcherList" :key="l.label" class="repo-item">
-          <span class="repo-name">{{ l.label }}</span>
-          <code class="launcher-cmd">{{ l.command }}</code>
-          <button class="icon-btn" type="button" :title="`Remove ${l.label}`" :aria-label="`Remove ${l.label}`" @click="removeLauncher(l.label)">✕</button>
-        </li>
-      </ul>
-      <div class="sound-row launcher-add">
-        <input
-          v-model="newLauncherLabel"
-          class="field launcher-label"
-          type="text"
-          placeholder="Label"
-          aria-label="Launcher label"
-          spellcheck="false"
-          @keydown.enter="addLauncher"
-        />
-        <input
-          v-model="newLauncherCommand"
-          class="field repo-field"
-          type="text"
-          placeholder="command (e.g. $SHELL)"
-          aria-label="Launcher command"
-          spellcheck="false"
-          @keydown.enter="addLauncher"
-        />
-        <button class="btn" type="button" :disabled="!newLauncherValid" @click="addLauncher">Add</button>
       </div>
 
       <div class="modal-foot">

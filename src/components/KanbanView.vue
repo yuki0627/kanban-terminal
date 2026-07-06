@@ -7,10 +7,10 @@ import { useSessions } from "../composables/useSessions";
 import { useAppConfig } from "../composables/useAppConfig";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import { release } from "../composables/useTerminalConnections";
-import { activityStatus, type CellStatus } from "./gridTabs";
+import { activityStatus, type CellStatus } from "./activityStatus";
 import { LANES, KANBAN_STATE_KEY, initialKanbanState, syncSessions, moveCard, setExpanded, laneCards, type KanbanState, type LaneId } from "./kanbanBoard";
 
-// The kanban board view, shown at /kanban. Every Claude session is a card; the
+// The kanban board view, shown at /. Every Claude session is a card; the
 // "sessions" activity stream (via useSessions) moves cards between lanes through
 // the pure transforms in kanbanBoard.ts. Cards render as chips only — the live
 // terminal mounts solely inside the expanded overlay, because each mounted
@@ -117,8 +117,8 @@ function onDrop(lane: LaneId) {
   onDragEnd();
 }
 
-// Settings (theme + sound), same modal as the other views.
-const { soundFile, launchers, loadConfig, saveSound, saveLaunchers } = useAppConfig();
+// Settings (theme + sound).
+const { soundFile, loadConfig, saveSound } = useAppConfig();
 const showSettings = ref(false);
 onMounted(loadConfig);
 </script>
@@ -190,14 +190,7 @@ onMounted(loadConfig);
       </div>
     </div>
 
-    <SettingsModal
-      v-if="showSettings"
-      :sound-file="soundFile"
-      :launchers="launchers"
-      @update-sound="saveSound"
-      @update-launchers="saveLaunchers"
-      @close="showSettings = false"
-    />
+    <SettingsModal v-if="showSettings" :sound-file="soundFile" @update-sound="saveSound" @close="showSettings = false" />
   </div>
 </template>
 

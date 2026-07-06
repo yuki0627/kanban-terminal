@@ -39,8 +39,8 @@ export function mergeStable(prev: Session[], incoming: Session[], resort: boolea
   return [...added, ...kept];
 }
 
-// Shared session-list state for both the vertical Sidebar and the horizontal
-// SessionTabBar. Fetches the server's authoritative list and refetches on every
+// Shared session-list state for the board. Fetches the server's authoritative list
+// and refetches on every
 // "sessions" pub/sub push, merging it in without reordering existing rows.
 export function useSessions() {
   const sessions = ref<Session[]>([]);

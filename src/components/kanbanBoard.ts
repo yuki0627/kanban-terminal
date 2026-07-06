@@ -13,9 +13,9 @@
 // signal, never a destination.
 //
 // KanbanView owns a single KanbanState ref and drives it through these pure
-// transforms (the gridTabs.ts pattern), persisting to localStorage.
+// transforms, persisting to localStorage.
 
-import type { CellStatus } from "./gridTabs";
+import type { CellStatus } from "./activityStatus";
 
 export type LaneId = "todo" | "in_progress" | "in_review" | "done" | "canceled";
 

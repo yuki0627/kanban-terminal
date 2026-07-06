@@ -6,14 +6,9 @@ import { defineComponent } from "vue";
 const Stub = defineComponent({ name: "RouteStub", render: () => null });
 
 export const routes: RouteRecordRaw[] = [
-  { path: "/", name: "chat", component: Stub },
-  { path: "/terminals", name: "terminals", component: Stub },
-  // Kanban board: sessions as cards in lanes, auto-moved by agent activity.
-  { path: "/kanban", name: "kanban", component: Stub },
-  // Full-screen file explorer + editor, rooted at a project dir (?cwd=). Opened from a
-  // terminal header's Files button.
-  { path: "/files", name: "files", component: Stub },
-  // Unknown URLs land on chat.
+  { path: "/", name: "kanban", component: Stub },
+  { path: "/kanban", redirect: "/" },
+  // Unknown URLs land on the board.
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
 

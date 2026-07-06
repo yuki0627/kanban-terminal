@@ -11,7 +11,6 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
-import { mountFilesBrowseRoutes } from "./files-browse.js";
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
@@ -116,7 +115,7 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 // as a clickable chat row: selecting it in chat would reattach its live PTY and
 // SUPERSEDE the grid cell (the "chat hijacked my multi-terminal session" bug). The
 // set is persisted so the exclusion survives a reboot and outlives the live PTY — a
-// reaped grid session's on-disk transcript still shouldn't reappear as a chat. NOTE:
+// reaped grid session's on-disk transcript still shouldn't reappear as an unscoped session. NOTE:
 // the exclusion applies ONLY to the unscoped (chat) query; the grid's OWN cwd-scoped
 // resume picker (/api/sessions?cwd=…) must keep listing these so they stay resumable.
 const devTerminalSessions = new Set<string>();
@@ -467,7 +466,7 @@ mountNotificationRoutes(app);
 app.use(express.static(path.join(__dirname, "../dist")));
 
 // SPA fallback for vue-router history mode: a hard reload / deep-link of a client
-// route (e.g. /terminals) must serve index.html. Mounted AFTER express.static so
+// route must serve index.html. Mounted AFTER express.static so
 // real asset files win. SPA_FALLBACK_RE reserves the single /api prefix — see
 // server/spa-fallback.ts for why that's sufficient.
 app.get(SPA_FALLBACK_RE, (_req, res) => res.sendFile(path.join(__dirname, "../dist/index.html")));
@@ -524,15 +523,8 @@ app.post("/api/hook", async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET/POST /api/config (workspace dir + directory presets) — in its own module.
-// GRID-ONLY (dev_tool): backs the grid launcher's default dir + the settings
-// modal's directory presets. The single view never calls it.
+// GET/POST /api/config — in its own module.
 mountConfigRoutes(app, CLAUDE_CWD);
-
-// Project-scoped file browsing + editing for the full-screen Files view
-// (GET /api/files/browse/{list,text,md}, PUT .../write — all ?cwd=&path=). Each
-// terminal browses its own session's project dir; paths are contained within it.
-mountFilesBrowseRoutes(app, { defaultCwd: CLAUDE_CWD });
 
 // GRID-ONLY (dev_tool): the `script.json` entries a cell's launcher offers for its
 // chosen directory (?cwd=<dir>, falling back to CLAUDE_CWD). The browser shows
@@ -1170,7 +1162,7 @@ function startLaunchEntry(sessionId: string, ws: WebSocket, live: PtyEntry | und
 // Launcher terminal (?launcher=<index>&cwd=<dir>, ?session=<id> to reattach): run a
 // configured launch command as a persistent, reattachable PTY. Reuses the /ws session
 // lifecycle (reattach + reap grace + handleClientClose) but with no hooks/transcript,
-// and is marked a dev-terminal session so it stays out of the chat sidebar.
+// and is marked a dev-terminal session so it stays out of the unscoped session list.
 runLaunchWss.on("connection", (ws, req) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const raw = url.searchParams.get("session");
