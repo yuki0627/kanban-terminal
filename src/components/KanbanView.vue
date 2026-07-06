@@ -118,7 +118,7 @@ function onDrop(lane: LaneId) {
 }
 
 // Settings (theme + sound), same modal as the other views.
-const { soundFile, prRepos, launchers, userMcpServers, loadConfig, saveSound, savePrRepos, saveLaunchers, saveUserMcpServers } = useAppConfig();
+const { soundFile, launchers, loadConfig, saveSound, saveLaunchers } = useAppConfig();
 const showSettings = ref(false);
 onMounted(loadConfig);
 </script>
@@ -193,13 +193,9 @@ onMounted(loadConfig);
     <SettingsModal
       v-if="showSettings"
       :sound-file="soundFile"
-      :pr-repos="prRepos"
       :launchers="launchers"
-      :user-mcp-servers="userMcpServers"
       @update-sound="saveSound"
-      @update-repos="savePrRepos"
       @update-launchers="saveLaunchers"
-      @update-user-mcp="saveUserMcpServers"
       @close="showSettings = false"
     />
   </div>

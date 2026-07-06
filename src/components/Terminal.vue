@@ -4,7 +4,6 @@ import { type ITheme } from "@xterm/xterm";
 import { dropTextFromUriList, toInsertText } from "./dropPaths";
 import { useTheme, currentTermTheme, termThemeFor, type ThemeId } from "../composables/useTheme";
 import { badgeStyleFor } from "./dirBadge";
-import { useVoiceInput } from "../composables/useVoiceInput";
 import * as conn from "../composables/useTerminalConnections";
 import RunMenu from "./RunMenu.vue";
 import { filesGotoIndex } from "../composables/useFilesView";
@@ -12,10 +11,8 @@ import { filesGotoIndex } from "../composables/useFilesView";
 // `null` => start a fresh session; otherwise resume the given session id.
 // `connectKey` increments on every user action so re-selecting the same
 // session (or starting another fresh one) still forces a reconnect.
-// `devTerminal` runs claude as a plain dev terminal (the grid): NO GUI plugin MCP
-// and NO --strict-mcp-config, so the user's (~/.claude.json) + project's (.mcp.json)
-// MCP servers load normally. Default (false, the single view) keeps main's behavior:
-// the in-process GUI MCP attached and isolated with --strict-mcp-config.
+// `devTerminal` marks grid terminals so the server can keep their session ids out
+// of the chat sidebar.
 // `command` switches the terminal to a plain shell command (the grid's Run menu):
 // it connects to /ws/run with the script index instead of resuming a Claude
 // session, and never auto-reconnects (the ephemeral process can't be resumed).
@@ -83,31 +80,9 @@ function effectiveTermTheme(): ITheme {
 }
 const dirBadgeStyle = computed(() => badgeStyleFor(props.dirBadgeColor));
 
-// Voice input: a mic in the header transcribes speech (locally, via whisper.cpp)
-// and inserts it at the prompt for the user to review and submit — same channel as
-// a typed path. `insertText` is hoisted (function declaration), so referencing it
-// here before its definition is fine; it only runs at transcript time.
-// Append a trailing space so consecutive VAD segments stay separated ("hello
-// world", not "helloworld") when dictating multiple phrases into the prompt.
-const voice = useVoiceInput({ onTranscript: (text) => insertText(`${text} `) });
-function voiceTitle(): string {
-  if (voice.listening.value) return "Stop voice input";
-  if (voice.downloading.value) return "Downloading speech model…";
-  if (!voice.available.value) return "Enable voice input (downloads the speech model)";
-  return "Start voice input";
-}
-function voiceIcon(): string {
-  if (voice.listening.value) return "stop";
-  if (voice.downloading.value || voice.transcribing.value) return "progress_activity";
-  return "mic";
-}
-
 let resizeObserver: ResizeObserver;
 
 onMounted(() => {
-  // Probe voice-input capability so the mic button shows only where supported.
-  voice.refreshAvailability().catch(() => {});
-
   const container = terminalRef.value;
   if (!container) return;
   // Attach this view to its durable slot: creates + connects the runtime on first
@@ -148,8 +123,8 @@ watch([themeId, () => props.dirTheme, () => props.dirColors], () => {
   conn.setTheme(slotKey, effectiveTermTheme());
 });
 
-// Submit a GUI-originated message into the PTY (the GUI->LLM feedback path) and the
-// explicit ✕ close. Both delegate to the slot's durable runtime.
+// Submit text into the PTY and handle the explicit ✕ close. Both delegate to the
+// slot's durable runtime.
 function submitText(text: string): boolean {
   return conn.submitText(slotKey, text);
 }
@@ -220,16 +195,6 @@ onUnmounted(() => {
       <span :class="['status', status]">{{ status }}</span>
       <RunMenu v-if="runMenu" :cwd="serverCwd" @run="(c) => emit('run', c)" />
       <div class="header-actions">
-        <button
-          v-if="voice.capable.value"
-          type="button"
-          :class="['icon-btn', 'voice', { listening: voice.listening.value, busy: voice.downloading.value || voice.transcribing.value }]"
-          :title="voiceTitle()"
-          :aria-label="voiceTitle()"
-          @click="voice.toggle()"
-        >
-          <span class="material-symbols-outlined">{{ voiceIcon() }}</span>
-        </button>
         <button type="button" class="icon-btn" title="Insert a file path" aria-label="Insert a file path" @click="pickFile">
           <span class="material-symbols-outlined">attach_file</span>
         </button>
@@ -312,33 +277,6 @@ onUnmounted(() => {
 
 .icon-btn .material-symbols-outlined {
   font-size: 18px;
-}
-
-/* Recording: solid red, gently pulsing. Busy (download/transcribe): the spinner
-   icon rotates. */
-.icon-btn.voice.listening {
-  color: #e5484d;
-  animation: voice-pulse 1.2s ease-in-out infinite;
-}
-
-.icon-btn.voice.busy .material-symbols-outlined {
-  animation: voice-spin 1s linear infinite;
-}
-
-@keyframes voice-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-
-@keyframes voice-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .status {

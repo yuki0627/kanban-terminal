@@ -34,8 +34,8 @@ import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import { useAppConfig } from "../composables/useAppConfig";
 
 // The multi-terminal grid view, shown at /terminals. Leaving the grid is just a
-// route push from the shared toolbar (Chat / Collections / a favorite), so there's
-// no exit emit — App.vue renders this only while route.name === "terminals".
+// route push from the shared toolbar, so there's no exit emit — App.vue renders
+// this only while route.name === "terminals".
 
 // One flat list of terminal cells; tabs are just pages (9 each) over it. Closing a
 // cell reflows the list so terminals flow across page boundaries. Only the active
@@ -129,22 +129,7 @@ onMounted(() => {
 });
 
 // Server config: the default workspace dir + the auto-recorded dir presets + sound.
-const {
-  defaultCwd,
-  home,
-  presets,
-  soundFile,
-  prRepos,
-  launchers,
-  userMcpServers,
-  loadConfig,
-  recordPreset,
-  removePreset,
-  saveSound,
-  savePrRepos,
-  saveLaunchers,
-  saveUserMcpServers,
-} = useAppConfig();
+const { defaultCwd, home, presets, soundFile, launchers, loadConfig, recordPreset, removePreset, saveSound, saveLaunchers } = useAppConfig();
 const showSettings = ref(false);
 onMounted(loadConfig);
 
@@ -194,13 +179,9 @@ function closeSettings() {
     <SettingsModal
       v-if="showSettings"
       :sound-file="soundFile"
-      :pr-repos="prRepos"
       :launchers="launchers"
-      :user-mcp-servers="userMcpServers"
       @update-sound="saveSound"
-      @update-repos="savePrRepos"
       @update-launchers="saveLaunchers"
-      @update-user-mcp="saveUserMcpServers"
       @close="closeSettings"
     />
   </div>

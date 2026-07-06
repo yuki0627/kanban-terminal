@@ -1,24 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { router } from "./router";
 import Sidebar from "./components/Sidebar.vue";
 import SessionTabBar from "./components/SessionTabBar.vue";
 import TerminalView from "./components/Terminal.vue";
-import GuiPanel from "./components/GuiPanel.vue";
-import ToolsPane from "./components/ToolsPane.vue";
-import CollectionsBrowseOverlay from "./components/CollectionsBrowseOverlay.vue";
-import AccountingOverlay from "./components/AccountingOverlay.vue";
-import WikiBrowseOverlay from "./components/WikiBrowseOverlay.vue";
-import PrsOverlay from "./components/PrsOverlay.vue";
 import FilesOverlay from "./components/FilesOverlay.vue";
 import GridView from "./components/GridView.vue";
 import KanbanView from "./components/KanbanView.vue";
 import SettingsModal from "./components/SettingsModal.vue";
 import AppToolbar from "./components/AppToolbar.vue";
 import { useSessions, type Filter } from "./composables/useSessions";
-import { browseClose } from "./composables/useCollectionBrowse";
-import { registerChatOpener } from "./composables/useChatLauncher";
 import { useAppConfig } from "./composables/useAppConfig";
 import { useDirConfig } from "./composables/useDirConfig";
 import { useFaviconState } from "./composables/useFaviconState";
@@ -27,8 +19,8 @@ import { useSoundEnabled } from "./composables/useSoundEnabled";
 import { useAttentionSound } from "./composables/useAttentionSound";
 import { useUnloadGuard, reportActiveTerminals } from "./composables/useUnloadGuard";
 
-// View mode is now the URL: the multi-terminal grid is /terminals, everything else
-// (chat + the collection/accounting overlays) lives under the single-view shell.
+// View mode is now the URL: the multi-terminal grid is /terminals, and everything
+// else lives under the single-view shell.
 const route = useRoute();
 const isGrid = computed(() => route.name === "terminals");
 const isKanban = computed(() => route.name === "kanban");
@@ -43,7 +35,6 @@ function onRunScript(command: PendingCommand) {
 
 const activeId = ref<string | null>(null);
 const connectKey = ref(0);
-const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
 
 // Confirm before an accidental tab close / reload while a terminal is live. The
 // single view reports its own session (0 or 1) under the "single" key; the grid
@@ -81,75 +72,9 @@ useAttentionSound(soundEnabled, soundFile);
 // Reflect session activity in the tab's favicon (idle / working / attention).
 useFaviconState(sessions);
 
-// Terminal column width (px), set by dragging the splitter between the terminal
-// and the GUI panel; the GUI panel absorbs whatever is left. Persisted across
-// reloads. The terminal's own ResizeObserver refits xterm's cols/rows as this
-// changes, so a drag live-resizes the PTY.
-const MIN_TERMINAL = 320;
-const MIN_GUI = 360;
-const terminalWidth = ref<number>(Number(localStorage.getItem("terminal_width")) || 560);
-
-// Track the viewport so the splitter's max (and aria-valuemax) stays correct and
-// the saved width re-clamps when the window shrinks.
-const viewportWidth = ref(window.innerWidth);
-const maxTerminal = computed(() => Math.max(MIN_TERMINAL, viewportWidth.value - MIN_GUI));
-
-function clampWidth(w: number): number {
-  return Math.max(MIN_TERMINAL, Math.min(w, maxTerminal.value));
-}
-
-function persistWidth() {
-  localStorage.setItem("terminal_width", String(terminalWidth.value));
-}
-
-let stopDrag: (() => void) | null = null;
-function startDrag(e: MouseEvent) {
-  e.preventDefault();
-  const startX = e.clientX;
-  const startW = terminalWidth.value;
-  const onMove = (ev: MouseEvent) => {
-    terminalWidth.value = clampWidth(startW + (ev.clientX - startX));
-  };
-  const onUp = () => {
-    persistWidth();
-    stopDrag?.();
-  };
-  stopDrag = () => {
-    window.removeEventListener("mousemove", onMove);
-    window.removeEventListener("mouseup", onUp);
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
-    stopDrag = null;
-  };
-  // Suppress text selection / keep the resize cursor for the whole drag.
-  document.body.style.cursor = "col-resize";
-  document.body.style.userSelect = "none";
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", onUp);
-}
-
-// Keyboard resize for the separator (arrows nudge, Home/End jump to the limits)
-// so the splitter is operable without a mouse.
-function onSplitterKey(e: KeyboardEvent) {
-  const STEP = 16;
-  if (e.key === "ArrowLeft") terminalWidth.value = clampWidth(terminalWidth.value - STEP);
-  else if (e.key === "ArrowRight") terminalWidth.value = clampWidth(terminalWidth.value + STEP);
-  else if (e.key === "Home") terminalWidth.value = MIN_TERMINAL;
-  else if (e.key === "End") terminalWidth.value = maxTerminal.value;
-  else return;
-  e.preventDefault();
-  persistWidth();
-}
-
-function onViewportResize() {
-  viewportWidth.value = window.innerWidth;
-  terminalWidth.value = clampWidth(terminalWidth.value);
-}
-onMounted(() => window.addEventListener("resize", onViewportResize));
-
 // Settings (theme + notification sound), shared with the grid view via useAppConfig
 // and opened from the toolbar's gear button.
-const { defaultCwd, loadConfig, saveSound, prRepos, savePrRepos, launchers, saveLaunchers, userMcpServers, saveUserMcpServers } = useAppConfig();
+const { defaultCwd, loadConfig, saveSound, launchers, saveLaunchers } = useAppConfig();
 // Drive the single view's dir overrides off the dir the terminal ACTUALLY runs in
 // (reported by the server, which may resolve/fall back), not the static default — so
 // the badge/theme/colors always track the active session. Falls back to the default
@@ -162,14 +87,9 @@ onMounted(loadConfig);
 function closeSettings() {
   showSettings.value = false;
 }
-onUnmounted(() => {
-  stopDrag?.();
-  window.removeEventListener("resize", onViewportResize);
-});
 
 // Session-history layout: "vertical" (left Sidebar) or "horizontal" (top
-// SessionTabBar), mirroring mulmoclaude's two history layouts. Persisted across
-// reloads like the tools pane.
+// SessionTabBar). Persisted across reloads.
 type Layout = "vertical" | "horizontal";
 const layout = ref<Layout>(localStorage.getItem("session_layout") === "horizontal" ? "horizontal" : "vertical");
 watch(layout, (v) => localStorage.setItem("session_layout", v));
@@ -177,75 +97,10 @@ function toggleLayout() {
   layout.value = layout.value === "vertical" ? "horizontal" : "vertical";
 }
 
-// Tools pane visibility, persisted across reloads (mirrors MulmoClaude's
-// right-sidebar toggle).
-const showTools = ref(localStorage.getItem("tools_pane_visible") === "true");
-watch(showTools, (v) => localStorage.setItem("tools_pane_visible", String(v)));
-function toggleTools() {
-  showTools.value = !showTools.value;
-}
-
-// GUI -> LLM: a plugin view (e.g. a submitted form) calls this with the user's
-// response. Terminal.submitText types it into the PTY and submits it (text + a
-// delayed CR, both pinned to the same socket). Returns whether it was delivered
-// so the caller only locks/persists on success.
-function sendTextMessage(text: string): boolean {
-  return terminalRef.value?.submitText(text) ?? false;
-}
-
 function selectSession(id: string) {
-  if (id !== activeId.value) clearDraftHint(); // switching away from a preparing draft
   activeId.value = id;
   connectKey.value++;
 }
-
-// A transient "preparing your draft…" hint, shown over the terminal while a draft
-// chat boots and its text is typed into claude's input box (a few seconds), so the
-// brief delay doesn't look like nothing happened. Auto-dismisses.
-const DRAFT_HINT_EN = "Preparing your draft — it'll appear in the input box in a moment. Review it, then press Enter to send.";
-const draftHint = ref(false);
-const draftHintText = ref(DRAFT_HINT_EN);
-let draftHintTimer: ReturnType<typeof setTimeout> | undefined;
-// Localize the hint via the same runtime translation route the collection UX uses
-// (English fallback while it resolves / on failure). The host has no static i18n, so
-// this keeps the one new user-facing string from being English-only. Translated once
-// per session; the server cache makes it instant thereafter.
-async function localizeDraftHint() {
-  const locale = (navigator.language || "en").split("-")[0];
-  if (locale === "en" || draftHintText.value !== DRAFT_HINT_EN) return;
-  try {
-    const res = await fetch("/api/translation", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ namespace: "mulmoterminal-ui", targetLanguage: locale, sentences: [DRAFT_HINT_EN] }),
-    });
-    if (!res.ok) return;
-    const data = (await res.json()) as { translations?: string[] };
-    if (typeof data.translations?.[0] === "string") draftHintText.value = data.translations[0];
-  } catch {
-    // leave the English fallback
-  }
-}
-function showDraftHint() {
-  draftHint.value = true;
-  clearTimeout(draftHintTimer);
-  draftHintTimer = setTimeout(() => (draftHint.value = false), 6000);
-  localizeDraftHint();
-}
-function clearDraftHint() {
-  clearTimeout(draftHintTimer);
-  draftHint.value = false;
-}
-onUnmounted(() => clearTimeout(draftHintTimer));
-
-// A collection action spawned a new chat and wants it shown: close the browse overlay
-// (if open) and select the session so the terminal displays it. A draft also shows the
-// preparing hint until claude is ready for the prefilled text.
-registerChatOpener((id: string, opts?: { draft?: boolean }) => {
-  browseClose();
-  selectSession(id);
-  if (opts?.draft) showDraftHint();
-});
 
 function newSession() {
   activeId.value = null;
@@ -290,16 +145,8 @@ function onSession(id: string) {
         @refresh="refresh"
       />
       <div class="main">
-        <Transition name="draft-hint-fade">
-          <div v-if="draftHint" class="draft-hint" role="status">
-            <span class="material-symbols-outlined" aria-hidden="true">edit_note</span>
-            <span>{{ draftHintText }}</span>
-          </div>
-        </Transition>
         <TerminalView
-          ref="terminalRef"
           class="terminal-pane"
-          :style="{ flex: `0 0 ${terminalWidth}px` }"
           persist-key="single"
           :session-id="activeId"
           :connect-key="connectKey"
@@ -312,46 +159,16 @@ function onSession(id: string) {
           @cwd="(c) => (activeCwd = c)"
           @run="onRunScript"
         />
-        <div
-          class="splitter"
-          role="separator"
-          tabindex="0"
-          aria-orientation="vertical"
-          aria-label="Resize terminal"
-          :aria-valuenow="terminalWidth"
-          :aria-valuemin="MIN_TERMINAL"
-          :aria-valuemax="maxTerminal"
-          title="Drag (or use arrow keys) to resize the terminal"
-          @mousedown="startDrag"
-          @keydown="onSplitterKey"
-        />
-        <GuiPanel :session-id="activeId" :send-text-message="sendTextMessage" :tools-open="showTools" @toggle-tools="toggleTools" />
-        <ToolsPane v-if="showTools" :session-id="activeId" @close="toggleTools" />
       </div>
     </div>
-    <!-- Full-screen collection browser; shown when the launcher / an index card / a
-         ref hop opens it (driven by useCollectionBrowse). -->
-    <CollectionsBrowseOverlay />
-    <!-- Full-screen accounting view; opened by the toolbar's account_balance button
-         (driven by useAccountingView). Mutually exclusive with the browser above. -->
-    <AccountingOverlay />
-    <!-- Full-screen read-only wiki browser; opened by the toolbar's menu_book button
-         (driven by useWikiBrowse). Mutually exclusive with the overlays above. -->
-    <WikiBrowseOverlay />
-    <!-- Full-screen cross-repo PR list; opened by the toolbar's call_merge button. -->
-    <PrsOverlay />
     <!-- Full-screen file explorer + editor; opened by a terminal header's Files button. -->
     <FilesOverlay />
     <SettingsModal
       v-if="showSettings"
       :sound-file="soundFile"
-      :pr-repos="prRepos"
       :launchers="launchers"
-      :user-mcp-servers="userMcpServers"
       @update-sound="saveSound"
-      @update-repos="savePrRepos"
       @update-launchers="saveLaunchers"
-      @update-user-mcp="saveUserMcpServers"
       @close="closeSettings"
     />
   </div>
@@ -374,85 +191,28 @@ function onSession(id: string) {
   overflow: hidden;
 }
 
-/* Vertical: Sidebar | [ Terminal | GuiPanel ]. */
+/* Vertical: Sidebar | Terminal. */
 .app-vertical {
   flex-direction: row;
 }
 
-/* Horizontal: SessionTabBar stacked above [ Terminal | GuiPanel ]. */
+/* Horizontal: SessionTabBar stacked above Terminal. */
 .app-horizontal {
   flex-direction: column;
 }
 
-/* [ Terminal | GuiPanel ] — the unified two-panel view in miniature. Bounded to
-   the leftover height (full viewport in vertical mode, viewport minus the tab
-   bar in horizontal mode) so the panes fill it exactly instead of overflowing
-   under `.app { overflow: hidden }`. Panes size to height:100% of this. */
+/* Terminal area bounded to the leftover height so it fills exactly instead of
+   overflowing under `.app { overflow: hidden }`. */
 .main {
   display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  position: relative; /* anchor the draft hint overlay */
 }
 
-/* Transient "preparing your draft…" hint, overlaid at the top of the terminal area.
-   Bright yellow + bold border so it clearly stands out over the dark terminal; uses
-   the app's system UI font (not the inherited default) to match the rest of the UI. */
-.draft-hint {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 20;
-  max-width: min(90%, 640px);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  border-radius: 8px;
-  background: #ffd54a;
-  color: #1a1a2e;
-  border: 2px solid #c98a00;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-  font-family: system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.4;
-  pointer-events: none; /* never intercept clicks meant for the terminal */
-}
-.draft-hint .material-symbols-outlined {
-  font-size: 18px;
-  flex-shrink: 0;
-}
-.draft-hint-fade-enter-active,
-.draft-hint-fade-leave-active {
-  transition: opacity 0.25s ease;
-}
-.draft-hint-fade-enter-from,
-.draft-hint-fade-leave-to {
-  opacity: 0;
-}
-
-/* Terminal pane: fixed flex-basis (set inline from terminalWidth); the GUI
-   panel beside it absorbs the remaining width. */
 .terminal-pane {
+  flex: 1;
   min-width: 0;
-}
-
-/* Draggable divider between the terminal and the GUI panel. */
-.splitter {
-  flex: 0 0 5px;
-  cursor: col-resize;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-}
-.splitter:hover {
-  background: var(--bg-hover);
-}
-.splitter:focus-visible {
-  outline: none;
-  background: var(--accent);
+  min-height: 0;
 }
 </style>

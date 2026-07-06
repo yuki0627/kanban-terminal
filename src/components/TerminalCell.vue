@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, useTemplateRef } from "vu
 import TerminalView from "./Terminal.vue";
 import { usePubSub } from "../composables/usePubSub";
 import { useDirConfig } from "../composables/useDirConfig";
-import { formatCwd, worktreeLabel } from "./cwdDisplay";
+import { formatCwd } from "./cwdDisplay";
 import { badgeStyleFor } from "./dirBadge";
 import type { CwdPreset } from "./presets";
 import type { Launcher, LaunchPick } from "./launchers";
@@ -158,11 +158,9 @@ onMounted(() => {
   });
   if (sessionId.value) {
     loadInitial(sessionId.value);
-    loadDiff(); // a resumed worktree cell shows its diff on restore
   } else {
     loadResumable();
     loadScripts();
-    loadWorktrees();
   }
 });
 onUnmounted(() => {
@@ -184,7 +182,6 @@ function launchIn(dir: string | null) {
   connectKey.value++;
   launched.value = true;
   recordNextCwd = true;
-  loadDiff(); // no-op for a non-worktree dir
 }
 function launch() {
   launchIn(dirInput.value.trim() || props.defaultCwd);
@@ -205,13 +202,12 @@ function selectPreset(p: CwdPreset) {
 }
 
 // The chip's tiny end button: fill the field WITHOUT launching, and refresh the
-// resume / script / worktree lists for that dir so the user can resume there.
+// resume / script lists for that dir so the user can resume there.
 function fillDir(path: string) {
   dirTouched.value = true;
   dirInput.value = path;
   loadResumable();
   loadScripts();
-  loadWorktrees();
 }
 
 // Existing sessions for the dir in the form, so an empty cell can resume one
@@ -294,91 +290,12 @@ function runScript(s: RunnableScript) {
   emit("run", { index: s.index, label: s.label, cwd: scriptsCwd.value ?? (dirInput.value.trim() || props.defaultCwd) });
 }
 
-// Per-agent isolation: when the dir is a git repo, the launcher can start claude in
-// its own throwaway worktree (separate working tree, shared .git) so several agents
-// work the repo without clobbering each other. Managed by the server (/api/worktrees).
-interface Worktree {
-  path: string;
-  branch: string | null;
-  task: string;
-  dirty: boolean;
-}
-const isGitRepo = ref(false);
-const worktrees = ref<Worktree[]>([]);
-const worktreeTask = ref("");
-let worktreesReq = 0;
-
-async function loadWorktrees() {
-  const dir = dirInput.value.trim() || props.defaultCwd;
-  const reqId = ++worktreesReq;
-  if (launched.value || !dir) {
-    isGitRepo.value = false;
-    worktrees.value = [];
-    return;
-  }
-  try {
-    const res = await fetch(`/api/worktrees?cwd=${encodeURIComponent(dir)}`);
-    if (reqId !== worktreesReq) return;
-    const data = res.ok ? await res.json() : { isGit: false, worktrees: [] };
-    if (reqId !== worktreesReq) return;
-    isGitRepo.value = !!data.isGit;
-    worktrees.value = Array.isArray(data.worktrees) ? data.worktrees : [];
-  } catch {
-    if (reqId === worktreesReq) {
-      isGitRepo.value = false;
-      worktrees.value = [];
-    }
-  }
-}
-
-// Create a fresh worktree for the typed task and launch claude in it.
-async function createWorktreeAndLaunch() {
-  const repoDir = dirInput.value.trim() || props.defaultCwd;
-  const task = worktreeTask.value.trim();
-  if (!repoDir || !task) return;
-  try {
-    const res = await fetch("/api/worktrees/create", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repoDir, task }),
-    });
-    if (!res.ok) return;
-    const wt = await res.json();
-    if (typeof wt.path === "string") {
-      worktreeTask.value = "";
-      launchIn(wt.path);
-    }
-  } catch {
-    // best-effort — the launcher stays open so the user can retry
-  }
-}
-
-const reuseWorktree = (w: Worktree) => launchIn(w.path);
-
-// Remove a managed worktree (＋ its branch). A dirty one is confirmed first so work
-// is never discarded silently.
-async function removeWorktree(w: Worktree) {
-  const repoDir = dirInput.value.trim() || props.defaultCwd;
-  if (w.dirty && !window.confirm(`"${w.task}" has uncommitted changes. Discard and remove it?`)) return;
-  try {
-    await fetch("/api/worktrees/remove", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repoDir, path: w.path, deleteBranch: true, force: w.dirty }),
-    });
-    loadWorktrees();
-  } catch {
-    // best-effort
-  }
-}
-
 // Refresh the resume list and the runnable scripts when the target dir changes.
 watch([dirInput, () => props.defaultCwd], () => {
   if (resumableTimer) clearTimeout(resumableTimer);
   resumableTimer = setTimeout(() => {
     loadResumable();
     loadScripts();
-    loadWorktrees();
   }, 300);
 });
 
@@ -395,7 +312,6 @@ function resume(s: ResumableSession) {
   connectKey.value++;
   launched.value = true;
   recordNextCwd = false; // resuming isn't a fresh launch — don't record its cwd
-  loadDiff(); // an already-idle worktree session shows its badge right away
 }
 
 function relativeTime(ms: number): string {
@@ -484,8 +400,7 @@ watch(ghMenuOpen, (open) => {
 onUnmounted(() => document.removeEventListener("mousedown", onGhOutside));
 
 // Reap the session and reset the cell back to the empty launcher. The cell isn't
-// remounted (stable key), so the dir/diff state is reset explicitly — otherwise the
-// launch form would still show the closed session's directory.
+// remounted (stable key), so the launcher state is reset explicitly.
 function teardown() {
   termRef.value?.terminate();
   launched.value = false;
@@ -499,81 +414,14 @@ function teardown() {
   cwd.value = props.defaultCwd;
   dirInput.value = props.defaultCwd ?? "";
   dirTouched.value = false; // fresh launcher again — let a late preset sync re-prefill
-  diff.value = null;
-  diffOpen.value = false;
-  closeConfirm.value = false;
-  prMsg.value = null;
   emit("close");
   loadResumable();
   loadScripts();
-  loadWorktrees();
 }
-
-// Closing a WORKTREE cell offers to keep or remove the room first (never silently
-// discards uncommitted/unpushed work); other cells just tear down.
-const closeConfirm = ref(false);
-const closeChecking = ref(false); // refreshing dirty/ahead — the destructive action is held until it's accurate
-const closeError = ref<string | null>(null);
-const hasUnsaved = computed(() => (diff.value?.dirty ?? 0) > 0 || (diff.value?.ahead ?? 0) > 0);
-const unsavedSummary = computed(() => {
-  const ahead = diff.value?.ahead ?? 0;
-  const dirty = diff.value?.dirty ?? 0;
-  const parts: string[] = [];
-  if (ahead) parts.push(`${ahead} unpushed commit${ahead > 1 ? "s" : ""}`);
-  if (dirty) parts.push(`${dirty} uncommitted change${dirty > 1 ? "s" : ""}`);
-  return parts.join(" + ");
-});
 
 async function close() {
-  if (!isWorktreeCell.value) {
-    teardown();
-    return;
-  }
-  closeError.value = null;
-  closeConfirm.value = true;
-  // Refresh dirty/ahead before the Remove button is enabled, so a fast click can't
-  // discard work that became newly dirty/ahead since the last refresh.
-  closeChecking.value = true;
-  await loadDiff();
-  closeChecking.value = false;
+  teardown();
 }
-function cancelClose() {
-  closeConfirm.value = false;
-  closeChecking.value = false;
-  closeError.value = null;
-}
-
-async function removeAndClose() {
-  const dir = cwd.value;
-  if (!dir) {
-    teardown();
-    return;
-  }
-  closeError.value = null;
-  termRef.value?.terminate(); // free the worktree dir first (Windows locks a process's cwd)
-  try {
-    const res = await fetch("/api/worktrees/remove", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repoDir: dir, path: dir, deleteBranch: true, force: true }),
-    });
-    if (res.ok) return teardown();
-    closeError.value = "Couldn't remove the worktree — it may need manual cleanup.";
-  } catch {
-    closeError.value = "Couldn't reach the server to remove the worktree.";
-  }
-}
-
-// Esc dismisses the close confirmation (document-scoped: focus may be on the
-// terminal, not the overlay), matching the diff panel's Escape handling.
-function onCloseKey(e: KeyboardEvent) {
-  if (e.key === "Escape") cancelClose();
-}
-watch(closeConfirm, (open) => {
-  if (open) document.addEventListener("keydown", onCloseKey);
-  else document.removeEventListener("keydown", onCloseKey);
-});
-onUnmounted(() => document.removeEventListener("keydown", onCloseKey));
 
 // Adopt the server-assigned id (esp. for new sessions), bubble it up for
 // persistence, and load its initial activity.
@@ -583,13 +431,9 @@ function onSession(id: string) {
   loadInitial(id);
 }
 
-// ~-anchored, front-truncated path for the header (keeps the tail). For a managed
-// worktree cell, show "⎇ <repo> (<task>)" instead — the managed path is just noise.
+// ~-anchored, front-truncated path for the header (keeps the tail).
 const dirDisplay = computed(() => formatCwd(cwd.value, props.home));
-const headerDir = computed(() => {
-  const wt = worktreeLabel(cwd.value);
-  return wt ? `⎇ ${wt.repo} (${wt.task})` : dirDisplay.value;
-});
+const headerDir = computed(() => dirDisplay.value);
 
 // blocked (needs input) / done (finished, unreviewed) / working / idle — split from
 // the server's working+waiting+event (see activityStatus).
@@ -618,137 +462,13 @@ const usageTitle = computed(() =>
     : "",
 );
 
-// Worktree diff (read-only): for a launched worktree cell, show how much the agent
-// changed vs the base branch — a header badge (ahead/dirty) and a panel (changed
-// files + patch). Refreshed when the agent pauses (the change set is then stable).
-interface WorktreeDiffData {
-  isWorktree: boolean;
-  base: string | null;
-  ahead: number;
-  dirty: number;
-  files: { path: string; additions: number; deletions: number; status: "changed" | "untracked" }[];
-  patch: string;
-  truncated: boolean;
-}
-const diff = ref<WorktreeDiffData | null>(null);
-const diffOpen = ref(false);
-const isWorktreeCell = computed(() => worktreeLabel(cwd.value) !== null);
-const showDiffBadge = computed(() => !!diff.value?.isWorktree && (diff.value.ahead > 0 || diff.value.dirty > 0));
-let diffReq = 0;
-
-async function loadDiff() {
-  if (!launched.value || !isWorktreeCell.value || !cwd.value) {
-    diffReq++; // invalidate any in-flight fetch so its (now stale) response can't land
-    diff.value = null;
-    diffOpen.value = false; // fully close — don't auto-reopen on a later worktree re-entry
-    return;
-  }
-  const reqId = ++diffReq;
-  try {
-    const res = await fetch(`/api/worktrees/diff?cwd=${encodeURIComponent(cwd.value)}`);
-    if (reqId !== diffReq) return;
-    const data = res.ok ? await res.json() : null;
-    if (reqId !== diffReq) return;
-    diff.value = data && data.isWorktree ? data : null;
-  } catch {
-    if (reqId === diffReq) diff.value = null;
-  }
-}
-
-function openDiff() {
-  diffOpen.value = true;
-  prMsg.value = null;
-  loadDiff(); // refresh on open
-}
-
-// Outward-facing actions (push / open PR) for the worktree's branch. `prBusy`
-// disables the buttons during a request; `prMsg` shows the result inline.
-const prBusy = ref(false);
-const prMsg = ref<string | null>(null);
-
-// Ask the cell's own Claude session to commit the uncommitted changes (so it writes
-// a sensible message). After it commits and settles, the working→idle watch
-// refreshes the diff: `ahead` rises, `dirty` drops, and Push/PR light up.
-const COMMIT_PROMPT = "Commit all current changes in this worktree with a concise, descriptive commit message.";
-function commitViaClaude() {
-  const delivered = termRef.value?.submitText(COMMIT_PROMPT);
-  prMsg.value = delivered ? "Asked Claude to commit…" : "Couldn't reach the session";
-}
-const REASON_MSG: Record<string, string> = {
-  "not-worktree": "Not a worktree",
-  "no-branch": "No branch to push",
-  "no-remote": "No git remote (origin) configured",
-  "no-github": "Not a GitHub repo — push succeeded; open the PR manually",
-  "push-failed": "Push failed",
-  failed: "Failed",
-};
-const reasonMsg = (reason?: string) => REASON_MSG[reason ?? ""] ?? "Failed";
-
-async function worktreeAction(endpoint: "push" | "pr"): Promise<Record<string, unknown> | null> {
-  if (!cwd.value || prBusy.value) return null;
-  prBusy.value = true;
-  prMsg.value = endpoint === "push" ? "Pushing…" : "Creating PR…";
-  try {
-    const res = await fetch(`/api/worktrees/${endpoint}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: cwd.value }),
-    });
-    const data = await res.json().catch(() => null);
-    // A non-JSON / empty-body response (e.g. a 403 from the origin guard) must not
-    // leave the UI stuck on the optimistic "Pushing…" text.
-    if (!data) prMsg.value = res.status === 403 ? "Not allowed (origin)" : "Request failed";
-    return data;
-  } catch {
-    prMsg.value = endpoint === "push" ? "Push failed" : "PR failed";
-    return null;
-  } finally {
-    prBusy.value = false;
-  }
-}
-
-async function pushBranch() {
-  const data = await worktreeAction("push");
-  if (data) prMsg.value = data.ok ? `Pushed ${data.branch}` : reasonMsg(data.reason as string);
-}
-
-async function openPR() {
-  const data = await worktreeAction("pr");
-  if (!data) return;
-  if (data.ok && typeof data.url === "string") {
-    window.open(data.url, "_blank", "noopener,noreferrer");
-    prMsg.value = data.via === "gh" ? "PR created" : "Opened PR page";
-  } else {
-    prMsg.value = reasonMsg(data.reason as string);
-  }
-}
-
-// Refresh when the agent transitions from working → settled: that's when the diff
-// is stable and worth re-reading (avoids churn while it's actively editing), and the
-// turn's token usage is final.
+// Refresh when the agent transitions from working → settled; the turn's token usage
+// is final at that point.
 watch(working, (now, prev) => {
   if (prev && !now) {
-    loadDiff();
     refreshUsage();
   }
 });
-
-// Re-read (or clear) the diff when the effective cwd changes — e.g. the server
-// confirmed a fallback dir. loadDiff() clears it synchronously for a non-worktree
-// dir, so the badge never lingers with a previous worktree's counts.
-watch(cwd, () => loadDiff());
-
-// Esc closes the diff panel. Listen at document scope while it's open: focus is
-// usually on the badge or the terminal, so a handler on the panel element itself
-// wouldn't reliably receive the keydown.
-function onDiffKey(e: KeyboardEvent) {
-  if (e.key === "Escape") diffOpen.value = false;
-}
-watch(diffOpen, (open) => {
-  if (open) document.addEventListener("keydown", onDiffKey);
-  else document.removeEventListener("keydown", onDiffKey);
-});
-onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
 </script>
 
 <template>
@@ -760,10 +480,6 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
           <span class="cell-dir-path">{{ headerDir }}</span>
         </button>
         <span v-if="dirConfig.name" class="cell-badge" :style="dirBadgeStyle" :title="dirConfig.name">{{ dirConfig.name }}</span>
-        <button v-if="showDiffBadge && diff" type="button" class="cell-wt-badge" :title="`View changes vs ${diff.base ?? 'base'}`" @click="openDiff">
-          <span v-if="diff.ahead > 0" class="wt-ahead">+{{ diff.ahead }}</span>
-          <span v-if="diff.dirty > 0" class="wt-dirty-count">●{{ diff.dirty }}</span>
-        </button>
         <span v-if="githubUrl" ref="ghWrap" class="cell-gh-wrap">
           <button
             type="button"
@@ -818,76 +534,6 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
         @cwd="onServerCwd"
         @run="(cmd) => emit('runSpare', cmd)"
       />
-      <div v-if="diffOpen && diff" class="cell-diff">
-        <div class="cell-diff-head">
-          <span class="cell-diff-title">Changes vs {{ diff?.base ?? "base" }}</span>
-          <span class="cell-diff-sum">{{ diff?.ahead ?? 0 }} ahead · {{ diff?.dirty ?? 0 }} uncommitted</span>
-          <button class="cell-btn" title="Close diff" aria-label="Close diff" @click="diffOpen = false">✕</button>
-        </div>
-        <div v-if="diff && diff.files.length" class="cell-diff-files">
-          <div v-for="f in diff.files" :key="f.path" class="cell-diff-file">
-            <span class="df-path">{{ f.path }}</span>
-            <span v-if="f.status === 'untracked'" class="df-new">new</span>
-            <span v-else class="df-nums">
-              <span class="df-add">+{{ f.additions < 0 ? "bin" : f.additions }}</span>
-              <span class="df-del">−{{ f.deletions < 0 ? "bin" : f.deletions }}</span>
-            </span>
-          </div>
-        </div>
-        <pre v-if="diff && diff.patch" class="cell-diff-patch">{{ diff.patch }}</pre>
-        <p v-if="diff && diff.truncated" class="cell-diff-note">Diff truncated — open the worktree to see the rest.</p>
-        <p v-if="diff && !diff.files.length" class="cell-diff-empty">No changes yet.</p>
-        <div class="cell-diff-actions">
-          <button
-            class="cell-diff-btn"
-            :disabled="prBusy || working || (diff?.dirty ?? 0) === 0"
-            :title="(diff?.dirty ?? 0) === 0 ? 'No uncommitted changes' : working ? 'Wait for the session to finish' : 'Ask Claude to commit the changes'"
-            @click="commitViaClaude"
-          >
-            ✓ Commit
-          </button>
-          <button
-            class="cell-diff-btn"
-            :disabled="prBusy || (diff?.ahead ?? 0) === 0"
-            :title="(diff?.ahead ?? 0) === 0 ? 'Commit changes first' : 'git push -u origin'"
-            @click="pushBranch"
-          >
-            ⬆ Push
-          </button>
-          <button
-            class="cell-diff-btn"
-            :disabled="prBusy || (diff?.ahead ?? 0) === 0"
-            :title="(diff?.ahead ?? 0) === 0 ? 'Commit changes in the terminal first' : 'Push and open a pull request'"
-            @click="openPR"
-          >
-            ⧉ Open PR
-          </button>
-          <span v-if="prMsg" class="cell-diff-msg">{{ prMsg }}</span>
-        </div>
-      </div>
-      <div v-if="closeConfirm" class="cell-close-confirm" role="dialog" aria-modal="true" :aria-label="`Close worktree ${headerDir}`">
-        <div class="ccx-box">
-          <p class="ccx-title">Close {{ headerDir }}</p>
-          <template v-if="!closeError">
-            <p v-if="hasUnsaved" class="ccx-warn">{{ unsavedSummary }} will be discarded if you remove the worktree.</p>
-            <p v-else class="ccx-sub">Keep the worktree to reuse it later, or remove it.</p>
-            <div class="ccx-actions">
-              <button class="ccx-btn ccx-keep" @click="teardown">Keep worktree</button>
-              <button class="ccx-btn ccx-remove" :disabled="closeChecking" @click="removeAndClose">
-                {{ closeChecking ? "Checking…" : hasUnsaved ? "Discard &amp; remove" : "Remove worktree" }}
-              </button>
-              <button class="ccx-btn ccx-cancel" @click="cancelClose">Cancel</button>
-            </div>
-          </template>
-          <template v-else>
-            <p class="ccx-warn">{{ closeError }}</p>
-            <div class="ccx-actions">
-              <button class="ccx-btn ccx-remove" @click="removeAndClose">Retry</button>
-              <button class="ccx-btn" @click="teardown">Close cell</button>
-            </div>
-          </template>
-        </div>
-      </div>
     </template>
     <div v-else class="cell-launch">
       <button v-if="cancellable" type="button" class="cell-launch-cancel" title="Cancel new terminal" aria-label="Cancel new terminal" @click="emit('close')">
@@ -940,27 +586,6 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
           </button>
         </span>
       </label>
-      <div v-if="isGitRepo" class="cell-worktrees">
-        <span class="cell-launch-caption">or isolate in a worktree (git repo)</span>
-        <div class="wt-new">
-          <input
-            v-model="worktreeTask"
-            class="cell-dir-input wt-task"
-            type="text"
-            placeholder="task name (e.g. fix-login)"
-            aria-label="Worktree task name"
-            spellcheck="false"
-            @keydown.enter="createWorktreeAndLaunch"
-          />
-          <button class="cell-start wt-start" :disabled="!worktreeTask.trim()" @click="createWorktreeAndLaunch">＋ New worktree</button>
-        </div>
-        <div v-for="w in worktrees" :key="w.path" class="wt-row">
-          <button class="wt-reuse" :title="w.branch ?? w.path" @click="reuseWorktree(w)">
-            ⎇ {{ w.task }}<span v-if="w.dirty" class="wt-dirty" title="uncommitted changes">●</span>
-          </button>
-          <button class="wt-del" title="Remove worktree" aria-label="Remove worktree" @click="removeWorktree(w)">🗑</button>
-        </div>
-      </div>
       <div v-if="scripts.length" class="cell-scripts">
         <span class="cell-launch-caption">or run a script</span>
         <div class="cell-script-list">
@@ -995,7 +620,7 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
 
 <style scoped>
 .cell {
-  position: relative; /* anchors the diff overlay */
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1396,69 +1021,6 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   color: var(--text);
 }
 
-.cell-worktrees {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  width: 100%;
-  max-width: 360px;
-}
-.wt-new {
-  display: flex;
-  gap: 6px;
-}
-.wt-task {
-  flex: 1 1 auto;
-  min-width: 0; /* let the input shrink so the button keeps its width */
-  width: auto;
-}
-.wt-start {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-.wt-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.wt-reuse {
-  flex: 1 1 auto;
-  min-width: 0;
-  text-align: left;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 12px;
-  padding: 5px 10px;
-  border-radius: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.wt-reuse:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.wt-dirty {
-  margin-left: 6px;
-  color: var(--warn-text, #e0a030);
-}
-.wt-del {
-  flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 4px 6px;
-  border-radius: 6px;
-}
-.wt-del:hover {
-  background: var(--err-hover-bg);
-}
-
 .cell-scripts {
   display: flex;
   flex-direction: column;
@@ -1542,226 +1104,5 @@ onUnmounted(() => document.removeEventListener("keydown", onDiffKey));
   color: var(--amber);
   font-size: 11px;
   white-space: nowrap;
-}
-
-/* Worktree diff badge in the header (ahead / uncommitted), opens the diff panel. */
-.cell-wt-badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 1px 7px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-elevated);
-  cursor: pointer;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 11px;
-}
-.cell-wt-badge:hover {
-  background: var(--bg-hover);
-}
-.wt-ahead {
-  color: var(--accent);
-}
-.wt-dirty-count {
-  color: var(--warn-text, #e0a030);
-}
-
-/* Read-only diff panel: overlays the terminal area of the cell. */
-.cell-diff {
-  position: absolute;
-  inset: 34px 0 0 0; /* below the 34px header */
-  z-index: 15;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-base);
-  border-top: 1px solid var(--border);
-  overflow: hidden;
-}
-.cell-diff-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-.cell-diff-title {
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-}
-.cell-diff-sum {
-  flex: 1 1 auto;
-  font-family: system-ui, sans-serif;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-.cell-diff-files {
-  flex: 0 0 auto;
-  max-height: 35%;
-  overflow-y: auto;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
-}
-.cell-diff-file {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 11px;
-  padding: 1px 0;
-}
-.df-path {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  direction: rtl;
-  color: var(--text-secondary);
-}
-.df-nums {
-  flex: 0 0 auto;
-}
-.df-add {
-  color: #3fae6b;
-}
-.df-del {
-  color: var(--err-text, #e0556b);
-}
-.df-new {
-  flex: 0 0 auto;
-  color: #3fae6b;
-}
-.cell-diff-patch {
-  flex: 1 1 auto;
-  margin: 0;
-  overflow: auto;
-  padding: 8px;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-  white-space: pre;
-  tab-size: 2;
-}
-.cell-diff-note,
-.cell-diff-empty {
-  margin: 0;
-  padding: 8px;
-  font-family: system-ui, sans-serif;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-.cell-diff-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-.cell-diff-btn {
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 6px;
-}
-.cell-diff-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.cell-diff-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.cell-diff-msg {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-family: system-ui, sans-serif;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-/* Close confirmation: keep or remove the worktree before tearing the cell down. */
-.cell-close-confirm {
-  position: absolute;
-  inset: 0;
-  z-index: 25;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: color-mix(in srgb, var(--bg-base) 82%, transparent);
-}
-.ccx-box {
-  max-width: 320px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-}
-.ccx-title {
-  margin: 0;
-  font-family: system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-.ccx-sub {
-  margin: 0;
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-.ccx-warn {
-  margin: 0;
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  color: var(--warn-text, #e0a030);
-}
-.ccx-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ccx-btn {
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-  padding: 6px 12px;
-  border-radius: 6px;
-}
-.ccx-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.ccx-keep {
-  border-color: var(--accent);
-  color: var(--text);
-}
-.ccx-remove:hover {
-  background: var(--err-hover-bg);
-  color: var(--err-text);
-  border-color: var(--err-text, #e0556b);
 }
 </style>

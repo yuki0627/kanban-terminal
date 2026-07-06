@@ -14,51 +14,13 @@ export interface Launcher {
   command: string;
 }
 
-// A user-added HTTP MCP server the single-view Claude session should load. `id` becomes
-// the server name in --mcp-config (and the `mcp__<id>__*` tool prefix), `url` its
-// streamable-HTTP endpoint. In the Docker sandbox the URL's loopback host is rewritten
-// to host.docker.internal (see server/sandbox.ts).
-export interface UserMcpServer {
-  id: string;
-  url: string;
-}
-
 export interface AppConfig {
   cwdPresets: CwdPreset[];
   // Absolute path to a user-supplied audio file played as the attention sound, or
   // null to use the built-in synthesized chime (the default — no bundled asset).
   soundFile: string | null;
-  // GitHub repos ("owner/repo") whose open PRs the cross-repo PR view aggregates.
-  prRepos: string[];
   // User-defined launch commands offered in the grid cell launcher (label + command).
   launchers: Launcher[];
-  // User-added HTTP MCP servers merged into the single-view session's --mcp-config.
-  userMcpServers: UserMcpServer[];
-}
-
-// `id` becomes an MCP server name + `mcp__<id>` tool prefix, so restrict to a plain
-// slug. `url` must be an http(s) endpoint. Dedupe by id, cap the count.
-const MCP_ID_RE = /^[A-Za-z0-9_-]+$/;
-const MCP_URL_RE = /^https?:\/\/\S+$/;
-const MCP_SERVERS_MAX = 20;
-// The built-in GUI MCP server name — reserved so a user entry can't shadow it and
-// break mcp__mulmoterminal-gui__* tool routing.
-const RESERVED_MCP_IDS = new Set(["mulmoterminal-gui"]);
-export function sanitizeUserMcpServers(input: unknown): UserMcpServer[] {
-  if (!Array.isArray(input)) return [];
-  const seen = new Set<string>();
-  const out: UserMcpServer[] = [];
-  for (const v of input) {
-    if (!v || typeof v !== "object") continue;
-    const o = v as Record<string, unknown>;
-    const id = typeof o.id === "string" ? o.id.trim() : "";
-    const url = typeof o.url === "string" ? o.url.trim() : "";
-    if (!MCP_ID_RE.test(id) || RESERVED_MCP_IDS.has(id) || !MCP_URL_RE.test(url) || seen.has(id)) continue;
-    seen.add(id);
-    out.push({ id, url });
-    if (out.length >= MCP_SERVERS_MAX) break;
-  }
-  return out;
 }
 
 const LAUNCHER_LABEL_MAX = 40;
@@ -85,20 +47,6 @@ export function sanitizeLaunchers(input: unknown): Launcher[] {
   return out;
 }
 
-// "owner/repo" only — the value is passed to `gh pr list --repo`, so reject anything
-// that isn't a plain slug (no spaces, flags, or paths). Trimmed, de-duplicated.
-const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-export function sanitizeRepos(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  const seen = new Set<string>();
-  for (const v of input) {
-    if (typeof v !== "string") continue;
-    const r = v.trim();
-    if (REPO_RE.test(r)) seen.add(r);
-  }
-  return [...seen];
-}
-
 // Keep only a non-empty ABSOLUTE path; anything else (relative, blank, non-string)
 // clears the custom sound. Absolute-only matches the documented contract and stops
 // /api/sound from resolving a relative value against the server's cwd.
@@ -110,7 +58,7 @@ export function sanitizeSoundFile(input: unknown): string | null {
 
 // Fresh object each call — callers hold and mutate the returned config in place, so a
 // shared default constant would be corrupted across loads.
-const emptyConfig = (): AppConfig => ({ cwdPresets: [], soundFile: null, prRepos: [], launchers: [], userMcpServers: [] });
+const emptyConfig = (): AppConfig => ({ cwdPresets: [], soundFile: null, launchers: [] });
 
 export function loadAppConfig(file: string): AppConfig {
   try {
@@ -119,9 +67,7 @@ export function loadAppConfig(file: string): AppConfig {
     return {
       cwdPresets: sanitizePresets(raw?.cwdPresets),
       soundFile: sanitizeSoundFile(raw?.soundFile),
-      prRepos: sanitizeRepos(raw?.prRepos),
       launchers: sanitizeLaunchers(raw?.launchers),
-      userMcpServers: sanitizeUserMcpServers(raw?.userMcpServers),
     };
   } catch {
     return emptyConfig();
@@ -136,9 +82,7 @@ export function saveAppConfig(file: string, config: AppConfig): boolean {
     const payload = {
       cwdPresets: config.cwdPresets,
       soundFile: config.soundFile,
-      prRepos: config.prRepos,
       launchers: config.launchers,
-      userMcpServers: config.userMcpServers,
     };
     writeFileSync(file, JSON.stringify(payload, null, 2));
     return true;

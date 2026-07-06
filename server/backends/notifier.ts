@@ -1,78 +1,114 @@
-// Notification engine wiring, shared with MulmoClaude via @mulmoclaude/core. The
-// engine holds an active set + a capped history, persisted to the SHARED workspace
-// (<ws>/data/notifier/{active,history}.json — the same files MulmoClaude uses; both
-// apps never run simultaneously, so no locking). Every state change fans out a
-// NotifierEvent on the pubsub NOTIFIER_CHANNEL so the bell UI updates live.
 import path from "node:path";
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
-import { configureNotifier, setNotifierFilePaths, listAll, listHistory, clear } from "@mulmoclaude/core/notifier";
 import type { createPubSub } from "../pubsub.js";
 
 type PubSub = ReturnType<typeof createPubSub>;
 
-/** Pubsub channel the engine fans out on; the frontend bell subscribes to the same
- *  string (mirrored in src/composables/useNotifications.ts). */
 export const NOTIFIER_CHANNEL = "notifications";
 
-const log = {
-  warn: (message: string, data?: Record<string, unknown>) => console.warn(`[notifier] ${message}`, data ?? ""),
-  error: (message: string, data?: Record<string, unknown>) => console.error(`[notifier] ${message}`, data ?? ""),
-};
+export type NotifierSeverity = "info" | "nudge" | "urgent";
+export type NotifierLifecycle = "fyi" | "action";
 
-// Atomic JSON writer (temp file + rename), matching the pattern in shortcuts.ts so a
-// reader never sees a half-written file. The engine serialises its own mutations.
-async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
-  const tmp = `${filePath}.${randomUUID()}.tmp`;
+export interface NotifierEntry {
+  id: string;
+  pluginPkg: string;
+  severity: NotifierSeverity;
+  lifecycle?: NotifierLifecycle;
+  title: string;
+  body?: string;
+  pluginData?: unknown;
+  createdAt: string;
+}
+
+let active: NotifierEntry[] = [];
+let history: NotifierEntry[] = [];
+let activeFile: string | null = null;
+let historyFile: string | null = null;
+let pubsub: PubSub | null = null;
+
+async function readList(file: string): Promise<NotifierEntry[]> {
   try {
-    await fs.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-    await fs.rename(tmp, filePath);
-  } catch (err) {
-    await fs.rm(tmp, { force: true }).catch(() => {});
-    throw err;
+    const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    return Array.isArray(parsed) ? parsed.filter(isNotifierEntry) : [];
+  } catch {
+    return [];
   }
 }
 
-/** Configure the engine against MulmoTerminal's pubsub + the shared workspace files.
- *  Call once at startup, before any publish/clear (and before the collection
- *  watchers start). */
-export async function initNotifier(deps: { workspace: string; pubsub: PubSub | null }): Promise<void> {
-  const { workspace, pubsub } = deps;
-  const dir = path.join(workspace, "data", "notifier");
-  await fs.mkdir(dir, { recursive: true });
-  configureNotifier({
-    writeJson: writeJsonAtomic,
-    publishEvent: (event) => pubsub?.publish(NOTIFIER_CHANNEL, event),
-    log,
-  });
-  setNotifierFilePaths({ active: path.join(dir, "active.json"), history: path.join(dir, "history.json") });
+async function writeList(file: string, list: readonly NotifierEntry[]): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, `${JSON.stringify(list, null, 2)}\n`, "utf8");
 }
 
-/** REST surface for the bell: list active, list history, dismiss one. */
+function isNotifierEntry(value: unknown): value is NotifierEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.pluginPkg === "string" &&
+    typeof entry.title === "string" &&
+    typeof entry.createdAt === "string" &&
+    (entry.severity === "info" || entry.severity === "nudge" || entry.severity === "urgent")
+  );
+}
+
+async function persist(): Promise<void> {
+  if (activeFile) await writeList(activeFile, active);
+  if (historyFile) await writeList(historyFile, history);
+}
+
+export async function publishNotification(input: {
+  pluginPkg: string;
+  severity: NotifierSeverity;
+  lifecycle?: NotifierLifecycle;
+  title: string;
+  body?: string;
+  pluginData?: unknown;
+}): Promise<NotifierEntry> {
+  const entry: NotifierEntry = {
+    id: randomUUID(),
+    pluginPkg: input.pluginPkg,
+    severity: input.severity,
+    lifecycle: input.lifecycle,
+    title: input.title,
+    body: input.body,
+    pluginData: input.pluginData,
+    createdAt: new Date().toISOString(),
+  };
+  active = [entry, ...active.filter((existing) => existing.id !== entry.id)];
+  pubsub?.publish(NOTIFIER_CHANNEL, { type: "published", entry });
+  await persist();
+  return entry;
+}
+
+export async function initNotifier(deps: { workspace: string; pubsub: PubSub | null }): Promise<void> {
+  const dir = path.join(deps.workspace, "data", "notifier");
+  activeFile = path.join(dir, "active.json");
+  historyFile = path.join(dir, "history.json");
+  pubsub = deps.pubsub;
+  active = await readList(activeFile);
+  history = await readList(historyFile);
+}
+
 export function mountNotificationRoutes(app: Express): void {
-  app.get("/api/notifications", async (_req: Request, res: Response) => {
-    try {
-      res.json({ active: await listAll() });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
+  app.get("/api/notifications", (_req: Request, res: Response) => {
+    res.json({ active });
   });
 
-  app.get("/api/notifications/history", async (_req: Request, res: Response) => {
-    try {
-      res.json({ history: await listHistory() });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
+  app.get("/api/notifications/history", (_req: Request, res: Response) => {
+    res.json({ history });
   });
 
   app.post("/api/notifications/:id/clear", async (req: Request<{ id: string }>, res: Response) => {
-    try {
-      await clear(req.params.id);
-      res.status(204).end();
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    const idx = active.findIndex((entry) => entry.id === req.params.id);
+    if (idx !== -1) {
+      const [cleared] = active.splice(idx, 1);
+      history = [cleared, ...history.filter((entry) => entry.id !== cleared.id)].slice(0, 200);
+      pubsub?.publish(NOTIFIER_CHANNEL, { type: "cleared", id: cleared.id });
+      await persist();
     }
+    res.status(204).end();
   });
 }

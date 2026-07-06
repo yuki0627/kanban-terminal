@@ -19,9 +19,8 @@ const emit = defineEmits<{
   (e: "update:filter", f: Filter): void;
 }>();
 
-// A session that is `waiting` for the user's attention is what mulmoclaude calls
-// "unread" — render it bold and let the user filter to just those rows. Hidden
-// background workers are excluded (see isUnread).
+// A session that is `waiting` for the user's attention is rendered bold and can be
+// filtered. Hidden background workers are excluded (see isUnread).
 const unreadCount = computed(() => props.sessions.filter(isUnread).length);
 const visibleSessions = computed(() => (props.filter === "unread" ? props.sessions.filter(isUnread) : props.sessions));
 
@@ -199,8 +198,7 @@ function relativeTime(ms: number): string {
   color: var(--text);
 }
 
-/* Shown while Claude is working/"thinking" in a session (UserPromptSubmit →
-   Stop). Mirrors mulmoclaude's spinning role icon: a slowly rotating ring. */
+/* Shown while Claude is working/"thinking" in a session (UserPromptSubmit → Stop). */
 .spinner {
   display: inline-block;
   width: 10px;

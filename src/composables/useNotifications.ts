@@ -1,14 +1,13 @@
-// Toolbar notification state. Mirrors MulmoClaude's useNotifications: a module-level
-// singleton that fetches the active set once, then keeps it live by subscribing to
-// the notifier pubsub channel. The bell (NotificationBell.vue) reads count /
-// topSeverity / sorted and calls dismiss / activate.
+// Toolbar notification state: a module-level singleton that fetches the active set
+// once, then keeps it live by subscribing to the notifier pubsub channel. The bell
+// (NotificationBell.vue) reads count / topSeverity / sorted and calls dismiss /
+// activate.
 //
-// Server-only @mulmoclaude/core/notifier types are NOT imported here (that would pull
-// node code into the browser bundle); the small value types are mirrored locally,
-// matching the wire shape the server's /api/notifications + NotifierEvent emit.
+// Server-only notifier types are not imported here; the small value types are
+// mirrored locally, matching the wire shape the server's /api/notifications +
+// NotifierEvent emit.
 import { ref, computed } from "vue";
 import { usePubSub } from "./usePubSub";
-import { browseNavigateToRecord } from "./useCollectionBrowse";
 
 // Must match server/backends/notifier.ts NOTIFIER_CHANNEL.
 const NOTIFIER_CHANNEL = "notifications";
@@ -23,7 +22,6 @@ export interface NotifierEntry {
   lifecycle?: NotifierLifecycle;
   title: string;
   body?: string;
-  navigateTarget?: string;
   pluginData?: unknown;
   createdAt: string;
 }
@@ -36,35 +34,6 @@ const SEVERITY_RANK: Record<NotifierSeverity, number> = { info: 0, nudge: 1, urg
 
 const active = ref<NotifierEntry[]>([]);
 let initialized = false;
-
-/** Parse a collection deep-link (`/collections/<slug>?selected=<itemId>`) into its
- *  parts. String ops + URLSearchParams only — no regex (lint bans backtracking-prone
- *  patterns). Returns null for anything that isn't a collection target. */
-export function parseCollectionTarget(target: string | undefined): { slug: string; itemId?: string } | null {
-  if (!target) return null;
-  const prefix = "/collections/";
-  if (!target.startsWith(prefix)) return null;
-  const rest = target.slice(prefix.length);
-  const queryAt = rest.indexOf("?");
-  const rawSlug = queryAt === -1 ? rest : rest.slice(0, queryAt);
-  if (!rawSlug) return null;
-  let itemId: string | undefined;
-  if (queryAt !== -1) {
-    // URLSearchParams.get() returns an already-decoded value — decoding again would
-    // throw "URI malformed" on a valid id containing a literal "%" (e.g. "100% done").
-    const selected = new URLSearchParams(rest.slice(queryAt + 1)).get("selected");
-    if (selected) itemId = selected;
-  }
-  // The slug was string-sliced (not via URLSearchParams), so it is still encoded.
-  // A malformed escape (e.g. "%E0%A4%A") makes decodeURIComponent throw; since this
-  // runs from the row-click handler, treat a bad slug as non-actionable (return null)
-  // rather than letting it crash activation.
-  try {
-    return { slug: decodeURIComponent(rawSlug), itemId };
-  } catch {
-    return null;
-  }
-}
 
 function upsert(entry: NotifierEntry): void {
   const idx = active.value.findIndex((existing) => existing.id === entry.id);
@@ -153,14 +122,10 @@ export function useNotifications() {
     }
   }
 
-  /** Row click: navigate to the entry's target if it's a collection record. Does NOT
-   *  clear — completion bells are action obligations the watcher clears when the
-   *  record is done. Returns true if it navigated. */
-  function activate(entry: NotifierEntry): boolean {
-    const parsed = parseCollectionTarget(entry.navigateTarget);
-    if (!parsed) return false;
-    browseNavigateToRecord(parsed.slug, parsed.itemId);
-    return true;
+  /** Row click hook retained for callers that still check activatability. No
+   *  notification currently navigates. */
+  function activate(): boolean {
+    return false;
   }
 
   return { active, count, topSeverity, sorted, dismiss, activate };

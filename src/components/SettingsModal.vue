@@ -3,41 +3,13 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { previewAttention } from "../composables/useAttentionSound";
 import type { Launcher } from "./launchers";
-import type { UserMcpServer } from "./userMcp";
 
-const props = defineProps<{ soundFile?: string | null; prRepos?: string[]; launchers?: Launcher[]; userMcpServers?: UserMcpServer[] }>();
+const props = defineProps<{ soundFile?: string | null; launchers?: Launcher[] }>();
 const emit = defineEmits<{
   (e: "update-sound", file: string | null): void;
-  (e: "update-repos", repos: string[]): void;
   (e: "update-launchers", launchers: Launcher[]): void;
-  (e: "update-user-mcp", servers: UserMcpServer[]): void;
   (e: "close"): void;
 }>();
-
-// Cross-repo PR view's repos ("owner/repo"). Editable list mirroring the saved value;
-// add/remove emits the new list up (App persists it).
-const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-const repos = ref<string[]>([...(props.prRepos ?? [])]);
-watch(
-  () => props.prRepos,
-  (r) => (repos.value = [...(r ?? [])]),
-);
-const newRepo = ref("");
-const newRepoValid = computed(() => {
-  const r = newRepo.value.trim();
-  return REPO_RE.test(r) && !repos.value.includes(r);
-});
-function addRepo() {
-  const r = newRepo.value.trim();
-  if (!REPO_RE.test(r) || repos.value.includes(r)) return;
-  repos.value = [...repos.value, r];
-  newRepo.value = "";
-  emit("update-repos", repos.value);
-}
-function removeRepo(r: string) {
-  repos.value = repos.value.filter((x) => x !== r);
-  emit("update-repos", repos.value);
-}
 
 // Cell-launcher commands (label + command). Editable list mirroring the saved value;
 // add/remove emits the new list up (App persists it).
@@ -65,35 +37,6 @@ function addLauncher() {
 function removeLauncher(label: string) {
   launcherList.value = launcherList.value.filter((l) => l.label !== label);
   emit("update-launchers", launcherList.value);
-}
-
-// User HTTP MCP servers (id + url) merged into the single-view Claude session. Editable
-// list mirroring the saved value; add/remove emits the new list up.
-const MCP_ID_RE = /^[A-Za-z0-9_-]+$/;
-const mcpServers = ref<UserMcpServer[]>([...(props.userMcpServers ?? [])]);
-watch(
-  () => props.userMcpServers,
-  (s) => (mcpServers.value = [...(s ?? [])]),
-);
-const newMcpId = ref("");
-const newMcpUrl = ref("");
-const newMcpValid = computed(() => {
-  const id = newMcpId.value.trim();
-  const url = newMcpUrl.value.trim();
-  return MCP_ID_RE.test(id) && /^https?:\/\/\S+$/.test(url) && !mcpServers.value.some((s) => s.id === id);
-});
-function addMcpServer() {
-  const id = newMcpId.value.trim();
-  const url = newMcpUrl.value.trim();
-  if (!newMcpValid.value) return;
-  mcpServers.value = [...mcpServers.value, { id, url }];
-  newMcpId.value = "";
-  newMcpUrl.value = "";
-  emit("update-user-mcp", mcpServers.value);
-}
-function removeMcpServer(id: string) {
-  mcpServers.value = mcpServers.value.filter((s) => s.id !== id);
-  emit("update-user-mcp", mcpServers.value);
 }
 
 // Custom attention sound, applied immediately (like the theme) — empty => the
@@ -230,29 +173,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
         <button class="btn" type="button" :disabled="!soundPath" title="Use the built-in chime" @click="clearSound">Use chime</button>
       </div>
 
-      <h3 class="section-title">Pull request repos</h3>
-      <p class="hint">
-        Repos whose open PRs the cross-repo <strong>Pull requests</strong> view lists. Uses your <code>gh</code> login. Format: <code>owner/repo</code>.
-      </p>
-      <ul v-if="repos.length" class="repo-list">
-        <li v-for="r in repos" :key="r" class="repo-item">
-          <span class="repo-name">{{ r }}</span>
-          <button class="icon-btn" type="button" :title="`Remove ${r}`" :aria-label="`Remove ${r}`" @click="removeRepo(r)">✕</button>
-        </li>
-      </ul>
-      <div class="sound-row">
-        <input
-          v-model="newRepo"
-          class="field repo-field"
-          type="text"
-          placeholder="owner/repo"
-          aria-label="Add a repository (owner/repo)"
-          spellcheck="false"
-          @keydown.enter="addRepo"
-        />
-        <button class="btn" type="button" :disabled="!newRepoValid" @click="addRepo">Add</button>
-      </div>
-
       <h3 class="section-title">Launch commands</h3>
       <p class="hint">
         Programs a grid cell can launch besides Claude — a plain shell, <code>codex</code>, any interactive command. They run in the cell's directory as a
@@ -285,41 +205,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
           @keydown.enter="addLauncher"
         />
         <button class="btn" type="button" :disabled="!newLauncherValid" @click="addLauncher">Add</button>
-      </div>
-
-      <h3 class="section-title">MCP servers</h3>
-      <p class="hint">
-        HTTP MCP servers the <strong>single-view</strong> Claude session loads (in addition to the built-in GUI tools). <code>id</code> is the server name;
-        <code>url</code> is its streamable-HTTP endpoint. In the Docker sandbox, a <code>localhost</code> URL is reached over <code>host.docker.internal</code>
-        automatically. Takes effect on the next Claude session.
-      </p>
-      <ul v-if="mcpServers.length" class="repo-list">
-        <li v-for="s in mcpServers" :key="s.id" class="repo-item">
-          <span class="repo-name">{{ s.id }}</span>
-          <code class="launcher-cmd">{{ s.url }}</code>
-          <button class="icon-btn" type="button" :title="`Remove ${s.id}`" :aria-label="`Remove ${s.id}`" @click="removeMcpServer(s.id)">✕</button>
-        </li>
-      </ul>
-      <div class="sound-row launcher-add">
-        <input
-          v-model="newMcpId"
-          class="field launcher-label"
-          type="text"
-          placeholder="id (e.g. weather)"
-          aria-label="MCP server id"
-          spellcheck="false"
-          @keydown.enter="addMcpServer"
-        />
-        <input
-          v-model="newMcpUrl"
-          class="field repo-field"
-          type="text"
-          placeholder="https://… or http://localhost:PORT/mcp"
-          aria-label="MCP server URL"
-          spellcheck="false"
-          @keydown.enter="addMcpServer"
-        />
-        <button class="btn" type="button" :disabled="!newMcpValid" @click="addMcpServer">Add</button>
       </div>
 
       <div class="modal-foot">

@@ -352,8 +352,8 @@ export function terminate(key: string) {
   release(key);
 }
 
-// Submit a GUI-originated message into the PTY (text + a SEPARATE delayed CR — a
-// same-burst text+CR reads as a paste in Claude's TUI). Both writes pin to the
+// Submit text into the PTY (text + a SEPARATE delayed CR — a same-burst text+CR
+// reads as a paste in Claude's TUI). Both writes pin to the
 // socket captured now; if the slot reconnects before the CR fires we skip it rather
 // than submit a stray turn. Returns whether the text was delivered.
 export function submitText(key: string, text: string): boolean {

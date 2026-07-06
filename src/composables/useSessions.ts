@@ -10,13 +10,11 @@ export interface Session {
   /** The hook that set the current state ("Stop" | "Notification" | …), or null —
    *  splits `waiting` into done (Stop) vs blocked (Notification). */
   event?: string | null;
-  /** A hidden background worker (spawnBackgroundChat hidden:true) — listed, but
-   *  never treated as unread/bold. */
+  /** Listed, but never treated as unread/bold. */
   hidden?: boolean;
 }
 
-// "unread" = a session whose `waiting` flag is set, EXCEPT hidden background
-// workers (mulmoclaude's unread, minus the background noise).
+// "unread" = a session whose `waiting` flag is set, except hidden rows.
 export type Filter = "all" | "unread";
 
 /** A session that should draw the user's attention (bold + Unread filter): waiting

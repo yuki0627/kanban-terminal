@@ -2,8 +2,8 @@
 // `?cwd=` project dir (the directory a terminal's session runs in) so each terminal
 // browses/edits ITS OWN project. list/text/md are read-only GETs; write is a PUT.
 //
-// Security: the same loopback/trusted-local-user posture as the worktree/session
-// endpoints — any absolute existing dir is an allowed base — but `path` is always
+// Security: the same loopback/trusted-local-user posture as the session endpoints
+// — any absolute existing dir is an allowed base — but `path` is always
 // contained within that base (no `..`/absolute escape), for reads AND writes. Rendered
 // markdown is served under a sandbox CSP so embedded scripts can't run in the app origin.
 import path from "node:path";

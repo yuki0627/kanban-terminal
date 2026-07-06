@@ -3,22 +3,14 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { router } from "../router";
 import NotificationBell from "./NotificationBell.vue";
-import { useShortcuts } from "../composables/useShortcuts";
-import { useCollectionBrowse, browseGotoIndex, browseGotoDetail } from "../composables/useCollectionBrowse";
-import { useAccountingView, accountingViewOpen } from "../composables/useAccountingView";
-import { useWikiBrowse, wikiGotoIndex } from "../composables/useWikiBrowse";
-import { usePrsView, prsGotoIndex } from "../composables/usePrsView";
 import { useSoundEnabled } from "../composables/useSoundEnabled";
-import type { Shortcut } from "../types/shortcuts";
 import type { StatusCounts } from "./gridTabs";
 
 // The standard header, shared by the single (App.vue) and grid (GridView.vue) views so
 // both show one identical toolbar. Every launcher button now just pushes a route — the
-// surface (single shell vs grid, which overlay) is derived from the URL — so navigating
-// to a single-view surface (collections / accounting) inherently leaves the grid. The
-// active states re-derive from route.name (via the route-backed browse/accounting
-// stores). Grid-only state (`addTerminalActive`, `autoSort`) is still passed in, and
-// the grid-only actions (add-terminal / toggle-sort) and settings stay emits.
+// surface (single shell vs grid) is derived from the URL. The active states re-derive
+// from route.name. Grid-only state (`addTerminalActive`, `autoSort`) is still passed
+// in, and the grid-only actions (add-terminal / toggle-sort) and settings stay emits.
 const props = defineProps<{ addTerminalActive?: boolean; autoSort?: boolean; statusCounts?: StatusCounts }>();
 const emit = defineEmits<{ (e: "add-terminal" | "toggle-sort" | "settings"): void }>();
 
@@ -36,24 +28,12 @@ const summaryTitle = computed(() => {
   return parts.join(" · ");
 });
 const hasSummary = computed(() => !!props.statusCounts && props.statusCounts.blocked + props.statusCounts.done + props.statusCounts.working > 0);
-const { shortcuts } = useShortcuts();
-const { view: browseView } = useCollectionBrowse();
-const { isOpen: accountingOpen } = useAccountingView();
-const { isOpen: wikiOpen } = useWikiBrowse();
-const { isOpen: prsOpen } = usePrsView();
 const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
 
 const inGrid = computed(() => route.name === "terminals");
 const inKanban = computed(() => route.name === "kanban");
 const inSingle = computed(() => !inGrid.value && !inKanban.value);
-const chatActive = computed(() => inSingle.value && browseView.value.mode === "closed" && !accountingOpen.value && !wikiOpen.value && !prsOpen.value);
-const collectionsActive = computed(() => browseView.value.mode === "index" && browseView.value.kind === "collection");
-const accountingActive = computed(() => accountingOpen.value);
-const wikiActive = computed(() => wikiOpen.value);
-const prsActive = computed(() => prsOpen.value);
-function favActive(s: Shortcut): boolean {
-  return browseView.value.mode === "detail" && browseView.value.kind === s.kind && browseView.value.slug === s.slug;
-}
+const chatActive = computed(() => inSingle.value);
 
 function showChat(): void {
   router.push("/");
@@ -63,21 +43,6 @@ function showGrid(): void {
 }
 function showKanban(): void {
   router.push("/kanban");
-}
-function showCollections(): void {
-  browseGotoIndex("collection");
-}
-function showFavorite(s: Shortcut): void {
-  browseGotoDetail(s.kind, s.slug);
-}
-function showAccounting(): void {
-  accountingViewOpen();
-}
-function showWiki(): void {
-  wikiGotoIndex();
-}
-function showPrs(): void {
-  prsGotoIndex();
 }
 </script>
 
@@ -93,30 +58,6 @@ function showPrs(): void {
       </button>
       <button type="button" class="launcher-btn" :class="{ active: inKanban }" title="Kanban board" aria-label="Kanban board" @click="showKanban">
         <span class="material-symbols-outlined">view_kanban</span>
-      </button>
-      <button type="button" class="launcher-btn" :class="{ active: collectionsActive }" title="Collections" aria-label="Collections" @click="showCollections">
-        <span class="material-symbols-outlined">apps</span>
-      </button>
-      <button type="button" class="launcher-btn" :class="{ active: accountingActive }" title="Accounting" aria-label="Accounting" @click="showAccounting">
-        <span class="material-symbols-outlined">account_balance</span>
-      </button>
-      <button type="button" class="launcher-btn" :class="{ active: prsActive }" title="Pull requests" aria-label="Pull requests" @click="showPrs">
-        <span class="material-symbols-outlined">call_merge</span>
-      </button>
-      <button type="button" class="launcher-btn" :class="{ active: wikiActive }" title="Wiki" aria-label="Wiki" @click="showWiki">
-        <span class="material-symbols-outlined">menu_book</span>
-      </button>
-      <button
-        v-for="s in shortcuts"
-        :key="`${s.kind}:${s.slug}`"
-        type="button"
-        class="launcher-btn"
-        :class="{ active: favActive(s) }"
-        :title="s.title"
-        :aria-label="s.title"
-        @click="showFavorite(s)"
-      >
-        <span class="material-symbols-outlined">{{ s.icon || "bookmark" }}</span>
       </button>
       <button
         v-if="inGrid"
@@ -188,8 +129,7 @@ function showPrs(): void {
   letter-spacing: 0.02em;
 }
 
-/* Toolbar tabs: Chat + Grid + Collections + Accounting + one per pinned favorite
-   (+ the grid-only New terminal button). Icon-only. */
+/* Toolbar tabs plus the grid-only New terminal button. Icon-only. */
 .launcher {
   display: flex;
   align-items: center;
