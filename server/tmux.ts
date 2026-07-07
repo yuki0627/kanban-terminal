@@ -71,7 +71,7 @@ export const tmuxSessionName = (id: string): string => `${SESSION_PREFIX}${id}`;
 // primitive covers both first launch and reattach-after-restart. Returned as the args
 // for pty.spawn("tmux", ...).
 export function tmuxNewSessionArgs(id: string, file: string, args: string[], cwd: string): string[] {
-  return ["-L", SERVER_SOCKET, "-f", CONF_FILE, "new-session", "-A", "-s", tmuxSessionName(id), "-c", cwd, "--", file, ...args];
+  return ["-u", "-L", SERVER_SOCKET, "-f", CONF_FILE, "new-session", "-A", "-s", tmuxSessionName(id), "-c", cwd, "--", file, ...args];
 }
 
 // Is a persistent session for this id currently alive in our tmux server?
