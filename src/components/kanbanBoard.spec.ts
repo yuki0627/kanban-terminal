@@ -3,8 +3,6 @@ import {
   emptyKanbanState,
   initialKanbanState,
   laneForStatus,
-  applyStatus,
-  syncSessions,
   moveCard,
   setExpanded,
   laneCards,
@@ -88,87 +86,6 @@ describe("updateOverlayFrame", () => {
   it("persists the user-sized card window frame", () => {
     const s = updateOverlayFrame(state([card()]), "c1", { x: 10, y: 20, width: 900, height: 640 });
     expect(s.cards[0].overlay).toEqual({ x: 10, y: 20, width: 900, height: 640 });
-  });
-});
-
-describe("applyStatus", () => {
-  it("moves a card to in_progress when work starts and to in_review when the agent waits", () => {
-    let s = state([card()]);
-    s = applyStatus(s, "s1", "working");
-    expect(s.cards[0].lane).toBe("in_progress");
-    s = applyStatus(s, "s1", "done");
-    expect(s.cards[0].lane).toBe("in_review");
-  });
-
-  it("is edge-triggered: a re-sent snapshot of the same status is a no-op", () => {
-    const before = state([card({ lane: "in_review", lastStatus: "done", manual: true })]);
-    expect(applyStatus(before, "s1", "done")).toBe(before);
-  });
-
-  it("parks the card where it is on idle (e.g. after a server restart)", () => {
-    const s = applyStatus(state([card({ lane: "in_review", lastStatus: "done" })]), "s1", "idle");
-    expect(s.cards[0].lane).toBe("in_review");
-    expect(s.cards[0].lastStatus).toBe("idle");
-  });
-
-  it("protects a manually finished card from waiting statuses", () => {
-    for (const lane of ["done", "canceled"] as const) {
-      const s = applyStatus(state([card({ lane, manual: true })]), "s1", "blocked");
-      expect(s.cards[0].lane).toBe(lane);
-    }
-  });
-
-  it("re-opens a manually finished card only on a real work-start", () => {
-    const s = applyStatus(state([card({ lane: "done", manual: true })]), "s1", "working");
-    expect(s.cards[0].lane).toBe("in_progress");
-    expect(s.cards[0].manual).toBe(false);
-  });
-
-  it("marks an automatic move unread unless the card is open in the overlay", () => {
-    const closed = applyStatus(state([card()]), "s1", "working");
-    expect(closed.cards[0].unread).toBe(true);
-    const open = applyStatus(state([card()], "c1"), "s1", "working");
-    expect(open.cards[0].unread).toBe(false);
-  });
-
-  it("ignores unknown sessions", () => {
-    const before = state([card()]);
-    expect(applyStatus(before, "ghost", "working")).toBe(before);
-  });
-});
-
-describe("syncSessions", () => {
-  it("places first-seen sessions by current status without marking unread", () => {
-    const s = syncSessions(state([]), [
-      { id: "a", status: "working", title: "A" },
-      { id: "b", status: "done", title: "B" },
-      { id: "c", status: "idle", title: "C" },
-    ]);
-    expect(s.cards.map((c) => [c.terminal.sessionId, c.name, c.lane, c.unread])).toEqual([
-      ["a", "A", "in_progress", false],
-      ["b", "B", "in_review", false],
-      ["c", "C", "todo", false],
-    ]);
-  });
-
-  it("prepends new cards and keeps existing board order", () => {
-    const s = syncSessions(state([card({ id: "old", terminal: { sessionId: "old", agentKind: "claude", cwd: null } })]), [
-      { id: "old", status: "idle" },
-      { id: "new", status: "idle" },
-    ]);
-    expect(s.cards.map((c) => c.terminal.sessionId)).toEqual(["new", "old"]);
-  });
-
-  it("runs transitions for known sessions without dropping unlisted cards", () => {
-    const s = syncSessions(
-      state([
-        card({ terminal: { sessionId: "a", agentKind: "claude", cwd: null } }),
-        card({ id: "note", terminal: { sessionId: null, agentKind: "shell", cwd: null } }),
-      ]),
-      [{ id: "a", status: "working" }],
-    );
-    expect(s.cards.map((c) => c.id)).toEqual(["c1", "note"]);
-    expect(s.cards[0].lane).toBe("in_progress");
   });
 });
 

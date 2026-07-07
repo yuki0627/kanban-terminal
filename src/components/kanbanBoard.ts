@@ -65,17 +65,7 @@ export interface KanbanState {
   expanded: string | null;
 }
 
-export interface SessionSnapshot {
-  id: string;
-  status: CellStatus;
-  title?: string;
-  cwd?: string | null;
-}
-
 export const emptyKanbanState = (): KanbanState => ({ projects: [], cards: [], expanded: null });
-
-/** Lanes a user can finish a card into; protected from automatic pull-back. */
-const FINISHED: ReadonlyArray<LaneId> = ["done", "canceled"];
 
 /** The lane a status SIGNALS, or undefined when it signals nothing. */
 export function laneForStatus(status: CellStatus): LaneId | undefined {
@@ -154,70 +144,6 @@ function parseJson(raw: string | null): unknown {
   } catch {
     return null;
   }
-}
-
-function cardForSession(state: KanbanState, sessionId: string): KanbanCard | undefined {
-  return state.cards.find((c) => c.terminal.sessionId === sessionId);
-}
-
-/** Apply one session's current status. Automatic transitions are edge-triggered
- *  and never touch manually finished cards except on a real work-start. */
-export function applyStatus(state: KanbanState, sessionId: string, status: CellStatus): KanbanState {
-  const card = cardForSession(state, sessionId);
-  if (!card || card.lastStatus === status) return state;
-  const target = laneForStatus(status);
-  const protectedFinish = card.manual && FINISHED.includes(card.lane) && status !== "working";
-  const lane = target !== undefined && !protectedFinish ? target : card.lane;
-  const moved = lane !== card.lane;
-  const next: KanbanCard = {
-    ...card,
-    lane,
-    lastStatus: status,
-    updatedAt: Date.now(),
-    manual: moved ? false : card.manual,
-    unread: card.unread || (moved && state.expanded !== card.id),
-  };
-  return { ...state, cards: state.cards.map((c) => (c.id === card.id ? next : c)) };
-}
-
-function uniqueCardId(seed: string, cards: ReadonlyArray<KanbanCard>): string {
-  const used = new Set(cards.map((c) => c.id));
-  let id = seed;
-  let n = 2;
-  while (used.has(id)) id = `${seed}-${n++}`;
-  return id;
-}
-
-/** Reconcile with the server's session list. Unknown sessions become cards; known
- *  sessions run applyStatus. Cards are not dropped when a transcript disappears,
- *  because board/card state is now authoritative and server-persisted. */
-export function syncSessions(state: KanbanState, sessions: ReadonlyArray<SessionSnapshot>): KanbanState {
-  const known = new Set(state.cards.map((c) => c.terminal.sessionId).filter((id): id is string => !!id));
-  let next = state;
-  const added: KanbanCard[] = [];
-  const now = Date.now();
-  for (const s of sessions) {
-    if (known.has(s.id)) {
-      next = applyStatus(next, s.id, s.status);
-    } else {
-      added.push({
-        id: uniqueCardId(`session-${s.id}`, [...next.cards, ...added]),
-        projectId: null,
-        name: s.title || s.id.slice(0, 8),
-        memo: "",
-        lane: laneForStatus(s.status) ?? "todo",
-        archived: false,
-        unread: false,
-        terminal: { sessionId: s.id, agentKind: "claude", cwd: s.cwd ?? null },
-        overlay: null,
-        createdAt: now,
-        updatedAt: now,
-        manual: false,
-        lastStatus: s.status,
-      });
-    }
-  }
-  return added.length ? { ...next, cards: [...added, ...next.cards] } : next;
 }
 
 /** A user drag: place the card wherever they want, mark it manual, and clear unread. */
