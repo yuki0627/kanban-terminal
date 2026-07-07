@@ -271,50 +271,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
   flex: 1 1 auto;
   font-family: ui-monospace, "JetBrains Mono", monospace;
 }
-.repo-field {
-  flex: 1 1 auto;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-}
-.launcher-label {
-  flex: 1 1 30%;
-  min-width: 0;
-}
-.launcher-add .repo-field {
-  min-width: 0; /* let the command field shrink instead of overflowing the row */
-}
-.launcher-cmd {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 11px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.repo-list {
-  list-style: none;
-  margin: 0 0 8px;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.repo-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px 4px 10px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.repo-name {
-  flex: 1 1 auto;
-  font-family: ui-monospace, "JetBrains Mono", monospace;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
 .sound-actions {
   display: flex;
   gap: 8px;
