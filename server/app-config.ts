@@ -1,4 +1,4 @@
-// The app config persisted at ~/.mulmoterminal/config.json: the user's directory
+// The app config persisted at ~/.kanban-terminal/config.json: the user's directory
 // presets plus an optional custom attention-sound file. Unified read/write so a
 // partial update (e.g. just the sound) never clobbers the other field. Extracted
 // from config-routes.ts so the sanitize/load/save logic is unit-testable.

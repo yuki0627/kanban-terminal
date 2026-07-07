@@ -40,7 +40,7 @@ describe("fetchLatestVersion", () => {
   });
 
   it("returns null when the payload has no version string", async () => {
-    stubFetch(async () => ({ ok: true, json: async () => ({ name: "mulmoterminal" }) }));
+    stubFetch(async () => ({ ok: true, json: async () => ({ name: "kanban-terminal" }) }));
     expect(await fetchLatestVersion()).toBeNull();
   });
 });

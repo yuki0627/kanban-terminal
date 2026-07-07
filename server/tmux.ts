@@ -1,18 +1,18 @@
 // tmux-backed session persistence: run each PTY inside a tmux session so it survives
-// the mulmoterminal server dying (crash / restart) and reattaches when the server comes
+// the kanban-terminal server dying (crash / restart) and reattaches when the server comes
 // back — like `screen`/`tmux` do. When tmux isn't installed, callers fall back to a
 // direct pty.spawn (non-persistent, current behavior).
 //
-// Isolation: we use our OWN tmux server (`-L mulmoterminal`) and config file, so none
+// Isolation: we use our OWN tmux server (`-L kanban-terminal`) and config file, so none
 // of this touches the user's own tmux sessions, keybindings, or status bar.
 import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const SERVER_SOCKET = "mulmoterminal";
-const SESSION_PREFIX = "mt-";
-const CONF_FILE = path.join(os.homedir(), ".mulmoterminal", "tmux.conf");
+const SERVER_SOCKET = "kanban-terminal";
+const SESSION_PREFIX = "kt-";
+const CONF_FILE = path.join(os.homedir(), ".kanban-terminal", "tmux.conf");
 
 // Spawn a command with the binary as a PARAMETER (not a string literal at the call
 // site) — mirrors server/gh.ts so it isn't flagged as a spawn-of-a-string-literal.

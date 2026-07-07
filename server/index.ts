@@ -16,7 +16,7 @@ import { applyCardStatus, loadBoard, saveBoard, type BoardState, type Card, type
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand, tmuxPanePid } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
-import { buildClaudeArgs } from "./claude-args.js";
+import { createClaudeAgentKind, detectAgentProcess } from "./agent-kind.js";
 import {
   isRecord,
   parseJsonl,
@@ -103,6 +103,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 34567;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
+const CLAUDE_AGENT = createClaudeAgentKind(CLAUDE_BIN);
+const AGENT_KINDS = [CLAUDE_AGENT];
 // Permission mode for backend-spawned Claude sessions. Defaults to "auto" so
 // the backend runs hands-off; override with CLAUDE_PERMISSION_MODE (e.g.
 // "default" / "acceptEdits" / "bypassPermissions" / "plan") when needed.
@@ -116,7 +118,7 @@ const PTY_ROWS = 30;
 // session state, so it must exist before we spawn anything into it.
 await fs.mkdir(CLAUDE_CWD, { recursive: true });
 
-const MULMOTERMINAL_HOME = path.join(os.homedir(), ".mulmoterminal");
+const KANBAN_TERMINAL_HOME = path.join(os.homedir(), ".kanban-terminal");
 
 // A session id is always a UUID (server-generated, or a .jsonl basename). Reject
 // anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
@@ -134,7 +136,7 @@ const CARD_ID_RE = /^[A-Za-z0-9_.:-]{1,160}$/;
 // the exclusion applies ONLY to the unscoped (chat) query; the grid's OWN cwd-scoped
 // resume picker (/api/sessions?cwd=…) must keep listing these so they stay resumable.
 const devTerminalSessions = new Set<string>();
-const DEV_TERMINAL_SESSIONS_FILE = path.join(MULMOTERMINAL_HOME, "dev-terminal-sessions.json");
+const DEV_TERMINAL_SESSIONS_FILE = path.join(KANBAN_TERMINAL_HOME, "dev-terminal-sessions.json");
 
 // Card terminals are suspend-by-default: a detached socket must not idle-reap the
 // underlying PTY. Hydrate persisted card session ids and mark fresh card sockets
@@ -184,7 +186,7 @@ let devTerminalPersist: Promise<void> = Promise.resolve();
 function persistDevTerminalSessions(): void {
   devTerminalPersist = devTerminalPersist
     .then(() => devTerminalSessionsHydrated)
-    .then(() => fs.mkdir(MULMOTERMINAL_HOME, { recursive: true }))
+    .then(() => fs.mkdir(KANBAN_TERMINAL_HOME, { recursive: true }))
     .then(() => fs.writeFile(DEV_TERMINAL_SESSIONS_FILE, JSON.stringify([...devTerminalSessions])))
     .catch((e) => console.error(`[dev-terminal-sessions] failed to persist: ${messageOf(e)}`));
 }
@@ -559,13 +561,6 @@ const AGENT_TRANSCRIPT_LOOKBACK_MS = 5_000;
 const AGENT_TRANSCRIPT_RETRY_MS = 1_500;
 const AGENT_TRANSCRIPT_MAX_ATTEMPTS = 240;
 
-function aiTitleFromTranscript(raw: string): string | null {
-  for (const o of parseJsonl(raw)) {
-    if (o.type === "ai-title" && typeof o.aiTitle === "string" && o.aiTitle.trim()) return o.aiTitle.trim();
-  }
-  return null;
-}
-
 function isAutoCardName(name: string): boolean {
   const trimmed = name.trim();
   return trimmed === "" || trimmed === "New terminal";
@@ -592,7 +587,7 @@ async function findClaudeTranscriptCandidate(cwd: string, startedAt: number): Pr
         return {
           id: path.basename(file, ".jsonl"),
           createdAt,
-          title: aiTitleFromTranscript(raw),
+          title: CLAUDE_AGENT.titleFromTranscript(raw),
         };
       }),
     )
@@ -683,9 +678,6 @@ const SHELL_COMMANDS = new Set(
     .filter(Boolean)
     .map((v) => v.toLowerCase()),
 );
-const AGENT_COMMANDS = new Set(["claude", "codex", path.basename(CLAUDE_BIN)].filter(Boolean).map((v) => v.toLowerCase()));
-const AGENT_SCRIPT_EXT_RE = /\.(?:cjs|mjs|js|ts)$/i;
-const AGENT_RUNNER_COMMANDS = new Set(["node", "bun", "deno", "npx", "pnpm", "yarn", "npm"]);
 
 function normalizedCommand(command: string): string {
   return path.basename(command).toLowerCase();
@@ -695,32 +687,14 @@ function isShellCommand(command: string): boolean {
   return SHELL_COMMANDS.has(normalizedCommand(command));
 }
 
-function isAgentCommand(command: string): boolean {
-  return AGENT_COMMANDS.has(normalizedCommand(command));
-}
-
-function normalizedArgCommand(token: string): string {
-  return normalizedCommand(token.replace(/^['"]|['"]$/g, "")).replace(AGENT_SCRIPT_EXT_RE, "");
-}
-
-function argsRunAgent(args: string): boolean {
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return false;
-  const command = normalizedArgCommand(tokens[0]);
-  if (AGENT_COMMANDS.has(command)) return true;
-  if (!AGENT_RUNNER_COMMANDS.has(command)) return false;
-  return tokens.slice(1).some((token) => AGENT_COMMANDS.has(normalizedArgCommand(token)));
-}
-
-function processTreeHasAgent(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
+function processTreeAgentArgs(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): string[] {
   const panePid = tmuxPanePid(sessionId);
-  if (panePid === null) return false;
-  return processTreeRows(rows, panePid).some((row) => argsRunAgent(row.args));
+  if (panePid === null) return [];
+  return processTreeRows(rows, panePid).map((row) => row.args);
 }
 
 function isAgentForeground(sessionId: string, command: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
-  if (isAgentCommand(command)) return true;
-  return processTreeHasAgent(sessionId, rows);
+  return detectAgentProcess(AGENT_KINDS, command, processTreeAgentArgs(sessionId, rows)) !== null;
 }
 
 function pollOneCardProcess(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): void {
@@ -874,6 +848,10 @@ async function readSessionMeta(dir: string, file: string): Promise<SessionMeta> 
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, app: "kanban-terminal" });
+});
 
 // Notification REST surface (list active / history, dismiss one) — backs the toolbar
 // bell. The engine is configured below once pubsub + the workspace exist.
@@ -1267,7 +1245,7 @@ function spawnClaudePty(
   // a session's .jsonl until its first prompt, so a started-but-unused session can't
   // be resumed; we restart fresh (reusing the id via --session-id) instead.
   const canResume = resume !== null && sessionExistsOnDisk(resume, cwd);
-  const args = buildClaudeArgs({
+  const args = CLAUDE_AGENT.resumeCommand({
     sessionId,
     resume,
     canResume,
@@ -1697,7 +1675,7 @@ runLaunchWss.on("connection", (ws, req) => {
   ws.on("close", () => handleClientClose(entry, ws, sessionId));
 });
 
-// Exit code the launcher (bin/mulmoterminal.js) treats as "port was taken at
+// Exit code the launcher (bin/kanban-terminal.js) treats as "port was taken at
 // bind time" so it can retry on a fresh port. Keep in sync with the launcher.
 const PORT_IN_USE_EXIT_CODE = 75;
 
@@ -1705,15 +1683,15 @@ const PORT_IN_USE_EXIT_CODE = 75;
 // unhandled 'error' event / stack trace — exit with a clear message instead.
 server.on("error", (err) => {
   if (hasErrnoCode(err) && err.code === "EADDRINUSE") {
-    console.error(`[mulmoterminal] Port ${PORT} is already in use — set PORT=<n> or pass --port <n>.`);
+    console.error(`[kanban-terminal] Port ${PORT} is already in use — set PORT=<n> or pass --port <n>.`);
     process.exit(PORT_IN_USE_EXIT_CODE);
   }
-  console.error(`[mulmoterminal] server error: ${messageOf(err)}`);
+  console.error(`[kanban-terminal] server error: ${messageOf(err)}`);
   process.exit(1);
 });
 
 server.listen(PORT, () => {
-  console.log(`mulmoterminal running at http://localhost:${PORT}`);
+  console.log(`kanban-terminal running at http://localhost:${PORT}`);
   if (tmuxAvailable()) {
     const surviving = tmuxListSessionIds();
     const detail = surviving.length ? ` — ${surviving.length} session(s) survived; reattach on connect` : "";

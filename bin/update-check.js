@@ -5,7 +5,7 @@ const REGISTRY = (process.env.npm_config_registry || "https://registry.npmjs.org
 
 // Best-effort latest-version lookup. Resolves null on any failure (offline,
 // timeout, non-OK, bad payload) so callers never block or break startup.
-export async function fetchLatestVersion(pkg = "mulmoterminal") {
+export async function fetchLatestVersion(pkg = "kanban-terminal") {
   try {
     const res = await fetch(`${REGISTRY}/${pkg}/latest`, {
       signal: AbortSignal.timeout(1500),

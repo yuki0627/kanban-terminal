@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-// MulmoTerminal launcher — `npx mulmoterminal` entry point.
+// kanban-terminal launcher — `npx kanban-terminal` entry point.
 //
 // Ships the server source (TypeScript) + a pre-built client (Vite dist/), and
-// runs the server via tsx. Mirrors the mulmoclaude launcher.
+// runs the server via tsx.
 
 import { execSync, spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
@@ -19,7 +19,6 @@ const PKG_DIR = join(__dirname, "..");
 const SERVER_ENTRY = join(PKG_DIR, "server", "index.ts");
 const DEFAULT_PORT = 34567;
 const READY_TIMEOUT_MS = 15_000;
-const MAX_BIND_RETRIES = 5;
 // Server exit code meaning "port taken at bind time" — keep in sync with
 // server/index.ts (PORT_IN_USE_EXIT_CODE).
 const PORT_IN_USE_EXIT_CODE = 75;
@@ -33,9 +32,9 @@ const log = (msg) => console.log(`\x1b[36m[${PKG_NAME}]\x1b[0m ${msg}`);
 const error = (msg) => console.error(`\x1b[31m[${PKG_NAME}]\x1b[0m ${msg}`);
 
 // Non-blocking notice when a newer version is published — `npm i -g` never
-// auto-updates. Opt out via MULMOTERMINAL_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
+// auto-updates. Opt out via KANBAN_TERMINAL_NO_UPDATE_CHECK / NO_UPDATE_NOTIFIER.
 function checkForUpdate() {
-  if (process.env.MULMOTERMINAL_NO_UPDATE_CHECK || process.env.NO_UPDATE_NOTIFIER) return;
+  if (process.env.KANBAN_TERMINAL_NO_UPDATE_CHECK || process.env.NO_UPDATE_NOTIFIER) return;
   fetchLatestVersion(PKG_NAME)
     .then((latest) => {
       if (latest && isNewerVersion(latest, VERSION)) {
@@ -78,23 +77,6 @@ function isPortFree(port) {
   });
 }
 
-// Ask the OS for a free port (listen on 0) and return the one it assigned, or
-// null. An effectively-random fallback when the preferred port is taken; the
-// bind-retry in main() closes the small probe-to-bind race so concurrent starts
-// don't clash.
-function findEphemeralPort() {
-  return new Promise((resolve) => {
-    const probe = createServer();
-    probe.once("error", () => resolve(null));
-    probe.once("listening", () => {
-      const addr = probe.address();
-      const assigned = addr && typeof addr === "object" ? addr.port : null;
-      probe.close(() => resolve(assigned));
-    });
-    probe.listen(0);
-  });
-}
-
 // Poll the server until it answers, then call onReady; give up after the timeout
 // so the launcher never hangs on a crash loop. Returns a cancel function — a
 // raced/abandoned attempt stops polling so it can't fire a stale banner.
@@ -104,7 +86,7 @@ function waitUntilReady(port, onReady) {
   let cancelled = false;
   const attempt = () => {
     if (cancelled) return;
-    const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: 1000 }, (res) => {
+    const req = httpGet({ host: "127.0.0.1", port, path: "/api/health", timeout: 1000 }, (res) => {
       res.resume();
       if (!cancelled) onReady();
     });
@@ -128,7 +110,7 @@ function waitUntilReady(port, onReady) {
 function printReadyBanner(url) {
   const bar = "\x1b[32m" + "─".repeat(48) + "\x1b[0m";
   console.log(`\n${bar}`);
-  console.log(`\x1b[32m  ✓ MulmoTerminal is ready\x1b[0m`);
+  console.log(`\x1b[32m  ✓ kanban-terminal is ready\x1b[0m`);
   console.log(`\x1b[32m  → ${url}\x1b[0m`);
   console.log(`\x1b[32m  Press Ctrl+C to stop.\x1b[0m`);
   console.log(`${bar}\n`);
@@ -169,29 +151,58 @@ function resolveCwd(args) {
   return abs;
 }
 
-async function choosePort(requested, explicit) {
-  if (await isPortFree(requested)) return requested;
-  if (explicit) {
-    error(`Port ${requested} is already in use. Stop the other process or pick a different --port.`);
-    process.exit(1);
+function openBrowser(url) {
+  try {
+    // The command is a hardcoded literal; url is http://localhost:<numeric port>.
+    execSync(`${pickOpenCommand()} ${url}`, { stdio: "pipe" });
+  } catch {
+    log(`Open your browser: ${url}`);
   }
-  const fallback = await findEphemeralPort();
-  if (fallback === null) {
-    error(`Port ${requested} is in use and no free port could be found.`);
-    process.exit(1);
+}
+
+function isKanbanTerminalServer(port) {
+  return new Promise((resolve) => {
+    const req = httpGet({ host: "127.0.0.1", port, path: "/api/health", timeout: 1000 }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        body += chunk;
+      });
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(body);
+          resolve(res.statusCode === 200 && parsed?.app === "kanban-terminal");
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function choosePortAction(requested, noOpen) {
+  if (await isPortFree(requested)) return { port: requested, start: true };
+  const url = `http://localhost:${requested}`;
+  if (await isKanbanTerminalServer(requested)) {
+    log(`kanban-terminal is already running at ${url}`);
+    if (!noOpen) openBrowser(url);
+    return { port: requested, start: false };
   }
-  log(`Port ${requested} busy → using ${fallback} instead. (Pass --port <N> to pin.)`);
-  return fallback;
+  error(`Port ${requested} is already in use by another process. Stop it or pass --port <number>.`);
+  process.exit(1);
 }
 
 // Spawn the server on `port` and report the child via `onChild` (so signal
-// handlers target the live process). Resolves only when the server exits because
-// the port was taken at bind time before it became ready — the caller then
-// retries on a fresh port. In every other case (clean shutdown, fatal error,
-// or the server simply running) the process exits with the server's code.
+// handlers target the live process). The launcher never falls back to a different
+// port; a port conflict is either an existing kanban-terminal instance or an error.
 function runServer(port, noOpen, cwd, onChild) {
-  return new Promise((resolveExit) => {
-    log(`Starting MulmoTerminal on port ${port}...`);
+  return new Promise(() => {
+    log(`Starting kanban-terminal on port ${port}...`);
     const server = spawn(process.execPath, ["--import", "tsx", SERVER_ENTRY], {
       cwd: PKG_DIR,
       env: { ...process.env, NODE_ENV: "production", PORT: String(port), CLAUDE_CWD: cwd },
@@ -202,23 +213,14 @@ function runServer(port, noOpen, cwd, onChild) {
     const url = `http://localhost:${port}`;
     const cancelReady = waitUntilReady(port, () => {
       printReadyBanner(url);
-      if (noOpen) return;
-      try {
-        // The command is a hardcoded literal; url is http://localhost:<numeric port>.
-
-        execSync(`${pickOpenCommand()} ${url}`, { stdio: "pipe" });
-      } catch {
-        log(`Open your browser: ${url}`);
-      }
+      if (!noOpen) openBrowser(url);
     });
 
     server.on("exit", (code) => {
       cancelReady();
-      // Exit code 75 means this child failed to bind (EADDRINUSE) and never
-      // served — always retriable, regardless of what a probe to the port saw
-      // (another process could have answered it). Other exits are terminal.
       if (code === PORT_IN_USE_EXIT_CODE) {
-        resolveExit();
+        error(`Port ${port} became unavailable before startup completed.`);
+        process.exit(1);
         return;
       }
       process.exit(code ?? 1);
@@ -231,11 +233,11 @@ async function main() {
 
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`
-Usage: npx mulmoterminal [options]
+Usage: npx kanban-terminal [options]
 
 Options:
   --cwd <dir>       Working directory claude runs in (default: current directory; relative paths allowed)
-  --port <number>   Server port (default: ${DEFAULT_PORT}; a free port is chosen if it's busy)
+  --port <number>   Server port (default: ${DEFAULT_PORT})
   --no-open         Don't open the browser automatically
   --version         Show version
   --help            Show this help
@@ -243,7 +245,7 @@ Options:
     return;
   }
   if (args.includes("--version")) {
-    console.log(`mulmoterminal ${VERSION}`);
+    console.log(`kanban-terminal ${VERSION}`);
     return;
   }
 
@@ -261,12 +263,12 @@ Options:
     process.exit(1);
   }
 
-  const { requestedPort, portExplicit } = parsePortArg(args);
+  const { requestedPort } = parsePortArg(args);
   const noOpen = args.includes("--no-open");
   const cwd = resolveCwd(args);
   log(`Workspace: ${cwd}`);
 
-  // Registered once; always targets the live child across bind-retries.
+  // Registered once; targets the live child when this launch starts a server.
   let child = null;
   const shutdown = () => {
     child?.kill("SIGTERM");
@@ -275,28 +277,11 @@ Options:
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // Start on the chosen port; if the server loses the rare probe-to-bind race,
-  // fall back to a fresh OS-assigned port and retry. An explicit --port is not
-  // second-guessed. `runServer` only returns when the port was raced.
-  let port = await choosePort(requestedPort, portExplicit);
-  for (let attempt = 0; attempt <= MAX_BIND_RETRIES; attempt++) {
-    await runServer(port, noOpen, cwd, (c) => {
-      child = c;
-    });
-    if (portExplicit) {
-      error(`Port ${port} is already in use. Stop the other process or pick a different --port.`);
-      process.exit(1);
-    }
-    const next = await findEphemeralPort();
-    if (next === null) {
-      error("No free port available to retry on.");
-      process.exit(1);
-    }
-    log(`Port ${port} was taken at bind time → retrying on ${next}.`);
-    port = next;
-  }
-  error(`Could not bind a free port after ${MAX_BIND_RETRIES + 1} attempts.`);
-  process.exit(1);
+  const action = await choosePortAction(requestedPort, noOpen);
+  if (!action.start) return;
+  await runServer(action.port, noOpen, cwd, (c) => {
+    child = c;
+  });
 }
 
 main();
