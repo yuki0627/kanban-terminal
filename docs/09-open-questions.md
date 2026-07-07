@@ -199,6 +199,11 @@ keep が有力(推奨: keep)。
 
 ### 軽微(まとめて確認でよい)
 
+- 元祖 Electron アプリと 02 は同じ `~/.kanban-terminal/board.json` を使うため、
+  **同時起動すると互いの保存で相手のデータを壊す**(02 の保存は元祖スキーマの
+  追加キー contexts / hookEvents / ui / version 等を落とす。2026-07-07 の
+  受け入れ確認中に実測)。同時起動は非対応でよいが、リリース時に元祖の
+  board.json をどう移行・保護するかは Phase 6 で決める。
 - localhost 前提・認証なしのセキュリティ前提を README / ゴールに1行明記する。
 - Project なし = ホーム起動により、Claude のセッションファイルが
   `~/.claude/projects/<home>` に雑多に溜まる(実害小、認識だけ共有)。
