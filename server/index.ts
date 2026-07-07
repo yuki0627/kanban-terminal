@@ -13,7 +13,7 @@ import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
 import { mountBoardRoutes } from "./board-routes.js";
 import { applyCardStatus, loadBoard, saveBoard, type BoardState, type Card, type CellStatus } from "./board-store.js";
-import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand } from "./tmux.js";
+import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand, tmuxPanePid } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { buildClaudeArgs } from "./claude-args.js";
@@ -31,7 +31,15 @@ import { mountGitRemoteRoute } from "./gitRemote.js";
 import { mountPickFileRoute, mountPickDirectoryRoute } from "./pick-file.js";
 import { initNotifier, mountNotificationRoutes } from "./backends/notifier.js";
 import { SPA_FALLBACK_RE } from "./spa-fallback.js";
-import { currentProcessRows, sumProcessTreeRss } from "./process-memory.js";
+import { currentProcessCommandRows, currentProcessRows, processTreeRows, sumProcessTreeRss } from "./process-memory.js";
+import {
+  AGENT_SILENCE_MS,
+  emptyAgentPtyActivityState,
+  reduceAgentPtyActivity,
+  type AgentPtyActivityEvent,
+  type AgentPtyActivityState,
+  type AgentPtySignal,
+} from "./pty-activity.js";
 
 // Per-session activity flags, driven by Claude hooks (see /api/hook).
 interface Activity {
@@ -136,6 +144,9 @@ const terminalSessionToCard = new Map<string, string>();
 const agentSessionToCard = new Map<string, string>();
 const l2StatusBySession = new Map<string, CellStatus>();
 const l3StatusByCard = new Map<string, CellStatus>();
+const agentForegroundSessions = new Set<string>();
+const agentPtyActivity = new Map<string, AgentPtyActivityState>();
+const agentSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function hydrateCardTerminalSessions(): void {
   cardTerminalSessions.clear();
   terminalSessionToCard.clear();
@@ -237,7 +248,6 @@ const OUTPUT_BUFFER_LIMIT = 64 * 1024;
 let pubsub: ReturnType<typeof createPubSub> | null = null;
 
 const BOARD_CHANNEL = "board";
-const CLAUDE_SHIM_DIR = path.join(os.homedir(), ".kanban-terminal", "shims");
 
 function sanitizeCardId(cardId: string | null): string | null {
   return cardId && CARD_ID_RE.test(cardId) ? cardId : null;
@@ -401,6 +411,8 @@ function reap(id: string) {
   terminalSessionToCard.delete(id);
   agentSessionToCard.delete(id);
   l2StatusBySession.delete(id);
+  agentForegroundSessions.delete(id);
+  clearAgentActivity(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
@@ -467,72 +479,11 @@ function setWaiting(id: string, waiting: boolean, event?: string) {
   if (waiting) armReapForDetached(id);
 }
 
-async function ensureClaudeShim(): Promise<void> {
-  const shim = `#!/bin/sh
-shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-real=""
-old_ifs=$IFS
-IFS=:
-for dir in $PATH; do
-  [ -n "$dir" ] || dir=.
-  [ "$dir" = "$shim_dir" ] && continue
-  if [ -x "$dir/claude" ]; then
-    real="$dir/claude"
-    break
-  fi
-done
-IFS=$old_ifs
-if [ -z "$real" ]; then
-  echo "kanban-terminal: real claude command not found after PATH shim" >&2
-  exit 127
-fi
-
-has_session=0
-has_settings=0
-for arg in "$@"; do
-  case "$arg" in
-    --session-id|--session-id=*|--resume|--resume=*) has_session=1 ;;
-    --settings|--settings=*) has_settings=1 ;;
-  esac
-done
-
-extra_args=""
-if [ "$has_session" -eq 0 ]; then
-  if command -v uuidgen >/dev/null 2>&1; then
-    sid=$(uuidgen | tr '[:upper:]' '[:lower:]')
-  else
-    sid=$(node -e 'console.log(require("crypto").randomUUID())')
-  fi
-  extra_args="$extra_args --session-id $sid"
-fi
-
-settings=\${KANBAN_TERMINAL_CLAUDE_SETTINGS:-}
-if [ "$has_settings" -eq 0 ] && [ -n "$settings" ]; then
-  set -- --settings "$settings" "$@"
-fi
-
-if [ -n "$extra_args" ]; then
-  # shellcheck disable=SC2086
-  exec "$real" $extra_args "$@"
-fi
-exec "$real" "$@"
-`;
-  await fs.mkdir(CLAUDE_SHIM_DIR, { recursive: true });
-  const file = path.join(CLAUDE_SHIM_DIR, "claude");
-  await fs.writeFile(file, shim, { mode: 0o755 });
-  // eslint-disable-next-line sonarjs/file-permissions -- the PATH shim must be executable by the current user.
-  await fs.chmod(file, 0o755);
-}
-
 // Hook config injected via `claude --settings <json>`. Each event POSTs the full
 // hook payload to /api/hook. UserPromptSubmit => working, Stop => idle,
 // Notification => waiting for input.
 function hookSettingsJson(host: string = "localhost") {
-  const injectCardId =
-    `node -e 'const fs=require("fs");const raw=fs.readFileSync(0,"utf8");` +
-    `const body=raw?JSON.parse(raw):{};const card=process.env.KANBAN_TERMINAL_CARD_ID;` +
-    `if(card) body.card_id=card;process.stdout.write(JSON.stringify(body));'`;
-  const cmd = `${injectCardId} | curl -s -X POST http://${host}:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
+  const cmd = `curl -s -X POST http://${host}:${PORT}/api/hook ` + `-H 'content-type: application/json' -d @- >/dev/null 2>&1`;
   const entry = [{ hooks: [{ type: "command", command: cmd }] }];
   return JSON.stringify({
     hooks: {
@@ -570,28 +521,13 @@ function resolveWorkspace(cwd: string | null): string {
   return CLAUDE_CWD;
 }
 
-function shellQuote(value: string): string {
-  return "'" + value.replace(/'/g, "'\\''") + "'";
-}
-
-function withCardShellEnv(command: string, cardId: string, sessionId: string): string {
-  const pathValue = `${CLAUDE_SHIM_DIR}${path.delimiter}${process.env.PATH ?? ""}`;
-  const env = {
-    PATH: pathValue,
-    KANBAN_TERMINAL_CARD_ID: cardId,
-    KANBAN_TERMINAL_TERMINAL_SESSION_ID: sessionId,
-    KANBAN_TERMINAL_CLAUDE_SETTINGS: hookSettingsJson(),
-  };
-  const assignments = Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`);
-  return `env ${assignments.join(" ")} ${command}`;
-}
-
 const SHELL_COMMANDS = new Set(
   ["sh", "bash", "zsh", "fish", "nu", "xonsh", "dash", "ksh", "tcsh", "csh", "powershell", "pwsh", path.basename(process.env.SHELL || "")]
     .filter(Boolean)
     .map((v) => v.toLowerCase()),
 );
-const CLAUDE_COMMANDS = new Set(["claude", path.basename(CLAUDE_BIN)].filter(Boolean).map((v) => v.toLowerCase()));
+const AGENT_COMMANDS = new Set(["claude", "codex", path.basename(CLAUDE_BIN)].filter(Boolean).map((v) => v.toLowerCase()));
+const AGENT_ARGS_RE = /(^|[/\s])(claude|codex)(\s|$)/i;
 
 function normalizedCommand(command: string): string {
   return path.basename(command).toLowerCase();
@@ -601,30 +537,109 @@ function isShellCommand(command: string): boolean {
   return SHELL_COMMANDS.has(normalizedCommand(command));
 }
 
-function isClaudeCommand(command: string): boolean {
-  const base = normalizedCommand(command);
-  return CLAUDE_COMMANDS.has(base) || base.includes("claude");
+function isAgentCommand(command: string): boolean {
+  return AGENT_COMMANDS.has(normalizedCommand(command));
 }
 
-function suppressL2Signal(cardId: string, command: string, status: CellStatus): boolean {
-  return status === "working" && isClaudeCommand(command) && l3StatusByCard.has(cardId);
+function processTreeHasAgent(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
+  const panePid = tmuxPanePid(sessionId);
+  if (panePid === null) return false;
+  return processTreeRows(rows, panePid).some((row) => AGENT_ARGS_RE.test(row.args));
 }
 
-function pollOneCardProcess(sessionId: string): void {
+function isAgentForeground(sessionId: string, command: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
+  if (isAgentCommand(command)) return true;
+  return processTreeHasAgent(sessionId, rows);
+}
+
+function pollOneCardProcess(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): void {
   const cardId = terminalSessionToCard.get(sessionId);
   if (!cardId) return;
   const command = tmuxPaneCurrentCommand(sessionId);
   if (!command) return;
-  const status: CellStatus = isShellCommand(command) ? "done" : "working";
+  if (isAgentForeground(sessionId, command, rows)) {
+    agentForegroundSessions.add(sessionId);
+    return;
+  }
+  if (isShellCommand(command)) {
+    agentForegroundSessions.delete(sessionId);
+    clearAgentActivity(sessionId);
+    const previous = l2StatusBySession.get(sessionId);
+    l2StatusBySession.set(sessionId, "done");
+    if (previous && previous !== "done") applyBoardSignal(cardId, "done");
+    return;
+  }
+  agentForegroundSessions.delete(sessionId);
+  clearAgentActivity(sessionId);
+  const status: CellStatus = "working";
   const previous = l2StatusBySession.get(sessionId);
   l2StatusBySession.set(sessionId, status);
-  if (previous === status || suppressL2Signal(cardId, command, status)) return;
+  if (previous === status) return;
   if (!previous && status !== "working") return;
   applyBoardSignal(cardId, status);
 }
 
-function pollCardProcessSignals(): void {
-  if (tmuxAvailable()) for (const sessionId of cardTerminalSessions) pollOneCardProcess(sessionId);
+let processPollRunning = false;
+async function pollCardProcessSignals(): Promise<void> {
+  if (!tmuxAvailable() || processPollRunning) return;
+  processPollRunning = true;
+  try {
+    const rows = await currentProcessCommandRows();
+    for (const sessionId of cardTerminalSessions) pollOneCardProcess(sessionId, rows);
+  } finally {
+    processPollRunning = false;
+  }
+}
+
+function clearAgentActivity(sessionId: string): void {
+  agentPtyActivity.delete(sessionId);
+  const timer = agentSilenceTimers.get(sessionId);
+  if (timer) clearTimeout(timer);
+  agentSilenceTimers.delete(sessionId);
+}
+
+function emitAgentPtySignal(sessionId: string, signal: AgentPtySignal): void {
+  const cardId = terminalSessionToCard.get(sessionId);
+  if (!cardId) return;
+  const status: CellStatus = signal === "working" ? "working" : "done";
+  if (l3StatusByCard.get(cardId) === status) return;
+  l3StatusByCard.set(cardId, status);
+  applyBoardSignal(cardId, status);
+}
+
+function reduceAgentActivityForSession(sessionId: string, state: AgentPtyActivityState, event: AgentPtyActivityEvent): AgentPtyActivityState {
+  const result = reduceAgentPtyActivity(state, event);
+  if (result.signal) emitAgentPtySignal(sessionId, result.signal);
+  return result.state;
+}
+
+function scheduleAgentSilenceCheck(sessionId: string): void {
+  const existing = agentSilenceTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    const state = agentPtyActivity.get(sessionId);
+    if (!state) return;
+    const next = reduceAgentActivityForSession(sessionId, state, { type: "silence", at: Date.now() });
+    if (next.working) agentPtyActivity.set(sessionId, next);
+    else clearAgentActivity(sessionId);
+  }, AGENT_SILENCE_MS + 25);
+  agentSilenceTimers.set(sessionId, timer);
+}
+
+function noteAgentEnter(sessionId: string): void {
+  if (!cardTerminalSessions.has(sessionId) || !agentForegroundSessions.has(sessionId)) return;
+  const state = agentPtyActivity.get(sessionId) ?? emptyAgentPtyActivityState();
+  agentPtyActivity.set(sessionId, reduceAgentActivityForSession(sessionId, state, { type: "enter", at: Date.now() }));
+}
+
+function noteAgentOutput(sessionId: string): void {
+  const existing = agentPtyActivity.get(sessionId);
+  if (!existing && !agentForegroundSessions.has(sessionId)) return;
+  const state = existing ?? emptyAgentPtyActivityState();
+  const next = reduceAgentActivityForSession(sessionId, state, { type: "output", at: Date.now() });
+  if (next.working || next.pendingSince !== null) agentPtyActivity.set(sessionId, next);
+  else agentPtyActivity.delete(sessionId);
+  if (next.working) scheduleAgentSilenceCheck(sessionId);
 }
 
 // The most recent user prompt from a resumed session's on-disk transcript, so a
@@ -939,7 +954,6 @@ mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions, prepareBoa
 
 // Wire the notification REST surface for the toolbar bell.
 await initNotifier({ workspace: CLAUDE_CWD, pubsub });
-await ensureClaudeShim();
 {
   const board = loadBoard();
   const prepared = ensureBoardTerminals(board);
@@ -949,7 +963,7 @@ await ensureClaudeShim();
   }
 }
 
-const processPollTimer = setInterval(pollCardProcessSignals, 2000);
+const processPollTimer = setInterval(() => void pollCardProcessSignals(), 2000);
 processPollTimer.unref?.();
 
 // Terminal WebSocket. Uses noServer + manual upgrade routing so it shares the
@@ -1159,6 +1173,7 @@ function handleClientFrame(entry: PtyEntry, ws: WebSocket, raw: RawData, session
       // disconnect grace window, so the session slot frees immediately.
       reap(sessionId);
     } else if (msg.type === "input" && typeof msg.data === "string") {
+      if (msg.data.includes("\r")) noteAgentEnter(sessionId);
       entry.term.write(msg.data);
     } else if (
       msg.type === "resize" &&
@@ -1216,8 +1231,7 @@ function resolveLauncher(index: number): { label: string; command: string } | nu
 function spawnLauncherPty(sessionId: string, ws: WebSocket | null, command: string, cwd: string, cardId: string | null = null): PtyEntry {
   const isWindows = process.platform === "win32";
   const shell = isWindows ? "powershell.exe" : process.env.SHELL || "/bin/bash";
-  const launchCommand = cardId ? withCardShellEnv(command, cardId, sessionId) : command;
-  const args = isWindows ? ["-NoLogo", "-Command", launchCommand] : ["-lc", `exec ${launchCommand}`];
+  const args = isWindows ? ["-NoLogo", "-Command", command] : ["-lc", `exec ${command}`];
   // Persistent: reattaches a surviving tmux session (command ignored) or creates one.
   const { term, tmux } = ptySpawn(sessionId, shell, args, cwd, true);
   console.log(`[pty] spawned launcher (pid=${term.pid}${tmux ? " via tmux" : ""}) in ${cwd}: ${command}`);
@@ -1227,6 +1241,7 @@ function spawnLauncherPty(sessionId: string, ws: WebSocket | null, command: stri
 
   term.onData((data) => {
     entry.buffer = (entry.buffer + data).slice(-OUTPUT_BUFFER_LIMIT);
+    if (cardId) noteAgentOutput(sessionId);
     if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
       entry.ws.send(JSON.stringify({ type: "output", data }));
     }

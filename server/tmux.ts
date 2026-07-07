@@ -86,3 +86,10 @@ export function tmuxPaneCurrentCommand(id: string): string | null {
   const command = r.stdout.trim();
   return command || null;
 }
+
+export function tmuxPanePid(id: string): number | null {
+  const r = tmux(["display-message", "-p", "-t", tmuxSessionName(id), "#{pane_pid}"]);
+  if (r.status !== 0) return null;
+  const pid = Number(r.stdout.trim());
+  return Number.isFinite(pid) ? pid : null;
+}
