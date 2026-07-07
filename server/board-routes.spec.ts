@@ -38,8 +38,9 @@ function makeRes(): FakeRes {
 
 type RouteHandler = (req: { headers: { origin?: string }; body?: unknown; params?: { id?: string } }, res: FakeRes) => unknown;
 
-function captureHandlers(isAllowedOrigin: (o?: string) => boolean): { putBoard: RouteHandler; postRead: RouteHandler } {
+function captureHandlers(isAllowedOrigin: (o?: string) => boolean): { putBoard: RouteHandler; postCreate: RouteHandler; postRead: RouteHandler } {
   let putBoard: RouteHandler | undefined;
+  let postCreate: RouteHandler | undefined;
   let postRead: RouteHandler | undefined;
   const app = {
     get() {
@@ -49,18 +50,37 @@ function captureHandlers(isAllowedOrigin: (o?: string) => boolean): { putBoard: 
       if (path === "/api/board") putBoard = h;
     },
     post(path: string, h: RouteHandler) {
+      if (path === "/api/board/cards") postCreate = h;
       if (path === "/api/board/card/:id/read") postRead = h;
     },
   } as unknown as Express;
 
-  mountBoardRoutes(app, { isAllowedOrigin, pubsub: { publish: vi.fn() } });
-  if (!putBoard || !postRead) throw new Error("routes were not mounted");
-  return { putBoard, postRead };
+  mountBoardRoutes(app, {
+    isAllowedOrigin,
+    pubsub: { publish: vi.fn() },
+    createCard: vi.fn(() => ({
+      id: "card-server",
+      projectId: "project-1",
+      name: "Feature",
+      memo: "memo",
+      lane: "todo",
+      archived: false,
+      unread: false,
+      terminal: { sessionId: "session-server", agentKind: "shell", cwd: "/repo" },
+      overlay: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+      manual: false,
+      lastStatus: "idle",
+    })),
+  });
+  if (!putBoard || !postCreate || !postRead) throw new Error("routes were not mounted");
+  return { putBoard, postCreate, postRead };
 }
 
 const allow = () => true;
 const deny = () => false;
-const board = { projects: [], cards: [] };
+const board = { projects: [{ id: "project-1", root: "/repo", name: "repo", color: "#2563eb", sidebarVisible: true, order: 0 }], cards: [] };
 
 describe("mountBoardRoutes origin checks", () => {
   beforeEach(() => {
@@ -89,6 +109,39 @@ describe("mountBoardRoutes origin checks", () => {
     expect(res.statusCode).toBe(403);
     expect(res.payload).toEqual({ error: "forbidden origin" });
     expect(mockLoadBoard).not.toHaveBeenCalled();
+    expect(mockSaveBoard).not.toHaveBeenCalled();
+  });
+
+  it("creates a card with a server-assigned terminal session", () => {
+    const res = makeRes();
+    captureHandlers(allow).postCreate(
+      { headers: { origin: "http://localhost:5173" }, body: { projectId: "project-1", name: "Feature", memo: "memo", cwd: "/repo" } },
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).toMatchObject({
+      id: "card-server",
+      projectId: "project-1",
+      name: "Feature",
+      terminal: { sessionId: "session-server", agentKind: "shell", cwd: "/repo" },
+    });
+    expect(mockSaveBoard).toHaveBeenCalledWith({ ...board, cards: [expect.objectContaining({ id: "card-server" })] });
+  });
+
+  it("rejects POST /api/board/cards from a disallowed origin with 403", () => {
+    const res = makeRes();
+    captureHandlers(deny).postCreate({ headers: { origin: "https://evil.example" }, body: { name: "Feature" } }, res);
+    expect(res.statusCode).toBe(403);
+    expect(res.payload).toEqual({ error: "forbidden origin" });
+    expect(mockLoadBoard).not.toHaveBeenCalled();
+    expect(mockSaveBoard).not.toHaveBeenCalled();
+  });
+
+  it("rejects POST /api/board/cards with an invalid body as 400", () => {
+    const res = makeRes();
+    captureHandlers(allow).postCreate({ headers: {}, body: { projectId: "missing-project", name: "Feature" } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.payload).toEqual({ error: "invalid card body" });
     expect(mockSaveBoard).not.toHaveBeenCalled();
   });
 
