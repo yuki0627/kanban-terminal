@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// Ported from mulmoclaude's FilterChip — a small pill toggle used to filter
-// the session list. Adapted to mulmoterminal's dark scoped-CSS theme.
+// Small pill toggle used to filter the session list.
 defineProps<{
   active: boolean;
   label: string;

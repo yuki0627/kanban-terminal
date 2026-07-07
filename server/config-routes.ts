@@ -8,37 +8,17 @@ import path from "node:path";
 import { existsSync, statSync } from "node:fs";
 import type { Express } from "express";
 import { sanitizePresets } from "./cwd-presets.js";
-import {
-  loadAppConfig,
-  saveAppConfig,
-  sanitizeSoundFile,
-  sanitizeRepos,
-  sanitizeLaunchers,
-  sanitizeUserMcpServers,
-  type AppConfig,
-  type Launcher,
-  type UserMcpServer,
-} from "./app-config.js";
+import { loadAppConfig, saveAppConfig, sanitizeSoundFile, sanitizeLaunchers, type AppConfig, type Launcher } from "./app-config.js";
 
 const CONFIG_FILE = path.join(os.homedir(), ".mulmoterminal", "config.json");
 let config: AppConfig = loadAppConfig(CONFIG_FILE);
 
-// The repos the cross-repo PR view aggregates — read live so a POST /api/config that
-// changes them takes effect on the next /api/prs without a restart.
-export function getPrRepos(): string[] {
-  return config.prRepos;
-}
+const BUILTIN_LAUNCHERS: Launcher[] = [{ label: "Shell", command: process.env.SHELL || "/bin/sh" }];
 
-// The launch commands a grid cell offers — read live so /ws/launch resolves a launcher
-// index against the current list without a restart.
+// The launch commands a card offers — read live so /ws/launch resolves a launcher
+// index against the current list without a restart. Index 0 is the built-in shell.
 export function getLaunchers(): Launcher[] {
-  return config.launchers;
-}
-
-// User-added HTTP MCP servers — read live so a config change is picked up by the next
-// Claude spawn without a restart.
-export function getUserMcpServers(): UserMcpServer[] {
-  return config.userMcpServers;
+  return [...BUILTIN_LAUNCHERS, ...config.launchers];
 }
 
 export function mountConfigRoutes(app: Express, claudeCwd: string): void {
@@ -47,9 +27,7 @@ export function mountConfigRoutes(app: Express, claudeCwd: string): void {
       cwd: claudeCwd,
       cwdPresets: config.cwdPresets,
       soundFile: config.soundFile,
-      prRepos: config.prRepos,
-      launchers: config.launchers,
-      userMcpServers: config.userMcpServers,
+      launchers: getLaunchers(),
       home: os.homedir(),
     });
   });
@@ -61,21 +39,13 @@ export function mountConfigRoutes(app: Express, claudeCwd: string): void {
     if (body.cwdPresets !== undefined && !Array.isArray(body.cwdPresets)) {
       return res.status(400).json({ error: "cwdPresets must be an array" });
     }
-    if (body.prRepos !== undefined && !Array.isArray(body.prRepos)) {
-      return res.status(400).json({ error: "prRepos must be an array" });
-    }
     if (body.launchers !== undefined && !Array.isArray(body.launchers)) {
       return res.status(400).json({ error: "launchers must be an array" });
-    }
-    if (body.userMcpServers !== undefined && !Array.isArray(body.userMcpServers)) {
-      return res.status(400).json({ error: "userMcpServers must be an array" });
     }
     const next: AppConfig = {
       cwdPresets: body.cwdPresets !== undefined ? sanitizePresets(body.cwdPresets) : config.cwdPresets,
       soundFile: body.soundFile !== undefined ? sanitizeSoundFile(body.soundFile) : config.soundFile,
-      prRepos: body.prRepos !== undefined ? sanitizeRepos(body.prRepos) : config.prRepos,
       launchers: body.launchers !== undefined ? sanitizeLaunchers(body.launchers) : config.launchers,
-      userMcpServers: body.userMcpServers !== undefined ? sanitizeUserMcpServers(body.userMcpServers) : config.userMcpServers,
     };
     // Stage, persist, commit in-memory only on success — a failed write must not
     // leave GET exposing values that won't survive a restart.
@@ -85,9 +55,7 @@ export function mountConfigRoutes(app: Express, claudeCwd: string): void {
       cwd: claudeCwd,
       cwdPresets: config.cwdPresets,
       soundFile: config.soundFile,
-      prRepos: config.prRepos,
-      launchers: config.launchers,
-      userMcpServers: config.userMcpServers,
+      launchers: getLaunchers(),
     });
   });
 

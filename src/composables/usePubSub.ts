@@ -1,7 +1,7 @@
 import { io, type Socket } from "socket.io-client";
 
-// Minimal pub/sub client, modeled on mulmoclaude's usePubSub. A single shared
-// socket multiplexes every channel; subscriptions are replayed on reconnect.
+// Minimal pub/sub client. A single shared socket multiplexes every channel;
+// subscriptions are replayed on reconnect.
 interface PubSubMessage {
   channel: string;
   data: unknown;

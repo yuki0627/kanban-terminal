@@ -1,7 +1,7 @@
 // Draws the favicon on a 32×32 canvas and swaps <link rel="icon"> to the result.
 // The mark is a terminal prompt — a white "❯" chevron with an accent-colored "_"
 // cursor on a dark window — so it reads as a CLI at a glance and is visibly distinct
-// from mulmoclaude's mascot/"M" favicon. The accent color is the only state signal,
+// from the original favicon. The accent color is the only state signal,
 // so the caller maps its state → color.
 import { watch, type ComputedRef, type Ref } from "vue";
 

@@ -77,3 +77,19 @@ export function tmuxListSessionIds(): string[] {
     .filter((n) => n.startsWith(SESSION_PREFIX))
     .map((n) => n.slice(SESSION_PREFIX.length));
 }
+
+// Foreground command in the session's active pane. Used by kanban L2 process
+// detection; null means the tmux session is gone or tmux could not inspect it.
+export function tmuxPaneCurrentCommand(id: string): string | null {
+  const r = tmux(["display-message", "-p", "-t", tmuxSessionName(id), "#{pane_current_command}"]);
+  if (r.status !== 0) return null;
+  const command = r.stdout.trim();
+  return command || null;
+}
+
+export function tmuxPanePid(id: string): number | null {
+  const r = tmux(["display-message", "-p", "-t", tmuxSessionName(id), "#{pane_pid}"]);
+  if (r.status !== 0) return null;
+  const pid = Number(r.stdout.trim());
+  return Number.isFinite(pid) ? pid : null;
+}

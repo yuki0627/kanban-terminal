@@ -1,103 +1,241 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import AppToolbar from "./AppToolbar.vue";
 import SettingsModal from "./SettingsModal.vue";
 import TerminalView from "./Terminal.vue";
-import { useSessions } from "../composables/useSessions";
 import { useAppConfig } from "../composables/useAppConfig";
+import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
-import { release } from "../composables/useTerminalConnections";
-import { activityStatus, type CellStatus } from "./gridTabs";
-import { LANES, KANBAN_STATE_KEY, initialKanbanState, syncSessions, moveCard, setExpanded, laneCards, type KanbanState, type LaneId } from "./kanbanBoard";
+import type { CellStatus } from "./activityStatus";
+import {
+  LANES,
+  emptyKanbanState,
+  initialKanbanState,
+  moveCard,
+  setExpanded,
+  laneCards,
+  updateCard,
+  type KanbanCard,
+  type KanbanState,
+  type LaneId,
+  type Project,
+} from "./kanbanBoard";
 
-// The kanban board view, shown at /kanban. Every Claude session is a card; the
-// "sessions" activity stream (via useSessions) moves cards between lanes through
-// the pure transforms in kanbanBoard.ts. Cards render as chips only — the live
-// terminal mounts solely inside the expanded overlay, because each mounted
-// terminal is a real PTY + socket + xterm canvas, and FitAddon needs a laid-out
-// element anyway. Collapsed cards therefore cost nothing.
+const BOARD_CHANNEL = "board";
+const NONE_COLOR = "#64748b";
+const PROJECT_COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#4f46e5", "#be123c"];
 
-const state = ref<KanbanState>(initialKanbanState(localStorage.getItem(KANBAN_STATE_KEY)));
-watch(state, () => localStorage.setItem(KANBAN_STATE_KEY, JSON.stringify(state.value)), { deep: true });
+const state = ref<KanbanState>(emptyKanbanState());
+const boardLoading = ref(true);
+const boardError = ref<string | null>(null);
 
-// The server's authoritative session list; every "sessions" pub/sub push refetches
-// it, which re-runs this watcher and drives the board's automatic lane moves.
-// NEVER reconcile before the first load lands (or against a failed fetch):
-// `sessions` starts as [], and syncSessions would read that as "every session
-// vanished" and wipe the persisted board, then re-add everything as fresh
-// To Do cards once the real list arrives.
-const { sessions, loading, error } = useSessions();
+function boardPayload(s: KanbanState) {
+  return { projects: s.projects, cards: s.cards };
+}
+
+async function loadBoard() {
+  try {
+    const res = await fetch("/api/board");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const expanded = state.value.expanded;
+    state.value = { ...initialKanbanState(await res.json()), expanded };
+    boardError.value = null;
+  } catch (e) {
+    boardError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    boardLoading.value = false;
+  }
+}
+
+async function persistBoard(next: KanbanState) {
+  state.value = next;
+  try {
+    const res = await fetch("/api/board", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(boardPayload(next)),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const expanded = state.value.expanded;
+    state.value = { ...initialKanbanState(await res.json()), expanded };
+    boardError.value = null;
+  } catch (e) {
+    boardError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+function commit(next: KanbanState) {
+  void persistBoard(next);
+}
+
+function cardTitle(card: KanbanCard): string {
+  return card.name || card.id.slice(0, 8);
+}
+function cardStatus(card: KanbanCard): CellStatus {
+  return card.lastStatus;
+}
+
+// ---- projects sidebar ----
+const sidebarCollapsed = ref(false);
+const unassignedVisible = ref(true);
+const sortedProjects = computed(() => [...state.value.projects].sort((a, b) => a.order - b.order));
+const visibleProjectIds = computed(() => new Set(sortedProjects.value.filter((p) => p.sidebarVisible).map((p) => p.id)));
+
+function projectFor(card: KanbanCard): Project | null {
+  return card.projectId ? (state.value.projects.find((p) => p.id === card.projectId) ?? null) : null;
+}
+function projectVisible(card: KanbanCard): boolean {
+  return card.projectId === null ? unassignedVisible.value : visibleProjectIds.value.has(card.projectId);
+}
+function visibleLaneCards(lane: LaneId): KanbanCard[] {
+  return laneCards(state.value, lane).filter(projectVisible);
+}
+function projectCount(projectId: string | null): number {
+  return state.value.cards.filter((c) => !c.archived && c.projectId === projectId).length;
+}
+function colorFor(index: number): string {
+  return PROJECT_COLORS[index % PROJECT_COLORS.length];
+}
+function projectNameFromRoot(root: string): string {
+  return root.split("/").filter(Boolean).at(-1) || root;
+}
+function newId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+async function addProject() {
+  try {
+    const res = await fetch("/api/pick-directory", { method: "POST", headers: { "content-type": "application/json" } });
+    if (!res.ok) return;
+    const data = (await res.json()) as { paths?: unknown };
+    const root = Array.isArray(data.paths) && typeof data.paths[0] === "string" ? data.paths[0] : "";
+    if (!root) return;
+    const existing = state.value.projects.find((p) => p.root === root);
+    if (existing) {
+      commit({ ...state.value, projects: state.value.projects.map((p) => (p.id === existing.id ? { ...p, sidebarVisible: true } : p)) });
+      return;
+    }
+    const project: Project = {
+      id: newId("project"),
+      root,
+      name: projectNameFromRoot(root),
+      color: colorFor(state.value.projects.length),
+      sidebarVisible: true,
+      order: state.value.projects.length,
+    };
+    commit({ ...state.value, projects: [...state.value.projects, project] });
+  } catch {
+    // Native picker unavailable or canceled.
+  }
+}
+function toggleProject(projectId: string | null) {
+  if (projectId === null) {
+    unassignedVisible.value = !unassignedVisible.value;
+    return;
+  }
+  commit({ ...state.value, projects: state.value.projects.map((p) => (p.id === projectId ? { ...p, sidebarVisible: !p.sidebarVisible } : p)) });
+}
+
+// ---- card creation ----
+const creatingCard = ref<{ projectId: string | null; name: string; memo: string } | null>(null);
+const { soundFile, loadConfig, saveSound, home } = useAppConfig();
+function openCreate(projectId: string | null) {
+  creatingCard.value = { projectId, name: "", memo: "" };
+}
+function createCard() {
+  const draft = creatingCard.value;
+  if (!draft) return;
+  const project = draft.projectId ? (state.value.projects.find((p) => p.id === draft.projectId) ?? null) : null;
+  const now = Date.now();
+  const card: KanbanCard = {
+    id: newId("card"),
+    projectId: draft.projectId,
+    name: draft.name.trim() || "New terminal",
+    memo: draft.memo,
+    lane: "todo",
+    archived: false,
+    unread: false,
+    terminal: { sessionId: null, agentKind: "shell", cwd: project?.root ?? home.value ?? null },
+    createdAt: now,
+    updatedAt: now,
+    manual: false,
+    lastStatus: "idle",
+  };
+  creatingCard.value = null;
+  commit({ ...state.value, cards: [card, ...state.value.cards], expanded: card.id });
+}
+
+// ---- expanded overlay ----
+const connectKey = ref(0);
+const terminalRef = ref<InstanceType<typeof TerminalView> | null>(null);
+const activeCard = computed(() => state.value.cards.find((c) => c.id === state.value.expanded) ?? null);
+const overlayOpen = computed(() => activeCard.value !== null);
+const overlaySlot = computed(() => (activeCard.value ? `card-${activeCard.value.id}` : "card-none"));
+const nameDraft = ref("");
+const memoDraft = ref("");
+
 watch(
-  [sessions, loading, error],
-  ([list, isLoading, loadError]) => {
-    if (isLoading || loadError) return;
-    state.value = syncSessions(
-      state.value,
-      list.map((s) => ({ id: s.id, status: activityStatus(s.working, s.waiting, s.event) })),
-    );
+  activeCard,
+  (card) => {
+    nameDraft.value = card?.name ?? "";
+    memoDraft.value = card?.memo ?? "";
   },
-  { immediate: true, deep: true },
+  { immediate: true },
 );
 
-const titleById = computed(() => new Map(sessions.value.map((s) => [s.id, s.title])));
-const statusById = computed(() => new Map<string, CellStatus>(sessions.value.map((s) => [s.id, activityStatus(s.working, s.waiting, s.event)])));
-const cardTitle = (id: string) => titleById.value.get(id) || id.slice(0, 8);
-const cardStatus = (id: string): CellStatus => statusById.value.get(id) ?? "idle";
-
-// ---- expanded overlay (the one live terminal) ----
-// `creating` opens the overlay on a FRESH session (sessionId null): the server
-// mints an id, the "sessions" push adds its card, and we adopt it as expanded so
-// closing/reopening targets the right card. The terminal keeps its original
-// "kanban-new" slot for the overlay's lifetime (a persistKey swap would remount
-// and supersede itself); the slot is released on close, and a later reopen
-// attaches a fresh slot to the same session (tmux/live PTY makes that seamless).
-const creating = ref(false);
-const createdId = ref<string | null>(null);
-const connectKey = ref(0);
-const NEW_SLOT = "kanban-new";
-
-const overlayOpen = computed(() => creating.value || state.value.expanded !== null);
-const overlaySlot = computed(() => (creating.value ? NEW_SLOT : `kanban-${state.value.expanded}`));
-const overlaySession = computed(() => (creating.value ? createdId.value : state.value.expanded));
-const overlayTitle = computed(() => (overlaySession.value ? cardTitle(overlaySession.value) : "New session"));
-
-function openCard(id: string) {
-  if (creating.value) closeOverlay();
-  state.value = setExpanded(state.value, id);
+function openCard(cardId: string) {
+  commit(setExpanded(state.value, cardId));
   connectKey.value++;
 }
-
-function newCard() {
-  if (overlayOpen.value) closeOverlay();
-  creating.value = true;
-  createdId.value = null;
-  connectKey.value++;
-}
-
-// The fresh terminal reports its server-minted session id: remember it as this
-// card's identity (its card appears via the next "sessions" push) but keep the
-// overlay on the "kanban-new" slot until it closes.
-function onNewSession(id: string) {
-  createdId.value = id;
-  state.value = setExpanded(state.value, id);
-}
-
 function closeOverlay() {
-  if (creating.value) {
-    // Drop the one-off creation slot; the session (if one started) lives on
-    // server-side and reattaches through its own kanban-<id> slot next open.
-    release(NEW_SLOT);
-    creating.value = false;
-    createdId.value = null;
-  }
   state.value = setExpanded(state.value, null);
 }
+function onTerminalSession(sessionId: string) {
+  const card = activeCard.value;
+  if (!card) return;
+  commit(updateCard(state.value, card.id, { terminal: { ...card.terminal, sessionId } }));
+  void loadMemory();
+}
+function restartCardTerminal() {
+  const card = activeCard.value;
+  if (!card) return;
+  terminalRef.value?.terminate();
+  commit(updateCard(state.value, card.id, { terminal: { ...card.terminal, sessionId: null } }));
+  connectKey.value++;
+}
+function saveCardText() {
+  const card = activeCard.value;
+  if (!card) return;
+  commit(updateCard(state.value, card.id, { name: nameDraft.value.trim() || card.name, memo: memoDraft.value }));
+}
 
-// Feed the tab-close guard while the overlay holds a live terminal. Collapsed
-// cards keep their PTYs alive server-side (tmux), so they don't need the guard.
 watch(overlayOpen, (open) => reportActiveTerminals("kanban", open ? 1 : 0), { immediate: true });
 
-// ---- drag & drop (manual lane moves) ----
+// ---- memory visibility ----
+const memoryBySession = ref(new Map<string, number>());
+const totalRssKb = ref(0);
+function formatMemory(kb: number): string {
+  if (kb <= 0) return "0 MB";
+  return `${Math.max(1, Math.round(kb / 1024))} MB`;
+}
+function cardMemory(card: KanbanCard): string | null {
+  const sessionId = card.terminal.sessionId;
+  if (!sessionId) return null;
+  const kb = memoryBySession.value.get(sessionId) ?? 0;
+  return kb > 0 ? formatMemory(kb) : null;
+}
+async function loadMemory() {
+  try {
+    const res = await fetch("/api/memory");
+    if (!res.ok) return;
+    const data = (await res.json()) as { totalRssKb?: number; sessions?: Array<{ sessionId: string; rssKb: number }> };
+    totalRssKb.value = typeof data.totalRssKb === "number" ? data.totalRssKb : 0;
+    memoryBySession.value = new Map((data.sessions ?? []).map((item) => [item.sessionId, item.rssKb]));
+  } catch {
+    // best-effort metric
+  }
+}
+
+// ---- drag & drop ----
 const dragging = ref<string | null>(null);
 const dropLane = ref<LaneId | null>(null);
 
@@ -113,95 +251,178 @@ function onDragEnd() {
   dropLane.value = null;
 }
 function onDrop(lane: LaneId) {
-  if (dragging.value) state.value = moveCard(state.value, dragging.value, lane);
+  if (dragging.value) commit(moveCard(state.value, dragging.value, lane));
   onDragEnd();
 }
 
-// Settings (theme + sound), same modal as the other views.
-const { soundFile, prRepos, launchers, userMcpServers, loadConfig, saveSound, savePrRepos, saveLaunchers, saveUserMcpServers } = useAppConfig();
 const showSettings = ref(false);
-onMounted(loadConfig);
+const pubsub = usePubSub();
+let unsubscribeBoard: (() => void) | undefined;
+let offReconnect: (() => void) | undefined;
+let memoryTimer: ReturnType<typeof setInterval> | undefined;
+
+onMounted(() => {
+  loadConfig();
+  loadBoard();
+  loadMemory();
+  memoryTimer = setInterval(loadMemory, 10_000);
+  unsubscribeBoard = pubsub.subscribe(BOARD_CHANNEL, () => void loadBoard());
+  offReconnect = pubsub.onReconnect(() => void loadBoard());
+});
+onUnmounted(() => {
+  unsubscribeBoard?.();
+  offReconnect?.();
+  if (memoryTimer) clearInterval(memoryTimer);
+});
 </script>
 
 <template>
   <div class="shell">
     <AppToolbar @settings="showSettings = true" />
-    <div v-if="error" class="board-error" role="alert">{{ error }}</div>
-    <div v-else-if="loading" class="board-error">Loading…</div>
-    <div class="board" role="list" aria-label="Kanban board">
-      <section
-        v-for="lane in LANES"
-        :key="lane.id"
-        class="lane"
-        :class="{ 'drop-target': dropLane === lane.id }"
-        role="listitem"
-        :aria-label="lane.title"
-        @dragover.prevent="dropLane = lane.id"
-        @dragleave="dropLane === lane.id && (dropLane = null)"
-        @drop.prevent="onDrop(lane.id)"
-      >
-        <header class="lane-header">
-          <span class="lane-title">{{ lane.title }}</span>
-          <span class="lane-count">{{ laneCards(state, lane.id).length }}</span>
-          <button v-if="lane.id === 'todo'" type="button" class="lane-add" title="New session" aria-label="New session" @click="newCard">
-            <span class="material-symbols-outlined">add</span>
+    <div class="memory-strip" aria-label="Terminal memory">Memory {{ formatMemory(totalRssKb) }}</div>
+    <div v-if="boardError" class="board-error" role="alert">{{ boardError }}</div>
+    <div v-else-if="boardLoading" class="board-error">Loading...</div>
+    <div class="workspace">
+      <aside :class="['projects', { collapsed: sidebarCollapsed }]" aria-label="Projects">
+        <button
+          type="button"
+          class="collapse-btn"
+          :title="sidebarCollapsed ? 'Expand projects' : 'Collapse projects'"
+          @click="sidebarCollapsed = !sidebarCollapsed"
+        >
+          <span class="material-symbols-outlined">{{ sidebarCollapsed ? "chevron_right" : "chevron_left" }}</span>
+        </button>
+        <template v-if="!sidebarCollapsed">
+          <div class="projects-head">
+            <span class="projects-title">Projects</span>
+            <button type="button" class="icon-btn" title="Add project" aria-label="Add project" @click="addProject">
+              <span class="material-symbols-outlined">create_new_folder</span>
+            </button>
+          </div>
+          <button type="button" class="project-row" :class="{ off: !unassignedVisible }" @click="toggleProject(null)">
+            <span class="project-swatch" :style="{ background: NONE_COLOR }" />
+            <span class="project-name">Projectなし</span>
+            <span class="project-count">{{ projectCount(null) }}</span>
+            <span class="project-add" title="Add card" aria-label="Add card" @click.stop="openCreate(null)">
+              <span class="material-symbols-outlined">add</span>
+            </span>
           </button>
-        </header>
-        <div class="lane-cards">
-          <article
-            v-for="c in laneCards(state, lane.id)"
-            :key="c.session"
-            class="card"
-            :class="[`st-${cardStatus(c.session)}`, { unread: c.unread, dragging: dragging === c.session }]"
-            draggable="true"
-            tabindex="0"
-            :title="cardTitle(c.session)"
-            @dragstart="onDragStart(c.session, $event)"
-            @dragend="onDragEnd"
-            @click="openCard(c.session)"
-            @keydown.enter="openCard(c.session)"
+          <button
+            v-for="project in sortedProjects"
+            :key="project.id"
+            type="button"
+            class="project-row"
+            :class="{ off: !project.sidebarVisible }"
+            @click="toggleProject(project.id)"
           >
-            <span class="card-dot" aria-hidden="true" />
-            <span class="card-title">{{ cardTitle(c.session) }}</span>
-            <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
-          </article>
-        </div>
-      </section>
-    </div>
-
-    <!-- The one live terminal: an overlay over the board, closed by ✕ or Esc is
-         left to the terminal (never a close key — it belongs to claude). -->
-    <div v-if="overlayOpen" class="overlay" @click.self="closeOverlay">
-      <div class="overlay-card">
-        <header class="overlay-header">
-          <span class="overlay-title">{{ overlayTitle }}</span>
-          <button type="button" class="overlay-close" title="Close card (terminal keeps running)" aria-label="Close card" @click="closeOverlay">
-            <span class="material-symbols-outlined">close</span>
+            <span class="project-swatch" :style="{ background: project.color }" />
+            <span class="project-name">{{ project.name }}</span>
+            <span class="project-count">{{ projectCount(project.id) }}</span>
+            <span class="project-add" title="Add card" aria-label="Add card" @click.stop="openCreate(project.id)">
+              <span class="material-symbols-outlined">add</span>
+            </span>
           </button>
-        </header>
-        <TerminalView
-          :key="overlaySlot"
-          class="overlay-terminal"
-          :persist-key="overlaySlot"
-          :session-id="creating ? null : state.expanded"
-          :connect-key="connectKey"
-          @session="onNewSession"
-        />
+        </template>
+      </aside>
+
+      <div class="board" role="list" aria-label="Kanban board">
+        <section
+          v-for="lane in LANES"
+          :key="lane.id"
+          class="lane"
+          :class="{ 'drop-target': dropLane === lane.id }"
+          role="listitem"
+          :aria-label="lane.title"
+          @dragover.prevent="dropLane = lane.id"
+          @dragleave="dropLane === lane.id && (dropLane = null)"
+          @drop.prevent="onDrop(lane.id)"
+        >
+          <header class="lane-header">
+            <span class="lane-title">{{ lane.title }}</span>
+            <span class="lane-count">{{ visibleLaneCards(lane.id).length }}</span>
+          </header>
+          <div class="lane-cards">
+            <article
+              v-for="c in visibleLaneCards(lane.id)"
+              :key="c.id"
+              class="card"
+              :class="[`st-${cardStatus(c)}`, { unread: c.unread, dragging: dragging === c.id }]"
+              :style="{ borderLeftColor: projectFor(c)?.color ?? NONE_COLOR }"
+              draggable="true"
+              tabindex="0"
+              :title="cardTitle(c)"
+              @dragstart="onDragStart(c.id, $event)"
+              @dragend="onDragEnd"
+              @click="openCard(c.id)"
+              @keydown.enter="openCard(c.id)"
+            >
+              <span class="card-dot" aria-hidden="true" />
+              <span class="card-title">{{ cardTitle(c) }}</span>
+              <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
+              <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
+            </article>
+          </div>
+        </section>
       </div>
     </div>
 
-    <SettingsModal
-      v-if="showSettings"
-      :sound-file="soundFile"
-      :pr-repos="prRepos"
-      :launchers="launchers"
-      :user-mcp-servers="userMcpServers"
-      @update-sound="saveSound"
-      @update-repos="savePrRepos"
-      @update-launchers="saveLaunchers"
-      @update-user-mcp="saveUserMcpServers"
-      @close="showSettings = false"
-    />
+    <div v-if="overlayOpen && activeCard" class="overlay" @click.self="closeOverlay">
+      <div class="overlay-card">
+        <header class="overlay-header" :style="{ borderTopColor: projectFor(activeCard)?.color ?? NONE_COLOR }">
+          <input v-model="nameDraft" class="overlay-title-input" aria-label="Card name" @change="saveCardText" />
+          <button
+            v-if="activeCard.terminal.sessionId"
+            type="button"
+            class="overlay-close"
+            title="Restart terminal"
+            aria-label="Restart terminal"
+            @click="restartCardTerminal"
+          >
+            <span class="material-symbols-outlined">restart_alt</span>
+          </button>
+          <button type="button" class="overlay-close" title="Close card" aria-label="Close card" @click="closeOverlay">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <div class="overlay-body">
+          <textarea v-model="memoDraft" class="memo" placeholder="Memo" aria-label="Memo" @change="saveCardText" />
+          <div class="terminal-panel">
+            <TerminalView
+              ref="terminalRef"
+              :key="overlaySlot"
+              class="overlay-terminal"
+              :persist-key="overlaySlot"
+              :session-id="activeCard.terminal.sessionId"
+              :cwd="activeCard.terminal.cwd"
+              card-terminal
+              :card-id="activeCard.id"
+              :launcher="{ index: 0 }"
+              :connect-key="connectKey"
+              @session="onTerminalSession"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="creatingCard" class="overlay create-overlay" @click.self="creatingCard = null">
+      <div class="create-card" role="dialog" aria-modal="true" aria-label="Create card">
+        <header class="create-head">
+          <span>Create card</span>
+          <button type="button" class="overlay-close" title="Close" aria-label="Close" @click="creatingCard = null">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </header>
+        <input v-model="creatingCard.name" class="field" placeholder="Card name" aria-label="Card name" @keydown.enter="createCard" />
+        <textarea v-model="creatingCard.memo" class="field memo-field" placeholder="Memo" aria-label="Memo" />
+        <div class="create-actions">
+          <button type="button" class="btn" @click="creatingCard = null">Cancel</button>
+          <button type="button" class="btn btn-primary" @click="createCard">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <SettingsModal v-if="showSettings" :sound-file="soundFile" @update-sound="saveSound" @close="showSettings = false" />
   </div>
 </template>
 
@@ -220,8 +441,135 @@ onMounted(loadConfig);
   font-family: system-ui, sans-serif;
   font-size: 13px;
 }
+.memory-strip {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
 
-/* Five equal lanes side by side, each scrolling its own cards. */
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.projects {
+  position: relative;
+  flex: 0 0 230px;
+  min-width: 0;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+  overflow-y: auto;
+  font-family: system-ui, sans-serif;
+}
+.projects.collapsed {
+  flex-basis: 42px;
+  padding: 8px 6px;
+  overflow: hidden;
+}
+.collapse-btn,
+.icon-btn,
+.overlay-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.collapse-btn:hover,
+.icon-btn:hover,
+.overlay-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.projects.collapsed .collapse-btn {
+  width: 30px;
+}
+.projects-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+.projects-title {
+  flex: 1;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.project-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto 24px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.project-row:hover {
+  background: var(--bg-hover);
+}
+.project-row.off {
+  opacity: 0.45;
+}
+.project-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13px;
+}
+.project-count {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.project-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--text-muted);
+}
+.project-add:hover {
+  background: var(--bg-base);
+  color: var(--text);
+}
+.project-add .material-symbols-outlined,
+.collapse-btn .material-symbols-outlined,
+.icon-btn .material-symbols-outlined,
+.overlay-close .material-symbols-outlined {
+  font-size: 18px;
+}
+
 .board {
   flex: 1;
   min-height: 0;
@@ -237,7 +585,7 @@ onMounted(loadConfig);
   flex-direction: column;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   min-height: 0;
 }
 .lane.drop-target {
@@ -266,27 +614,6 @@ onMounted(loadConfig);
   border-radius: 9px;
   padding: 1px 7px;
 }
-.lane-add {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.lane-add:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.lane-add .material-symbols-outlined {
-  font-size: 18px;
-}
 .lane-cards {
   flex: 1;
   min-height: 0;
@@ -297,7 +624,6 @@ onMounted(loadConfig);
   gap: 8px;
 }
 
-/* A collapsed card: status dot + title. No terminal is mounted here. */
 .card {
   display: flex;
   align-items: center;
@@ -305,6 +631,7 @@ onMounted(loadConfig);
   padding: 10px 12px;
   background: var(--bg-base);
   border: 1px solid var(--border);
+  border-left-width: 4px;
   border-radius: 8px;
   cursor: pointer;
   font-family: system-ui, sans-serif;
@@ -328,13 +655,17 @@ onMounted(loadConfig);
 .card.unread .card-title {
   font-weight: 700;
 }
+.card-memory {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
 .card-unread {
   color: var(--accent);
   font-size: 10px;
   flex: 0 0 auto;
 }
-/* Status dot: amber = blocked (needs you), accent = done (review), pulsing dim =
-   working, hollow = idle — the grid's color language. */
 .card-dot {
   width: 9px;
   height: 9px;
@@ -362,7 +693,6 @@ onMounted(loadConfig);
   }
 }
 
-/* Expanded card: a centered overlay hosting THE live terminal. */
 .overlay {
   position: fixed;
   inset: 0;
@@ -380,7 +710,7 @@ onMounted(loadConfig);
   height: 100%;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
 }
 .overlay-header {
@@ -388,41 +718,97 @@ onMounted(loadConfig);
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  border-top: 4px solid transparent;
   border-bottom: 1px solid var(--border);
   font-family: system-ui, sans-serif;
 }
-.overlay-title {
+.overlay-title-input {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.overlay-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
   border: none;
-  border-radius: 6px;
   background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.overlay-close:hover {
-  background: var(--bg-hover);
   color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
 }
-.overlay-close .material-symbols-outlined {
-  font-size: 18px;
+.overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(92px, 22%) minmax(0, 1fr);
+}
+.memo {
+  width: 100%;
+  min-height: 0;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  resize: none;
+  outline: none;
+  background: var(--bg-base);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+.terminal-panel {
+  min-height: 0;
+  display: flex;
 }
 .overlay-terminal {
   flex: 1;
   min-height: 0;
+}
+.create-card {
+  width: min(460px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+}
+.create-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+}
+.field {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  outline: none;
+}
+.memo-field {
+  min-height: 90px;
+  resize: vertical;
+}
+.create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.btn {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 </style>

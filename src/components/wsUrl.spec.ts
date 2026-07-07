@@ -2,22 +2,29 @@ import { describe, it, expect } from "vitest";
 import { buildTerminalWsUrl, buildRunWsUrl, buildLaunchWsUrl } from "./wsUrl";
 
 describe("buildTerminalWsUrl", () => {
-  it("single view: session only, no gui=0", () => {
+  it("single view: session only, no dev flag", () => {
     const url = buildTerminalWsUrl({ host: "localhost:3456", secure: false, sessionId: "abc" });
     expect(url).toBe("ws://localhost:3456/ws?session=abc");
-    expect(url).not.toContain("gui=0");
+    expect(url).not.toContain("dev=1");
   });
 
-  it("grid dev terminal: adds gui=0 so the server skips the GUI MCP", () => {
+  it("grid dev terminal: adds dev=1", () => {
     const url = buildTerminalWsUrl({ host: "h", secure: false, sessionId: "abc", devTerminal: true });
-    expect(new URL(url).searchParams.get("gui")).toBe("0");
+    expect(new URL(url).searchParams.get("dev")).toBe("1");
   });
 
   it("includes the chosen cwd", () => {
     const url = buildTerminalWsUrl({ host: "h", secure: false, sessionId: "abc", cwd: "/work/proj", devTerminal: true });
     const q = new URL(url).searchParams;
     expect(q.get("cwd")).toBe("/work/proj");
-    expect(q.get("gui")).toBe("0");
+    expect(q.get("dev")).toBe("1");
+  });
+
+  it("marks kanban card terminals", () => {
+    const url = buildTerminalWsUrl({ host: "h", secure: false, sessionId: null, cardTerminal: true, cardId: "card-1" });
+    const params = new URL(url).searchParams;
+    expect(params.get("card")).toBe("1");
+    expect(params.get("cardId")).toBe("card-1");
   });
 
   it("fresh session (null id): no session param", () => {
@@ -66,6 +73,13 @@ describe("buildLaunchWsUrl", () => {
     const q = new URL(url).searchParams;
     expect(q.has("session")).toBe(false);
     expect(q.get("launcher")).toBe("0");
+  });
+
+  it("marks launcher card terminals", () => {
+    const url = buildLaunchWsUrl({ host: "h", secure: false, sessionId: null, launcher: 0, cardTerminal: true, cardId: "card-1" });
+    const params = new URL(url).searchParams;
+    expect(params.get("card")).toBe("1");
+    expect(params.get("cardId")).toBe("card-1");
   });
 
   it("uses wss when secure", () => {

@@ -30,6 +30,8 @@ export interface ConnTarget {
   sessionId: string | null;
   cwd: string | null;
   devTerminal: boolean;
+  cardTerminal?: boolean;
+  cardId?: string | null;
   command: { index: number } | null;
   // A configured launcher (shell/codex/command). Unlike `command` this is a PERSISTENT
   // session — it reconnects on drop and reattaches by session id, like a Claude cell.
@@ -69,7 +71,7 @@ const RECONNECT_MAX_MS = 5000;
 // The heavy per-slot runtime (non-reactive — Vue never needs to track these).
 const conns = new Map<string, Conn>();
 
-// The reactive projection the view binds to (status pill, RunMenu cwd). Keyed by
+// The reactive projection the view binds to (status pill, server cwd). Keyed by
 // the same slot key; a slot that hasn't connected yet (or was released) is absent.
 export const connView = reactive(new Map<string, { status: ConnStatus; serverCwd: string | null }>());
 
@@ -167,8 +169,25 @@ function scheduleReconnect(c: Conn) {
 function connUrl(target: ConnTarget, resumeId: string | null, secure: boolean): string {
   const host = location.host;
   if (target.command) return buildRunWsUrl({ host, secure, index: target.command.index, cwd: target.cwd });
-  if (target.launcher) return buildLaunchWsUrl({ host, secure, sessionId: resumeId, cwd: target.cwd, launcher: target.launcher.index });
-  return buildTerminalWsUrl({ host, secure, sessionId: resumeId, cwd: target.cwd, devTerminal: target.devTerminal });
+  if (target.launcher)
+    return buildLaunchWsUrl({
+      host,
+      secure,
+      sessionId: resumeId,
+      cwd: target.cwd,
+      launcher: target.launcher.index,
+      cardTerminal: target.cardTerminal,
+      cardId: target.cardId,
+    });
+  return buildTerminalWsUrl({
+    host,
+    secure,
+    sessionId: resumeId,
+    cwd: target.cwd,
+    devTerminal: target.devTerminal,
+    cardTerminal: target.cardTerminal,
+    cardId: target.cardId,
+  });
 }
 
 function connect(c: Conn) {
@@ -247,7 +266,7 @@ function handleMessage(c: Conn, event: MessageEvent) {
   } else if (msg.type === "error") {
     // Server-declared terminal failure (CLI missing, command unresolvable). Not
     // transient — reconnecting would re-trigger the failed spawn, so stop and
-    // surface a stable error. Emit `exit` so a CommandCell can offer a re-run.
+    // surface a stable error. Emit `exit` so the owning view can react.
     c.sawExit = true;
     const detail = typeof msg.message === "string" ? msg.message : "failed to start";
     c.term.write(`\r\n\x1b[31m[${detail}]\x1b[0m\r\n`);
@@ -352,8 +371,8 @@ export function terminate(key: string) {
   release(key);
 }
 
-// Submit a GUI-originated message into the PTY (text + a SEPARATE delayed CR — a
-// same-burst text+CR reads as a paste in Claude's TUI). Both writes pin to the
+// Submit text into the PTY (text + a SEPARATE delayed CR — a same-burst text+CR
+// reads as a paste in Claude's TUI). Both writes pin to the
 // socket captured now; if the slot reconnects before the CR fires we skip it rather
 // than submit a stray turn. Returns whether the text was delivered.
 export function submitText(key: string, text: string): boolean {

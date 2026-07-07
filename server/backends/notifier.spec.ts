@@ -5,8 +5,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
-import { publish, resetNotifier } from "@mulmoclaude/core/notifier";
-import { initNotifier, mountNotificationRoutes, NOTIFIER_CHANNEL } from "./notifier.js";
+import { initNotifier, mountNotificationRoutes, NOTIFIER_CHANNEL, publishNotification } from "./notifier.js";
 
 interface Published {
   channel: string;
@@ -23,7 +22,6 @@ function activeFile(): string {
 }
 
 beforeEach(async () => {
-  resetNotifier();
   workspace = mkdtempSync(path.join(tmpdir(), "mt-notif-"));
   tempDirs.push(workspace);
   events = [];
@@ -44,13 +42,12 @@ beforeEach(async () => {
 
 afterEach(() => {
   server?.close();
-  resetNotifier();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("notifier backend", () => {
   it("publishes → lists → fans out an event → persists active.json → clears", async () => {
-    const { id } = await publish({ pluginPkg: "test", severity: "nudge", title: "Heads up", body: "something happened" });
+    const { id } = await publishNotification({ pluginPkg: "test", severity: "nudge", title: "Heads up", body: "something happened" });
 
     // Fan-out: a "published" event landed on the notifier channel.
     expect(events).toHaveLength(1);
@@ -66,8 +63,8 @@ describe("notifier backend", () => {
 
     // Persisted to the shared workspace file.
     expect(existsSync(activeFile())).toBe(true);
-    const onDisk = JSON.parse(readFileSync(activeFile(), "utf8")) as { entries: Record<string, unknown> };
-    expect(Object.keys(onDisk.entries)).toContain(id);
+    const onDisk = JSON.parse(readFileSync(activeFile(), "utf8")) as Array<{ id: string }>;
+    expect(onDisk.map((entry) => entry.id)).toContain(id);
 
     // Dismiss via REST → 204, removed from the active list, "cleared" event fired.
     const clearRes = await fetch(`${base}/api/notifications/${encodeURIComponent(id)}/clear`, { method: "POST" });

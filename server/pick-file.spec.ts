@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pickFileCommand, parsePickerOutput } from "./pick-file.js";
+import { pickFileCommand, pickDirectoryCommand, parsePickerOutput } from "./pick-file.js";
 
 describe("pickFileCommand", () => {
   it("uses osascript on macOS", () => {
@@ -10,6 +10,14 @@ describe("pickFileCommand", () => {
   });
   it("falls back to zenity elsewhere (Linux)", () => {
     expect(pickFileCommand("linux").cmd).toBe("zenity");
+  });
+});
+
+describe("pickDirectoryCommand", () => {
+  it("uses folder selection on macOS", () => {
+    const cmd = pickDirectoryCommand("darwin");
+    expect(cmd.cmd).toBe("osascript");
+    expect(cmd.args.join(" ")).toContain("choose folder");
   });
 });
 

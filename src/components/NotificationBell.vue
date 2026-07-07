@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { ref, onUnmounted, useTemplateRef } from "vue";
-import { useNotifications, type NotifierEntry, type NotifierSeverity } from "../composables/useNotifications";
+import { useNotifications, type NotifierSeverity } from "../composables/useNotifications";
 
 // Toolbar bell: a severity-coloured unread badge + a dropdown listing the active
-// notifications. Mirrors MulmoClaude's bell structure (severity-coloured bell icon
-// per row, title + lifecycle tag, a "relative-time · source" meta line, an
-// "Active (N)" header) in MulmoTerminal's dark palette. A row click navigates to the
-// entry's target (a completion bell's pending record) WITHOUT clearing it — the
-// watcher clears it when the record is done; the ✕ dismisses it explicitly.
-const { count, topSeverity, sorted, dismiss, activate } = useNotifications();
+// notifications: severity-coloured bell icon per row, title + lifecycle tag, a
+// "relative-time · source" meta line, and an "Active (N)" header. The ✕ dismisses
+// entries.
+const { count, topSeverity, sorted, dismiss } = useNotifications();
 
 const open = ref(false);
 const rootRef = useTemplateRef<HTMLElement>("root");
@@ -34,18 +32,11 @@ function toggle() {
   else openPanel();
 }
 
-function onRowClick(entry: NotifierEntry) {
-  // Navigate if it's a deep-linkable entry; close either way so the click feels live.
-  activate(entry);
-  close();
-}
-
 function severityClass(severity: NotifierSeverity): string {
   return `sev-${severity}`;
 }
 
-// Strip a leading `@scope/` from a package name for the meta line (matches
-// MulmoClaude's shortPkg) — unscoped legacy pluginPkgs pass through unchanged.
+// Strip a leading `@scope/` from a package name for the meta line.
 function shortPkg(pluginPkg: string): string {
   return pluginPkg.startsWith("@") ? pluginPkg.split("/").slice(1).join("/") || pluginPkg : pluginPkg;
 }
@@ -88,19 +79,7 @@ onUnmounted(close);
       <div class="notif-subhead">Active ({{ sorted.length }})</div>
       <div v-if="!sorted.length" class="notif-empty">You're all caught up.</div>
       <ul v-else class="notif-list">
-        <li
-          v-for="entry in sorted"
-          :key="entry.id"
-          class="notif-row"
-          :class="{ clickable: !!entry.navigateTarget }"
-          :role="entry.navigateTarget ? 'button' : undefined"
-          :tabindex="entry.navigateTarget ? 0 : undefined"
-          :aria-label="entry.navigateTarget ? entry.title : undefined"
-          :title="entry.body || undefined"
-          @click="onRowClick(entry)"
-          @keydown.enter.prevent.self="entry.navigateTarget && onRowClick(entry)"
-          @keydown.space.prevent.self="entry.navigateTarget && onRowClick(entry)"
-        >
+        <li v-for="entry in sorted" :key="entry.id" class="notif-row" :title="entry.body || undefined">
           <span class="material-symbols-outlined bell-icon" :class="severityClass(entry.severity)" aria-hidden="true">notifications</span>
           <span class="notif-text">
             <span class="notif-title-row">
@@ -182,8 +161,6 @@ onUnmounted(close);
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  /* Above the collections browse overlay (z-index 50, fills below the toolbar) so
-     the dropdown stays visible when a navigation has opened it. */
   z-index: 60;
   width: 340px;
   max-height: 460px;
@@ -236,19 +213,12 @@ onUnmounted(close);
   padding: 8px;
   border-radius: 6px;
 }
-.notif-row.clickable {
-  cursor: pointer;
-}
-.notif-row.clickable:hover {
-  background: var(--bg-hover);
-}
 .notif-row:focus-visible {
   outline: 2px solid var(--accent-bg);
   outline-offset: -2px;
 }
 
-/* Per-row severity-coloured bell icon — MulmoClaude's "this is a notification"
-   at-a-glance signal (replaces a generic coloured dot). */
+/* Per-row severity-coloured bell icon. */
 .bell-icon {
   flex: 0 0 auto;
   margin-top: 1px;
