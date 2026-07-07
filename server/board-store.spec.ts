@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { applyCardStatus, loadBoard, markCardRead, saveBoard, sanitizeBoard } from "./board-store.js";
@@ -38,6 +38,32 @@ describe("sanitizeBoard", () => {
     });
     expect(board.cards[1]).toMatchObject({ id: "c2", projectId: null, lane: "todo" });
   });
+
+  it("deduplicates projects by root, sorts them by order, and keeps the first card per id", () => {
+    const board = sanitizeBoard({
+      projects: [
+        { id: "later", root: "/work/later", name: "Later", order: 20 },
+        { id: "middle", root: "/work/middle", name: "Middle", order: 10 },
+        { id: "duplicate-root", root: "/work/middle", name: "Duplicate root", order: 0 },
+        { id: "first", root: "/work/first", name: "First", order: -5 },
+      ],
+      cards: [
+        { id: "dup", projectId: "middle", name: "Original", lane: "todo" },
+        { id: "keep", projectId: "duplicate-root", name: "Unlinked", lane: "done" },
+        { id: "dup", projectId: "first", name: "Duplicate", lane: "canceled" },
+      ],
+    });
+
+    expect(board.projects.map((project) => ({ id: project.id, root: project.root, order: project.order }))).toEqual([
+      { id: "first", root: "/work/first", order: -5 },
+      { id: "middle", root: "/work/middle", order: 10 },
+      { id: "later", root: "/work/later", order: 20 },
+    ]);
+    expect(board.cards.map((card) => ({ id: card.id, projectId: card.projectId, name: card.name, lane: card.lane }))).toEqual([
+      { id: "dup", projectId: "middle", name: "Original", lane: "todo" },
+      { id: "keep", projectId: null, name: "Unlinked", lane: "done" },
+    ]);
+  });
 });
 
 describe("board persistence", () => {
@@ -48,6 +74,16 @@ describe("board persistence", () => {
     expect(saveBoard(board, file)).toBe(true);
     expect(JSON.parse(readFileSync(file, "utf8")).cards[0].id).toBe("c1");
     expect(loadBoard(file)).toEqual(board);
+  });
+
+  it("returns false when the board file cannot be written", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "board-"));
+    const asFile = path.join(dir, "afile");
+    writeFileSync(asFile, "x");
+
+    expect(saveBoard(sanitizeBoard({ cards: [{ id: "c1" }] }), path.join(asFile, "sub", "board.json"))).toBe(false);
+
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

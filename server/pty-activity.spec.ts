@@ -36,4 +36,27 @@ describe("reduceAgentPtyActivity", () => {
     expect(result.signal).toBeNull();
     expect(result.state.working).toBe(false);
   });
+
+  it("accepts output exactly at the confirmation threshold", () => {
+    let state = reduceAgentPtyActivity(emptyAgentPtyActivityState(), { type: "enter", at: 1000 }).state;
+    state = reduceAgentPtyActivity(state, { type: "output", at: 1000 + AGENT_OUTPUT_CONFIRM_MS }).state;
+    state = reduceAgentPtyActivity(state, { type: "output", at: 1000 + AGENT_OUTPUT_CONFIRM_MS }).state;
+    const result = reduceAgentPtyActivity(state, { type: "output", at: 1000 + AGENT_OUTPUT_CONFIRM_MS });
+    expect(result).toEqual({
+      state: { pendingSince: null, pendingChunks: 0, working: true, lastOutputAt: 1000 + AGENT_OUTPUT_CONFIRM_MS },
+      signal: "working",
+    });
+  });
+
+  it("keeps a working agent active at exactly the silence threshold", () => {
+    const state = { pendingSince: null, pendingChunks: 0, working: true, lastOutputAt: 1000 };
+    const result = reduceAgentPtyActivity(state, { type: "silence", at: 1000 + AGENT_SILENCE_MS });
+    expect(result).toEqual({ state, signal: null });
+  });
+
+  it("treats silence as a no-op while the agent is not working", () => {
+    const state = { pendingSince: null, pendingChunks: 0, working: false, lastOutputAt: 1000 };
+    const result = reduceAgentPtyActivity(state, { type: "silence", at: 1000 + AGENT_SILENCE_MS + 1 });
+    expect(result).toEqual({ state, signal: null });
+  });
 });
