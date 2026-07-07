@@ -21,7 +21,11 @@ export function getLaunchers(): Launcher[] {
   return [...BUILTIN_LAUNCHERS, ...config.launchers];
 }
 
-export function mountConfigRoutes(app: Express, claudeCwd: string): void {
+interface ConfigRoutesOptions {
+  isAllowedOrigin: (origin?: string) => boolean;
+}
+
+export function mountConfigRoutes(app: Express, claudeCwd: string, { isAllowedOrigin }: ConfigRoutesOptions): void {
   app.get("/api/config", (_req, res) => {
     res.json({
       cwd: claudeCwd,
@@ -33,6 +37,8 @@ export function mountConfigRoutes(app: Express, claudeCwd: string): void {
   });
 
   app.post("/api/config", (req, res) => {
+    if (!isAllowedOrigin(req.headers.origin)) return res.status(403).json({ error: "forbidden origin" });
+
     const body = req.body ?? {};
     // Partial update: keep the field the request omits so saving the sound doesn't
     // wipe the presets (and vice-versa). cwdPresets, when present, must be an array.

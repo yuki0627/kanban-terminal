@@ -6,6 +6,7 @@ export const BOARD_CHANNEL = "board";
 const CARD_ID_RE = /^[A-Za-z0-9_.:-]{1,160}$/;
 
 interface BoardRoutesOptions {
+  isAllowedOrigin: (origin?: string) => boolean;
   isCardViewed?: (cardId: string) => boolean;
   pubsub: ReturnType<typeof createPubSub>;
   onSaved?: () => void;
@@ -25,7 +26,10 @@ function clearViewedUnread(board: BoardState, isCardViewed: ((cardId: string) =>
   return changed ? { ...board, cards } : board;
 }
 
-export function mountBoardRoutes(app: Express, { isCardViewed, pubsub, onSaved, onCardClosed, onCardRead, prepareBoard }: BoardRoutesOptions): void {
+export function mountBoardRoutes(
+  app: Express,
+  { isAllowedOrigin, isCardViewed, pubsub, onSaved, onCardClosed, onCardRead, prepareBoard }: BoardRoutesOptions,
+): void {
   app.get("/api/board", (_req, res) => {
     const loaded = loadBoard();
     const board = prepareBoard ? prepareBoard(loaded) : loaded;
@@ -34,6 +38,8 @@ export function mountBoardRoutes(app: Express, { isCardViewed, pubsub, onSaved, 
   });
 
   app.put("/api/board", (req, res) => {
+    if (!isAllowedOrigin(req.headers.origin)) return res.status(403).json({ error: "forbidden origin" });
+
     const sanitized = sanitizeBoard(req.body ?? {});
     const prepared = prepareBoard ? prepareBoard(sanitized) : sanitized;
     const board = clearViewedUnread(prepared, isCardViewed);
@@ -44,6 +50,8 @@ export function mountBoardRoutes(app: Express, { isCardViewed, pubsub, onSaved, 
   });
 
   app.post("/api/board/card/:id/read", (req, res) => {
+    if (!isAllowedOrigin(req.headers.origin)) return res.status(403).json({ error: "forbidden origin" });
+
     const cardId = typeof req.params.id === "string" && CARD_ID_RE.test(req.params.id) ? req.params.id : null;
     if (!cardId) return res.status(400).json({ error: "invalid card id" });
     const loaded = loadBoard();
