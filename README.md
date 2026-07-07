@@ -20,8 +20,8 @@ This project is not published to npm yet. Clone the repository, build the client
 once, then start it with the bundled launcher:
 
 ```bash
-git clone https://github.com/yuki0627/kanban-terminal02.git
-cd kanban-terminal02
+git clone https://github.com/yuki0627/kanban-terminal.git
+cd kanban-terminal
 yarn install
 yarn build
 node bin/kanban-terminal.js
