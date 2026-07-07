@@ -1,5 +1,25 @@
-import { describe, it, expect } from "vitest";
-import { tmuxConfigLines, tmuxSessionName, tmuxNewSessionArgs } from "./tmux";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+const spawnSyncMock = vi.hoisted(() => vi.fn());
+
+vi.mock(import("node:child_process"), async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    default: { ...actual, spawnSync: spawnSyncMock },
+    spawnSync: spawnSyncMock,
+  };
+});
+
+import { tmuxConfigLines, tmuxSessionName, tmuxNewSessionArgs, tmuxListSessionIds, tmuxPaneCurrentCommand, tmuxPanePid } from "./tmux";
+
+function mockTmuxResult(status: number | null, stdout: string): void {
+  spawnSyncMock.mockReturnValue({ status, stdout });
+}
+
+beforeEach(() => {
+  spawnSyncMock.mockReset();
+});
 
 describe("tmuxConfigLines", () => {
   it("clears inherited NO_COLOR for the isolated tmux server", () => {
@@ -29,5 +49,53 @@ describe("tmuxNewSessionArgs", () => {
     const dashdash = args.indexOf("--");
     expect(dashdash).toBeGreaterThan(0);
     expect(args.slice(dashdash + 1)).toEqual(["/bin/zsh", "-lc", "exec codex"]);
+  });
+});
+
+describe("tmuxListSessionIds", () => {
+  it("returns [] when tmux cannot list sessions", () => {
+    mockTmuxResult(1, "kt-stale\n");
+
+    expect(tmuxListSessionIds()).toEqual([]);
+  });
+
+  it("keeps only kt-prefixed sessions and strips the prefix", () => {
+    mockTmuxResult(0, "kt-alpha\nuser-session\nkt-beta\n\nkt-\n");
+
+    expect(tmuxListSessionIds()).toEqual(["alpha", "beta", ""]);
+  });
+});
+
+describe("tmuxPaneCurrentCommand", () => {
+  it("returns null when tmux cannot inspect the pane", () => {
+    mockTmuxResult(1, "zsh\n");
+
+    expect(tmuxPaneCurrentCommand("missing")).toBeNull();
+  });
+
+  it("trims the pane command from tmux output", () => {
+    mockTmuxResult(0, " node \n");
+
+    expect(tmuxPaneCurrentCommand("id1")).toBe("node");
+  });
+});
+
+describe("tmuxPanePid", () => {
+  it("returns null when tmux cannot inspect the pane", () => {
+    mockTmuxResult(1, "12345\n");
+
+    expect(tmuxPanePid("missing")).toBeNull();
+  });
+
+  it("returns null for non-numeric pane pid output", () => {
+    mockTmuxResult(0, "not-a-pid\n");
+
+    expect(tmuxPanePid("id1")).toBeNull();
+  });
+
+  it("parses the pane pid from tmux output", () => {
+    mockTmuxResult(0, "12345\n");
+
+    expect(tmuxPanePid("id1")).toBe(12345);
   });
 });
