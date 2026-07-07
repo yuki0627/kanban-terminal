@@ -170,28 +170,31 @@ const { soundFile, loadConfig, saveSound, home } = useAppConfig();
 function openCreate(projectId: string | null) {
   creatingCard.value = { projectId, name: "", memo: "" };
 }
-function createCard() {
+async function createCard() {
   const draft = creatingCard.value;
   if (!draft) return;
   const project = draft.projectId ? (state.value.projects.find((p) => p.id === draft.projectId) ?? null) : null;
-  const now = Date.now();
-  const card: KanbanCard = {
-    id: newId("card"),
-    projectId: draft.projectId,
-    name: draft.name.trim() || "New terminal",
-    memo: draft.memo,
-    lane: "todo",
-    archived: false,
-    unread: false,
-    terminal: { sessionId: null, agentKind: "shell", cwd: project?.root ?? home.value ?? null },
-    overlay: null,
-    createdAt: now,
-    updatedAt: now,
-    manual: false,
-    lastStatus: "idle",
-  };
-  creatingCard.value = null;
-  commit({ ...state.value, cards: [card, ...state.value.cards], expanded: card.id });
+  try {
+    const res = await fetch("/api/board/cards", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectId: draft.projectId,
+        name: draft.name,
+        memo: draft.memo,
+        cwd: project?.root ?? home.value ?? null,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const parsed = initialKanbanState({ projects: state.value.projects, cards: [await res.json()] });
+    const card = parsed.cards[0];
+    if (!card?.terminal.sessionId) throw new Error("Card terminal session was not assigned");
+    creatingCard.value = null;
+    state.value = { ...state.value, cards: [card, ...state.value.cards.filter((c) => c.id !== card.id)], expanded: card.id };
+    boardError.value = null;
+  } catch (e) {
+    boardError.value = e instanceof Error ? e.message : String(e);
+  }
 }
 
 // ---- expanded overlay ----

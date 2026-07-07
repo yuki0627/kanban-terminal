@@ -11,7 +11,7 @@ import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
-import { mountBoardRoutes } from "./board-routes.js";
+import { mountBoardRoutes, type CreateCardDraft } from "./board-routes.js";
 import { applyCardStatus, loadBoard, saveBoard, type BoardState, type Card, type CellStatus } from "./board-store.js";
 import {
   tmuxAvailable,
@@ -363,6 +363,36 @@ function ensureBoardTerminals(board: BoardState): BoardState {
     return next;
   });
   return changed ? { ...board, cards } : board;
+}
+
+function newCardId(board: BoardState): string {
+  const existing = new Set(board.cards.map((card) => card.id));
+  let id: string;
+  do {
+    id = `card-${randomUUID()}`;
+  } while (existing.has(id));
+  return id;
+}
+
+function createBoardCard(board: BoardState, draft: CreateCardDraft): Card | null {
+  const now = Date.now();
+  const card: Card = {
+    id: newCardId(board),
+    projectId: draft.projectId,
+    name: draft.name,
+    memo: draft.memo,
+    lane: "todo",
+    archived: false,
+    unread: false,
+    terminal: { sessionId: null, agentKind: "shell", cwd: draft.cwd },
+    overlay: null,
+    createdAt: now,
+    updatedAt: now,
+    manual: false,
+    lastStatus: "idle",
+  };
+  const withTerminal = ensureCardTerminal(board, card);
+  return withTerminal.terminal.sessionId ? withTerminal : null;
 }
 
 // Tear down a session's PTY and bookkeeping, then notify subscribers. The
@@ -1187,6 +1217,7 @@ mountBoardRoutes(app, {
   isAllowedOrigin,
   isCardViewed,
   pubsub,
+  createCard: createBoardCard,
   onSaved: hydrateCardTerminalSessions,
   onCardClosed: markCardClosed,
   onCardRead: markCardViewed,
