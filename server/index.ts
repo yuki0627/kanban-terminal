@@ -111,7 +111,7 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PORT = process.env.PORT || 34567;
+const PORT = Number(process.env.PORT) || 34567;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 const CLAUDE_AGENT = createClaudeAgentKind(CLAUDE_BIN);
 const AGENT_KINDS = [CLAUDE_AGENT];
@@ -789,6 +789,11 @@ async function pollCardProcessSignals(): Promise<void> {
   try {
     const rows = await currentProcessCommandRows();
     for (const sessionId of cardTerminalSessions) pollOneCardProcess(sessionId, rows);
+  } catch (err) {
+    // `ps` can exceed execFile's maxBuffer on process-heavy machines; the poll
+    // runs detached from setInterval, so an uncaught rejection would crash the
+    // whole server. Log and let the next tick retry.
+    console.error(`[process-poll] failed: ${messageOf(err)}`);
   } finally {
     processPollRunning = false;
   }
@@ -1790,7 +1795,10 @@ server.on("error", (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
+// Loopback only — the app is unauthenticated by design (README: trusted local
+// machine only), so the listener must never be reachable from the LAN. Keep the
+// bind host in sync with the launcher's port probe (bin/kanban-terminal.js).
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`kanban-terminal running at http://localhost:${PORT}`);
   if (tmuxAvailable()) {
     const surviving = tmuxListSessionIds();
