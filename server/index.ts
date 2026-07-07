@@ -147,6 +147,8 @@ const l3StatusByCard = new Map<string, CellStatus>();
 const agentForegroundSessions = new Set<string>();
 const agentPtyActivity = new Map<string, AgentPtyActivityState>();
 const agentSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const agentDiscoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const agentDiscoveryState = new Map<string, { startedAt: number; attempts: number }>();
 function hydrateCardTerminalSessions(): void {
   cardTerminalSessions.clear();
   terminalSessionToCard.clear();
@@ -406,13 +408,15 @@ function reap(id: string) {
   cancelReap(id);
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
+  const cardId = terminalSessionToCard.get(id);
   ptys.delete(id);
   cardTerminalSessions.delete(id);
   terminalSessionToCard.delete(id);
-  agentSessionToCard.delete(id);
+  if (cardId) clearAgentSessionLinksForCard(cardId);
   l2StatusBySession.delete(id);
   agentForegroundSessions.delete(id);
   clearAgentActivity(id);
+  clearAgentDiscovery(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
@@ -431,6 +435,44 @@ function reap(id: string) {
   // server). A server crash never runs this, so sessions survive that (the point).
   if (entry.tmux) tmuxKillSession(id);
   pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
+}
+
+function clearAgentSessionLinksForCard(cardId: string): void {
+  for (const [agentSessionId, linkedCardId] of agentSessionToCard) {
+    if (linkedCardId === cardId) agentSessionToCard.delete(agentSessionId);
+  }
+}
+
+function releaseTerminalSession(id: string): boolean {
+  cancelReap(id);
+  const cardId = terminalSessionToCard.get(id);
+  const entry = ptys.get(id);
+  ptys.delete(id);
+  cardTerminalSessions.delete(id);
+  terminalSessionToCard.delete(id);
+  if (cardId) clearAgentSessionLinksForCard(cardId);
+  if (cardId) l3StatusByCard.delete(cardId);
+  l2StatusBySession.delete(id);
+  agentForegroundSessions.delete(id);
+  clearAgentActivity(id);
+  clearAgentDiscovery(id);
+  knownSessions.delete(id);
+  lastPrompts.delete(id);
+  activity.delete(id);
+  if (entry) {
+    try {
+      entry.term.kill();
+    } catch {
+      // already gone
+    }
+    if (entry.tmux) tmuxKillSession(id);
+  } else if (tmuxHasSession(id)) {
+    tmuxKillSession(id);
+  } else {
+    return false;
+  }
+  pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
+  return true;
 }
 
 // Publish a session's current activity (working + waiting) to subscribers.
@@ -507,6 +549,121 @@ function sessionExistsOnDisk(id: string, cwd: string): boolean {
   return existsSync(path.join(projectSessionsDir(cwd), `${id}.jsonl`));
 }
 
+interface AgentTranscriptCandidate {
+  id: string;
+  createdAt: number;
+  title: string | null;
+}
+
+const AGENT_TRANSCRIPT_LOOKBACK_MS = 5_000;
+const AGENT_TRANSCRIPT_RETRY_MS = 1_500;
+const AGENT_TRANSCRIPT_MAX_ATTEMPTS = 240;
+
+function aiTitleFromTranscript(raw: string): string | null {
+  for (const o of parseJsonl(raw)) {
+    if (o.type === "ai-title" && typeof o.aiTitle === "string" && o.aiTitle.trim()) return o.aiTitle.trim();
+  }
+  return null;
+}
+
+function isAutoCardName(name: string): boolean {
+  const trimmed = name.trim();
+  return trimmed === "" || trimmed === "New terminal";
+}
+
+async function findClaudeTranscriptCandidate(cwd: string, startedAt: number): Promise<AgentTranscriptCandidate | null> {
+  const dir = projectSessionsDir(cwd);
+  let dirEntries: string[];
+  try {
+    dirEntries = await fs.readdir(dir);
+  } catch (err) {
+    if (hasErrnoCode(err) && err.code === "ENOENT") return null;
+    throw err;
+  }
+  const files = dirEntries.filter((file) => file.endsWith(".jsonl") && SESSION_ID_RE.test(path.basename(file, ".jsonl")));
+  const candidates = (
+    await Promise.all(
+      files.map(async (file) => {
+        const full = path.join(dir, file);
+        const stat = await fs.stat(full);
+        const createdAt = stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs;
+        if (createdAt < startedAt - AGENT_TRANSCRIPT_LOOKBACK_MS && stat.mtimeMs < startedAt - AGENT_TRANSCRIPT_LOOKBACK_MS) return null;
+        const raw = await fs.readFile(full, "utf8");
+        return {
+          id: path.basename(file, ".jsonl"),
+          createdAt,
+          title: aiTitleFromTranscript(raw),
+        };
+      }),
+    )
+  ).filter((candidate): candidate is AgentTranscriptCandidate => candidate !== null);
+  candidates.sort((a, b) => Math.abs(a.createdAt - startedAt) - Math.abs(b.createdAt - startedAt));
+  return candidates[0] ?? null;
+}
+
+async function discoverAgentTranscript(sessionId: string): Promise<boolean> {
+  const state = agentDiscoveryState.get(sessionId);
+  const cardId = terminalSessionToCard.get(sessionId);
+  if (!state || !cardId) return true;
+
+  const board = loadBoard();
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card || card.archived) return true;
+
+  try {
+    const cwd = cardWorkspace(board, card);
+    const candidate = await findClaudeTranscriptCandidate(cwd, state.startedAt);
+    if (!candidate) return false;
+
+    const nextTerminal = { ...card.terminal, agentSessionId: candidate.id };
+    agentSessionToCard.set(candidate.id, card.id);
+    const nextName = candidate.title && isAutoCardName(card.name) ? candidate.title : card.name;
+    const changed = card.terminal.agentSessionId !== candidate.id || card.name !== nextName;
+    if (changed) {
+      const next: BoardState = {
+        ...board,
+        cards: board.cards.map((c) => (c.id === card.id ? { ...c, name: nextName, terminal: nextTerminal, updatedAt: Date.now() } : c)),
+      };
+      if (saveBoard(next)) publishBoardUpdate();
+    }
+    return candidate.title !== null || !isAutoCardName(nextName);
+  } catch (err) {
+    console.warn(`[agent-discovery] failed for ${sessionId}: ${messageOf(err)}`);
+    return false;
+  }
+}
+
+function clearAgentDiscovery(sessionId: string): void {
+  const timer = agentDiscoveryTimers.get(sessionId);
+  if (timer) clearTimeout(timer);
+  agentDiscoveryTimers.delete(sessionId);
+  agentDiscoveryState.delete(sessionId);
+}
+
+function scheduleAgentDiscovery(sessionId: string, delay = AGENT_TRANSCRIPT_RETRY_MS): void {
+  const current = agentDiscoveryState.get(sessionId);
+  if (!current || current.attempts >= AGENT_TRANSCRIPT_MAX_ATTEMPTS) return;
+  const existing = agentDiscoveryTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    const next = agentDiscoveryState.get(sessionId);
+    if (!next) return;
+    agentDiscoveryState.set(sessionId, { ...next, attempts: next.attempts + 1 });
+    discoverAgentTranscript(sessionId).then((done) => {
+      if (done) clearAgentDiscovery(sessionId);
+      else scheduleAgentDiscovery(sessionId);
+    });
+  }, delay);
+  timer.unref?.();
+  agentDiscoveryTimers.set(sessionId, timer);
+}
+
+function noteAgentForeground(sessionId: string): void {
+  if (!cardTerminalSessions.has(sessionId) || agentDiscoveryState.has(sessionId)) return;
+  agentDiscoveryState.set(sessionId, { startedAt: Date.now(), attempts: 0 });
+  scheduleAgentDiscovery(sessionId, 0);
+}
+
 // Validate a client-supplied workspace dir: must be an absolute, existing
 // directory. Anything else (relative, missing, a file) falls back to CLAUDE_CWD,
 // so a cell can launch a terminal in a chosen dir without trusting raw input.
@@ -527,7 +684,8 @@ const SHELL_COMMANDS = new Set(
     .map((v) => v.toLowerCase()),
 );
 const AGENT_COMMANDS = new Set(["claude", "codex", path.basename(CLAUDE_BIN)].filter(Boolean).map((v) => v.toLowerCase()));
-const AGENT_ARGS_RE = /(^|[/\s])(claude|codex)(\s|$)/i;
+const AGENT_SCRIPT_EXT_RE = /\.(?:cjs|mjs|js|ts)$/i;
+const AGENT_RUNNER_COMMANDS = new Set(["node", "bun", "deno", "npx", "pnpm", "yarn", "npm"]);
 
 function normalizedCommand(command: string): string {
   return path.basename(command).toLowerCase();
@@ -541,10 +699,23 @@ function isAgentCommand(command: string): boolean {
   return AGENT_COMMANDS.has(normalizedCommand(command));
 }
 
+function normalizedArgCommand(token: string): string {
+  return normalizedCommand(token.replace(/^['"]|['"]$/g, "")).replace(AGENT_SCRIPT_EXT_RE, "");
+}
+
+function argsRunAgent(args: string): boolean {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  const command = normalizedArgCommand(tokens[0]);
+  if (AGENT_COMMANDS.has(command)) return true;
+  if (!AGENT_RUNNER_COMMANDS.has(command)) return false;
+  return tokens.slice(1).some((token) => AGENT_COMMANDS.has(normalizedArgCommand(token)));
+}
+
 function processTreeHasAgent(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
   const panePid = tmuxPanePid(sessionId);
   if (panePid === null) return false;
-  return processTreeRows(rows, panePid).some((row) => AGENT_ARGS_RE.test(row.args));
+  return processTreeRows(rows, panePid).some((row) => argsRunAgent(row.args));
 }
 
 function isAgentForeground(sessionId: string, command: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
@@ -558,10 +729,13 @@ function pollOneCardProcess(sessionId: string, rows: ReadonlyArray<{ pid: number
   const command = tmuxPaneCurrentCommand(sessionId);
   if (!command) return;
   if (isAgentForeground(sessionId, command, rows)) {
+    noteAgentForeground(sessionId);
     agentForegroundSessions.add(sessionId);
     return;
   }
   if (isShellCommand(command)) {
+    const agentState = agentPtyActivity.get(sessionId);
+    if (agentState?.working) emitAgentPtySignal(sessionId, "done");
     agentForegroundSessions.delete(sessionId);
     clearAgentActivity(sessionId);
     const previous = l2StatusBySession.get(sessionId);
@@ -605,6 +779,7 @@ function emitAgentPtySignal(sessionId: string, signal: AgentPtySignal): void {
   if (l3StatusByCard.get(cardId) === status) return;
   l3StatusByCard.set(cardId, status);
   applyBoardSignal(cardId, status);
+  if (signal === "done") scheduleAgentDiscovery(sessionId, 0);
 }
 
 function reduceAgentActivityForSession(sessionId: string, state: AgentPtyActivityState, event: AgentPtyActivityEvent): AgentPtyActivityState {
@@ -946,6 +1121,25 @@ app.get("/api/memory", async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: messageOf(err) });
   }
+});
+
+app.delete("/api/cards/:id/terminal", (req, res) => {
+  const cardId = sanitizeCardId(req.params.id ?? null);
+  if (!cardId) return res.status(400).json({ error: "invalid card id" });
+  const board = loadBoard();
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card) return res.status(404).json({ error: "card not found" });
+  if (!card.archived) return res.status(409).json({ error: "card must be archived before releasing its terminal" });
+
+  const sessionId = card.terminal.sessionId;
+  const released = sessionId ? releaseTerminalSession(sessionId) : false;
+  const next: BoardState = {
+    ...board,
+    cards: board.cards.map((c) => (c.id === card.id ? { ...c, terminal: { ...c.terminal, sessionId: null }, lastStatus: "idle", updatedAt: Date.now() } : c)),
+  };
+  if (!saveBoard(next)) return res.status(500).json({ error: "failed to persist board" });
+  publishBoardUpdate();
+  return res.json({ ok: true, released });
 });
 
 const server = http.createServer(app);

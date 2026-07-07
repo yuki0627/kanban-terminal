@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import type { StyleValue } from "vue";
 import AppToolbar from "./AppToolbar.vue";
 import SettingsModal from "./SettingsModal.vue";
 import TerminalView from "./Terminal.vue";
@@ -14,10 +15,15 @@ import {
   moveCard,
   setExpanded,
   laneCards,
+  archivedCards,
+  archiveCards,
+  restoreCard,
   updateCard,
+  updateOverlayFrame,
   type KanbanCard,
   type KanbanState,
   type LaneId,
+  type OverlayFrame,
   type Project,
 } from "./kanbanBoard";
 
@@ -155,6 +161,7 @@ function createCard() {
     archived: false,
     unread: false,
     terminal: { sessionId: null, agentKind: "shell", cwd: project?.root ?? home.value ?? null },
+    overlay: null,
     createdAt: now,
     updatedAt: now,
     manual: false,
@@ -172,6 +179,7 @@ const overlayOpen = computed(() => activeCard.value !== null);
 const overlaySlot = computed(() => (activeCard.value ? `card-${activeCard.value.id}` : "card-none"));
 const nameDraft = ref("");
 const memoDraft = ref("");
+const overlayFrameDraft = ref<OverlayFrame | null>(null);
 
 watch(
   activeCard,
@@ -183,10 +191,12 @@ watch(
 );
 
 function openCard(cardId: string) {
+  overlayFrameDraft.value = null;
   commit(setExpanded(state.value, cardId));
   connectKey.value++;
 }
 function closeOverlay() {
+  overlayFrameDraft.value = null;
   state.value = setExpanded(state.value, null);
 }
 function onTerminalSession(sessionId: string) {
@@ -209,6 +219,86 @@ function saveCardText() {
 }
 
 watch(overlayOpen, (open) => reportActiveTerminals("kanban", open ? 1 : 0), { immediate: true });
+
+const activeOverlayFrame = computed(() => overlayFrameDraft.value ?? activeCard.value?.overlay ?? null);
+const overlayCardStyle = computed<StyleValue>(() => {
+  const frame = activeOverlayFrame.value;
+  if (!frame) return {};
+  return {
+    position: "absolute" as const,
+    left: `${frame.x}px`,
+    top: `${frame.y}px`,
+    width: `${frame.width}px`,
+    height: `${frame.height}px`,
+    transform: "none",
+  };
+});
+
+function defaultOverlayFrame(): OverlayFrame {
+  const width = Math.min(1100, Math.max(720, window.innerWidth - 96));
+  const height = Math.min(760, Math.max(520, window.innerHeight - 96));
+  return {
+    x: Math.max(24, Math.round((window.innerWidth - width) / 2)),
+    y: Math.max(24, Math.round((window.innerHeight - height) / 2)),
+    width,
+    height,
+  };
+}
+
+function clampOverlayFrame(frame: OverlayFrame): OverlayFrame {
+  const minWidth = Math.min(520, Math.max(280, window.innerWidth - 24));
+  const minHeight = Math.min(360, Math.max(260, window.innerHeight - 24));
+  const maxWidth = Math.max(minWidth, window.innerWidth - 24);
+  const maxHeight = Math.max(minHeight, window.innerHeight - 24);
+  const width = Math.min(Math.max(minWidth, frame.width), maxWidth);
+  const height = Math.min(Math.max(minHeight, frame.height), maxHeight);
+  return {
+    width,
+    height,
+    x: Math.min(Math.max(12, frame.x), Math.max(12, window.innerWidth - width - 12)),
+    y: Math.min(Math.max(12, frame.y), Math.max(12, window.innerHeight - height - 12)),
+  };
+}
+
+function persistOverlayFrame(frame: OverlayFrame) {
+  const card = activeCard.value;
+  if (!card) return;
+  commit(updateOverlayFrame(state.value, card.id, clampOverlayFrame(frame)));
+}
+
+function beginOverlayPointer(e: PointerEvent, mode: "drag" | "resize") {
+  const card = activeCard.value;
+  if (!card || e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const start = activeOverlayFrame.value ?? defaultOverlayFrame();
+  const origin = { x: e.clientX, y: e.clientY };
+  overlayFrameDraft.value = start;
+  const move = (ev: PointerEvent) => {
+    const dx = ev.clientX - origin.x;
+    const dy = ev.clientY - origin.y;
+    overlayFrameDraft.value =
+      mode === "drag"
+        ? clampOverlayFrame({ ...start, x: start.x + dx, y: start.y + dy })
+        : clampOverlayFrame({ ...start, width: start.width + dx, height: start.height + dy });
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (overlayFrameDraft.value) persistOverlayFrame(overlayFrameDraft.value);
+    overlayFrameDraft.value = null;
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up, { once: true });
+}
+
+function beginOverlayDrag(e: PointerEvent) {
+  beginOverlayPointer(e, "drag");
+}
+
+function beginOverlayResize(e: PointerEvent) {
+  beginOverlayPointer(e, "resize");
+}
 
 // ---- memory visibility ----
 const memoryBySession = ref(new Map<string, number>());
@@ -251,8 +341,101 @@ function onDragEnd() {
   dropLane.value = null;
 }
 function onDrop(lane: LaneId) {
-  if (dragging.value) commit(moveCard(state.value, dragging.value, lane));
+  if (dragging.value) {
+    const card = state.value.cards.find((c) => c.id === dragging.value);
+    commit(card?.archived ? restoreCard(state.value, dragging.value, lane) : moveCard(state.value, dragging.value, lane));
+  }
   onDragEnd();
+}
+
+// ---- archive and multi-select ----
+const archiveExpanded = ref(false);
+const archiveDropTarget = ref(false);
+const selectedCardIds = ref(new Set<string>());
+const boardRef = ref<HTMLElement | null>(null);
+const selectionRect = ref<{ x: number; y: number; width: number; height: number } | null>(null);
+const archivedVisibleCards = computed(() => archivedCards(state.value).filter(projectVisible));
+const selectedCards = computed(() => state.value.cards.filter((card) => selectedCardIds.value.has(card.id) && !card.archived));
+
+function isRunningCard(card: KanbanCard): boolean {
+  return card.lastStatus === "working" || card.lane === "in_progress";
+}
+
+function confirmArchive(cards: KanbanCard[]): boolean {
+  if (!cards.some(isRunningCard)) return true;
+  return window.confirm("実行中の可能性があるターミナルを Archive します。ターミナルを終了してよいですか？");
+}
+
+async function releaseCardTerminal(card: KanbanCard) {
+  if (!card.terminal.sessionId) return;
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(card.id)}/terminal`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (e) {
+    boardError.value = `Failed to release archived terminal: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+async function archiveCardIds(ids: string[]) {
+  const cards = state.value.cards.filter((card) => ids.includes(card.id) && !card.archived);
+  if (!cards.length || !confirmArchive(cards)) return;
+  await persistBoard(
+    archiveCards(
+      state.value,
+      cards.map((card) => card.id),
+    ),
+  );
+  selectedCardIds.value = new Set();
+  for (const card of cards) await releaseCardTerminal(card);
+}
+
+function archiveOne(card: KanbanCard, e?: MouseEvent) {
+  e?.stopPropagation();
+  void archiveCardIds([card.id]);
+}
+
+function archiveSelected() {
+  void archiveCardIds([...selectedCardIds.value]);
+}
+
+function onDropArchive() {
+  if (dragging.value) void archiveCardIds([dragging.value]);
+  archiveDropTarget.value = false;
+  onDragEnd();
+}
+
+function rectsIntersect(a: DOMRect, b: { left: number; top: number; right: number; bottom: number }) {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function beginSelection(e: PointerEvent) {
+  if (e.button !== 0 || !boardRef.value) return;
+  const target = e.target as HTMLElement | null;
+  if (target?.closest(".card, .lane-header, .archive-strip, button")) return;
+  const origin = { x: e.clientX, y: e.clientY };
+  selectedCardIds.value = new Set();
+  const move = (ev: PointerEvent) => {
+    const x = Math.min(origin.x, ev.clientX);
+    const y = Math.min(origin.y, ev.clientY);
+    const width = Math.abs(ev.clientX - origin.x);
+    const height = Math.abs(ev.clientY - origin.y);
+    selectionRect.value = { x, y, width, height };
+    const selection = { left: x, top: y, right: x + width, bottom: y + height };
+    const next = new Set<string>();
+    for (const el of boardRef.value?.querySelectorAll<HTMLElement>("[data-card-id]") ?? []) {
+      if (rectsIntersect(el.getBoundingClientRect(), selection)) next.add(el.dataset.cardId ?? "");
+    }
+    next.delete("");
+    selectedCardIds.value = next;
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (selectionRect.value && selectionRect.value.width < 5 && selectionRect.value.height < 5) selectedCardIds.value = new Set();
+    selectionRect.value = null;
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up, { once: true });
 }
 
 const showSettings = ref(false);
@@ -325,7 +508,7 @@ onUnmounted(() => {
         </template>
       </aside>
 
-      <div class="board" role="list" aria-label="Kanban board">
+      <div ref="boardRef" class="board" role="list" aria-label="Kanban board" @pointerdown="beginSelection">
         <section
           v-for="lane in LANES"
           :key="lane.id"
@@ -345,8 +528,9 @@ onUnmounted(() => {
             <article
               v-for="c in visibleLaneCards(lane.id)"
               :key="c.id"
+              :data-card-id="c.id"
               class="card"
-              :class="[`st-${cardStatus(c)}`, { unread: c.unread, dragging: dragging === c.id }]"
+              :class="[`st-${cardStatus(c)}`, { unread: c.unread, dragging: dragging === c.id, selected: selectedCardIds.has(c.id) }]"
               :style="{ borderLeftColor: projectFor(c)?.color ?? NONE_COLOR }"
               draggable="true"
               tabindex="0"
@@ -360,27 +544,93 @@ onUnmounted(() => {
               <span class="card-title">{{ cardTitle(c) }}</span>
               <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
               <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
+              <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
+                <span class="material-symbols-outlined">archive</span>
+              </button>
             </article>
           </div>
         </section>
+
+        <aside
+          class="archive-strip"
+          :class="{ expanded: archiveExpanded, 'drop-target': archiveDropTarget }"
+          aria-label="Archive"
+          @dragover.prevent="archiveDropTarget = true"
+          @dragleave="archiveDropTarget = false"
+          @drop.prevent="onDropArchive"
+        >
+          <button
+            type="button"
+            class="archive-toggle"
+            :title="archiveExpanded ? 'Collapse archive' : 'Expand archive'"
+            :aria-expanded="archiveExpanded"
+            @click="archiveExpanded = !archiveExpanded"
+          >
+            <span class="material-symbols-outlined">{{ archiveExpanded ? "chevron_right" : "inventory_2" }}</span>
+            <span class="archive-toggle-text">Archive</span>
+            <span class="archive-count">{{ archivedVisibleCards.length }}</span>
+          </button>
+          <template v-if="archiveExpanded">
+            <div class="archive-cards">
+              <article
+                v-for="c in archivedVisibleCards"
+                :key="c.id"
+                class="card archived-card"
+                :class="[`st-${cardStatus(c)}`, { dragging: dragging === c.id }]"
+                draggable="true"
+                tabindex="0"
+                :title="cardTitle(c)"
+                @dragstart="onDragStart(c.id, $event)"
+                @dragend="onDragEnd"
+              >
+                <span class="card-dot" aria-hidden="true" />
+                <span class="card-title">{{ cardTitle(c) }}</span>
+                <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
+              </article>
+              <div v-if="archivedVisibleCards.length === 0" class="archive-empty">No archived cards</div>
+            </div>
+          </template>
+        </aside>
       </div>
     </div>
 
+    <div v-if="selectedCards.length" class="bulk-bar" role="toolbar" aria-label="Bulk actions">
+      <span>{{ selectedCards.length }} selected</span>
+      <button type="button" class="btn" @click="selectedCardIds = new Set()">Clear</button>
+      <button type="button" class="btn btn-primary" @click="archiveSelected">Archive</button>
+    </div>
+
+    <div
+      v-if="selectionRect"
+      class="selection-rect"
+      :style="{
+        left: `${selectionRect.x}px`,
+        top: `${selectionRect.y}px`,
+        width: `${selectionRect.width}px`,
+        height: `${selectionRect.height}px`,
+      }"
+    />
+
     <div v-if="overlayOpen && activeCard" class="overlay" @click.self="closeOverlay">
-      <div class="overlay-card">
-        <header class="overlay-header" :style="{ borderTopColor: projectFor(activeCard)?.color ?? NONE_COLOR }">
-          <input v-model="nameDraft" class="overlay-title-input" aria-label="Card name" @change="saveCardText" />
+      <div class="overlay-card" :style="overlayCardStyle">
+        <header class="overlay-header" :style="{ borderTopColor: projectFor(activeCard)?.color ?? NONE_COLOR }" @pointerdown="beginOverlayDrag">
+          <span class="overlay-grip material-symbols-outlined" aria-hidden="true">drag_indicator</span>
+          <input v-model="nameDraft" class="overlay-title-input" aria-label="Card name" @pointerdown.stop @change="saveCardText" />
+          <button type="button" class="overlay-close" title="Archive" aria-label="Archive" @pointerdown.stop @click="archiveOne(activeCard, $event)">
+            <span class="material-symbols-outlined">archive</span>
+          </button>
           <button
             v-if="activeCard.terminal.sessionId"
             type="button"
             class="overlay-close"
             title="Restart terminal"
             aria-label="Restart terminal"
+            @pointerdown.stop
             @click="restartCardTerminal"
           >
             <span class="material-symbols-outlined">restart_alt</span>
           </button>
-          <button type="button" class="overlay-close" title="Close card" aria-label="Close card" @click="closeOverlay">
+          <button type="button" class="overlay-close" title="Close card" aria-label="Close card" @pointerdown.stop @click="closeOverlay">
             <span class="material-symbols-outlined">close</span>
           </button>
         </header>
@@ -402,6 +652,7 @@ onUnmounted(() => {
             />
           </div>
         </div>
+        <span class="overlay-resize" aria-hidden="true" @pointerdown="beginOverlayResize" />
       </div>
     </div>
 
@@ -577,6 +828,7 @@ onUnmounted(() => {
   gap: 10px;
   padding: 12px;
   overflow-x: auto;
+  position: relative;
 }
 .lane {
   flex: 1 1 0;
@@ -640,6 +892,10 @@ onUnmounted(() => {
 .card:hover {
   background: var(--bg-hover);
 }
+.card.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .card.dragging {
   opacity: 0.5;
 }
@@ -665,6 +921,32 @@ onUnmounted(() => {
   color: var(--accent);
   font-size: 10px;
   flex: 0 0 auto;
+}
+.card-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.card:hover .card-action,
+.card:focus-within .card-action,
+.card.selected .card-action {
+  opacity: 1;
+}
+.card-action:hover {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+.card-action .material-symbols-outlined {
+  font-size: 17px;
 }
 .card-dot {
   width: 9px;
@@ -693,6 +975,121 @@ onUnmounted(() => {
   }
 }
 
+.archive-strip {
+  flex: 0 0 42px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-panel) 78%, var(--bg-base));
+  overflow: hidden;
+}
+.archive-strip.expanded {
+  flex-basis: 260px;
+}
+.archive-strip.drop-target {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+.archive-toggle {
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 10px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+}
+.archive-strip.expanded .archive-toggle {
+  height: 42px;
+  min-height: 42px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-rows: 1fr;
+  justify-items: start;
+  border-bottom: 1px solid var(--border);
+}
+.archive-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.archive-toggle .material-symbols-outlined {
+  font-size: 18px;
+}
+.archive-toggle-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.archive-strip.expanded .archive-toggle-text {
+  writing-mode: horizontal-tb;
+}
+.archive-count {
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-base);
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+.archive-cards {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+}
+.archived-card {
+  filter: grayscale(1);
+  opacity: 0.72;
+}
+.archive-empty {
+  padding: 12px 4px;
+  color: var(--text-muted);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  text-align: center;
+}
+.bulk-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-base);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+.selection-rect {
+  position: fixed;
+  z-index: 19;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
+
 .overlay {
   position: fixed;
   inset: 0;
@@ -704,14 +1101,18 @@ onUnmounted(() => {
   padding: 4vh 4vw;
 }
 .overlay-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: min(1100px, 100%);
   height: 100%;
+  min-width: min(520px, calc(100vw - 24px));
+  min-height: min(360px, calc(100vh - 24px));
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
 }
 .overlay-header {
   display: flex;
@@ -721,6 +1122,13 @@ onUnmounted(() => {
   border-top: 4px solid transparent;
   border-bottom: 1px solid var(--border);
   font-family: system-ui, sans-serif;
+  cursor: move;
+  user-select: none;
+}
+.overlay-grip {
+  color: var(--text-muted);
+  font-size: 19px;
+  flex: 0 0 auto;
 }
 .overlay-title-input {
   flex: 1;
@@ -732,6 +1140,7 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 600;
   outline: none;
+  cursor: text;
 }
 .overlay-body {
   flex: 1;
@@ -759,6 +1168,24 @@ onUnmounted(() => {
 .overlay-terminal {
   flex: 1;
   min-height: 0;
+}
+.overlay-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+}
+.overlay-resize::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
 }
 .create-card {
   width: min(460px, 92vw);

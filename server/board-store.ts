@@ -27,7 +27,14 @@ export interface Card {
     sessionId: string | null;
     agentKind: AgentKind;
     cwd: string | null;
+    agentSessionId?: string | null;
   };
+  overlay: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
   createdAt: number;
   updatedAt: number;
   manual: boolean;
@@ -88,6 +95,11 @@ function sanitizeCard(raw: unknown, projectIds: Set<string>, index: number): Car
   const now = Date.now();
   const projectId = typeof raw.projectId === "string" && projectIds.has(raw.projectId) ? raw.projectId : null;
   const agentKind = AGENTS.has(terminal.agentKind) ? (terminal.agentKind as AgentKind) : "shell";
+  const overlay = isRecord(raw.overlay) ? raw.overlay : {};
+  const overlayX = timestamp(overlay.x, NaN);
+  const overlayY = timestamp(overlay.y, NaN);
+  const overlayWidth = timestamp(overlay.width, NaN);
+  const overlayHeight = timestamp(overlay.height, NaN);
   return {
     id,
     projectId,
@@ -100,7 +112,12 @@ function sanitizeCard(raw: unknown, projectIds: Set<string>, index: number): Car
       sessionId,
       agentKind,
       cwd: maybeText(terminal.cwd),
+      agentSessionId: maybeText(terminal.agentSessionId) ?? maybeText(terminal.agentSession),
     },
+    overlay:
+      Number.isFinite(overlayX) && Number.isFinite(overlayY) && Number.isFinite(overlayWidth) && Number.isFinite(overlayHeight)
+        ? { x: overlayX, y: overlayY, width: overlayWidth, height: overlayHeight }
+        : null,
     createdAt: timestamp(raw.createdAt, now),
     updatedAt: timestamp(raw.updatedAt, now),
     manual: raw.manual === true,
