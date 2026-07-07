@@ -74,6 +74,29 @@ function commit(next: KanbanState) {
   void persistBoard(next);
 }
 
+async function markCardRead(cardId: string) {
+  try {
+    const previousSessionId = state.value.cards.find((c) => c.id === cardId)?.terminal.sessionId ?? null;
+    const res = await fetch(`/api/board/card/${encodeURIComponent(cardId)}/read`, { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const expanded = state.value.expanded;
+    state.value = { ...initialKanbanState(await res.json()), expanded };
+    const nextSessionId = state.value.cards.find((c) => c.id === cardId)?.terminal.sessionId ?? null;
+    if (expanded === cardId && nextSessionId && nextSessionId !== previousSessionId) connectKey.value++;
+    boardError.value = null;
+  } catch (e) {
+    boardError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function markCardClosed(cardId: string) {
+  try {
+    await fetch(`/api/board/card/${encodeURIComponent(cardId)}/close`, { method: "POST" });
+  } catch {
+    // best-effort view-state cleanup; board persistence is unaffected.
+  }
+}
+
 function cardTitle(card: KanbanCard): string {
   return card.name || card.id.slice(0, 8);
 }
@@ -192,12 +215,17 @@ watch(
 
 function openCard(cardId: string) {
   overlayFrameDraft.value = null;
-  commit(setExpanded(state.value, cardId));
+  const previous = state.value.expanded;
+  if (previous && previous !== cardId) void markCardClosed(previous);
+  state.value = setExpanded(state.value, cardId);
+  void markCardRead(cardId);
   connectKey.value++;
 }
 function closeOverlay() {
+  const previous = state.value.expanded;
   overlayFrameDraft.value = null;
   state.value = setExpanded(state.value, null);
+  if (previous) void markCardClosed(previous);
 }
 function onTerminalSession(sessionId: string) {
   const card = activeCard.value;

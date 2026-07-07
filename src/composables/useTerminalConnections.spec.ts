@@ -127,3 +127,17 @@ describe("isSystemClipboard", () => {
     for (const sel of ["p", "s", "0", "7"]) expect(conn.isSystemClipboard(sel)).toBe(false);
   });
 });
+
+describe("stripReplayQueryResponses", () => {
+  it("drops Device Attributes responses produced while replaying scrollback", () => {
+    expect(conn.stripReplayQueryResponses("\x1b[?1;2c\x1b[>0;276;0c")).toBeNull();
+  });
+
+  it("drops bare Device Attributes fragments seen by shells after replay races", () => {
+    expect(conn.stripReplayQueryResponses("1;2c0;276;0c")).toBeNull();
+  });
+
+  it("keeps normal input intact", () => {
+    expect(conn.stripReplayQueryResponses("echo ok\r")).toBe("echo ok\r");
+  });
+});

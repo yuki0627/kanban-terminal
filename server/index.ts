@@ -13,7 +13,16 @@ import { createPubSub } from "./pubsub.js";
 import { mountConfigRoutes, getLaunchers } from "./config-routes.js";
 import { mountBoardRoutes } from "./board-routes.js";
 import { applyCardStatus, loadBoard, saveBoard, type BoardState, type Card, type CellStatus } from "./board-store.js";
-import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand, tmuxPanePid } from "./tmux.js";
+import {
+  tmuxAvailable,
+  tmuxNewSessionArgs,
+  tmuxHasSession,
+  tmuxKillSession,
+  tmuxListSessionIds,
+  tmuxPaneCurrentCommand,
+  tmuxPanePid,
+  sanitizeTmuxEnvironment,
+} from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
 import { createClaudeAgentKind, detectAgentProcess } from "./agent-kind.js";
@@ -40,6 +49,7 @@ import {
   type AgentPtyActivityState,
   type AgentPtySignal,
 } from "./pty-activity.js";
+import { linkedAgentSessionIds, selectAgentTranscriptCandidate, type AgentTranscriptCandidate } from "./agent-discovery.js";
 
 // Per-session activity flags, driven by Claude hooks (see /api/hook).
 interface Activity {
@@ -117,6 +127,7 @@ const PTY_ROWS = 30;
 // CLAUDE_CWD is the workspace used as the PTY cwd and as the root for persisted
 // session state, so it must exist before we spawn anything into it.
 await fs.mkdir(CLAUDE_CWD, { recursive: true });
+if (tmuxAvailable()) sanitizeTmuxEnvironment();
 
 const KANBAN_TERMINAL_HOME = path.join(os.homedir(), ".kanban-terminal");
 
@@ -147,6 +158,7 @@ const agentSessionToCard = new Map<string, string>();
 const l2StatusBySession = new Map<string, CellStatus>();
 const l3StatusByCard = new Map<string, CellStatus>();
 const agentForegroundSessions = new Set<string>();
+const openCardSessions = new Map<string, string | null>();
 const agentPtyActivity = new Map<string, AgentPtyActivityState>();
 const agentSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const agentDiscoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -154,11 +166,13 @@ const agentDiscoveryState = new Map<string, { startedAt: number; attempts: numbe
 function hydrateCardTerminalSessions(): void {
   cardTerminalSessions.clear();
   terminalSessionToCard.clear();
+  agentSessionToCard.clear();
   for (const card of loadBoard().cards) {
     if (card.terminal.sessionId) {
       cardTerminalSessions.add(card.terminal.sessionId);
       terminalSessionToCard.set(card.terminal.sessionId, card.id);
     }
+    if (card.terminal.agentSessionId) agentSessionToCard.set(card.terminal.agentSessionId, card.id);
   }
 }
 hydrateCardTerminalSessions();
@@ -264,9 +278,27 @@ function publishBoardUpdate(): void {
 
 function applyBoardSignal(cardId: string, status: CellStatus): void {
   const board = loadBoard();
-  const next = applyCardStatus(board, cardId, status);
+  const next = applyCardStatus(board, cardId, status, { viewed: isCardViewed(cardId) });
   if (next === board) return;
   if (saveBoard(next)) publishBoardUpdate();
+}
+
+function isCardViewed(cardId: string): boolean {
+  return openCardSessions.has(cardId);
+}
+
+function markCardViewed(cardId: string): void {
+  const sessionId = loadBoard().cards.find((card) => card.id === cardId)?.terminal.sessionId ?? null;
+  openCardSessions.set(cardId, sessionId);
+}
+
+function markCardClosed(cardId: string): void {
+  openCardSessions.delete(cardId);
+}
+
+function markCardClosedForSession(sessionId: string): void {
+  const cardId = terminalSessionToCard.get(sessionId);
+  if (cardId && openCardSessions.get(cardId) === sessionId) markCardClosed(cardId);
 }
 
 function bindTerminalSessionToCard(cardId: string, sessionId: string, cwd: string): void {
@@ -293,6 +325,10 @@ function cardTerminalAlive(sessionId: string | null): boolean {
   return !!sessionId && (ptys.has(sessionId) || tmuxHasSession(sessionId));
 }
 
+function claudeResumeDraft(agentSessionId: string | null | undefined): string | null {
+  return agentSessionId && SESSION_ID_RE.test(agentSessionId) ? `claude --resume ${agentSessionId}` : null;
+}
+
 function ensureCardTerminal(board: BoardState, card: Card): Card {
   const cwd = cardWorkspace(board, card);
   if (card.archived) return card;
@@ -307,8 +343,9 @@ function ensureCardTerminal(board: BoardState, card: Card): Card {
   const sessionId = randomUUID();
   cardTerminalSessions.add(sessionId);
   terminalSessionToCard.set(sessionId, card.id);
+  const resumeDraft = card.terminal.sessionId ? claudeResumeDraft(card.terminal.agentSessionId) : null;
   try {
-    spawnLauncherPty(sessionId, null, DEFAULT_LAUNCH_CMD, cwd, card.id);
+    spawnLauncherPty(sessionId, null, DEFAULT_LAUNCH_CMD, cwd, card.id, resumeDraft);
   } catch (err) {
     console.error(`[card-terminal] failed to start shell for ${card.id}: ${messageOf(err)}`);
     cardTerminalSessions.delete(sessionId);
@@ -414,7 +451,10 @@ function reap(id: string) {
   ptys.delete(id);
   cardTerminalSessions.delete(id);
   terminalSessionToCard.delete(id);
-  if (cardId) clearAgentSessionLinksForCard(cardId);
+  if (cardId) {
+    clearAgentSessionLinksForCard(cardId);
+    markCardClosed(cardId);
+  }
   l2StatusBySession.delete(id);
   agentForegroundSessions.delete(id);
   clearAgentActivity(id);
@@ -452,8 +492,11 @@ function releaseTerminalSession(id: string): boolean {
   ptys.delete(id);
   cardTerminalSessions.delete(id);
   terminalSessionToCard.delete(id);
-  if (cardId) clearAgentSessionLinksForCard(cardId);
-  if (cardId) l3StatusByCard.delete(cardId);
+  if (cardId) {
+    clearAgentSessionLinksForCard(cardId);
+    l3StatusByCard.delete(cardId);
+    markCardClosed(cardId);
+  }
   l2StatusBySession.delete(id);
   agentForegroundSessions.delete(id);
   clearAgentActivity(id);
@@ -551,12 +594,6 @@ function sessionExistsOnDisk(id: string, cwd: string): boolean {
   return existsSync(path.join(projectSessionsDir(cwd), `${id}.jsonl`));
 }
 
-interface AgentTranscriptCandidate {
-  id: string;
-  createdAt: number;
-  title: string | null;
-}
-
 const AGENT_TRANSCRIPT_LOOKBACK_MS = 5_000;
 const AGENT_TRANSCRIPT_RETRY_MS = 1_500;
 const AGENT_TRANSCRIPT_MAX_ATTEMPTS = 240;
@@ -566,34 +603,55 @@ function isAutoCardName(name: string): boolean {
   return trimmed === "" || trimmed === "New terminal";
 }
 
-async function findClaudeTranscriptCandidate(cwd: string, startedAt: number): Promise<AgentTranscriptCandidate | null> {
+async function findClaudeTranscriptCandidates(cwd: string): Promise<AgentTranscriptCandidate[]> {
   const dir = projectSessionsDir(cwd);
   let dirEntries: string[];
   try {
     dirEntries = await fs.readdir(dir);
   } catch (err) {
-    if (hasErrnoCode(err) && err.code === "ENOENT") return null;
+    if (hasErrnoCode(err) && err.code === "ENOENT") return [];
     throw err;
   }
   const files = dirEntries.filter((file) => file.endsWith(".jsonl") && SESSION_ID_RE.test(path.basename(file, ".jsonl")));
-  const candidates = (
-    await Promise.all(
-      files.map(async (file) => {
-        const full = path.join(dir, file);
-        const stat = await fs.stat(full);
-        const createdAt = stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs;
-        if (createdAt < startedAt - AGENT_TRANSCRIPT_LOOKBACK_MS && stat.mtimeMs < startedAt - AGENT_TRANSCRIPT_LOOKBACK_MS) return null;
-        const raw = await fs.readFile(full, "utf8");
-        return {
-          id: path.basename(file, ".jsonl"),
-          createdAt,
-          title: CLAUDE_AGENT.titleFromTranscript(raw),
-        };
-      }),
-    )
-  ).filter((candidate): candidate is AgentTranscriptCandidate => candidate !== null);
-  candidates.sort((a, b) => Math.abs(a.createdAt - startedAt) - Math.abs(b.createdAt - startedAt));
-  return candidates[0] ?? null;
+  return Promise.all(
+    files.map(async (file) => {
+      const full = path.join(dir, file);
+      const stat = await fs.stat(full);
+      const raw = await fs.readFile(full, "utf8");
+      return {
+        id: path.basename(file, ".jsonl"),
+        createdAt: stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs,
+        updatedAt: stat.mtimeMs,
+        title: CLAUDE_AGENT.titleFromTranscript(raw),
+      };
+    }),
+  );
+}
+
+async function selectTranscriptCandidateForCard(board: BoardState, card: Card, startedAt: number): Promise<AgentTranscriptCandidate | null> {
+  const cwd = cardWorkspace(board, card);
+  const candidates = await findClaudeTranscriptCandidates(cwd);
+  const linkedIds = linkedAgentSessionIds(board, card.id);
+  return selectAgentTranscriptCandidate(candidates, startedAt, linkedIds, AGENT_TRANSCRIPT_LOOKBACK_MS);
+}
+
+function nameForAgentTranscript(card: Card, candidate: AgentTranscriptCandidate): string {
+  return candidate.title && isAutoCardName(card.name) ? candidate.title : card.name;
+}
+
+function persistAgentTranscriptCandidate(cardId: string, candidate: AgentTranscriptCandidate): boolean {
+  const latestBoard = loadBoard();
+  if (linkedAgentSessionIds(latestBoard, cardId).has(candidate.id)) return false;
+  const latestCard = latestBoard.cards.find((c) => c.id === cardId);
+  if (!latestCard || latestCard.archived) return true;
+  const latestName = nameForAgentTranscript(latestCard, candidate);
+  const latestTerminal = { ...latestCard.terminal, agentSessionId: candidate.id };
+  const next: BoardState = {
+    ...latestBoard,
+    cards: latestBoard.cards.map((c) => (c.id === cardId ? { ...c, name: latestName, terminal: latestTerminal, updatedAt: Date.now() } : c)),
+  };
+  if (saveBoard(next)) publishBoardUpdate();
+  return true;
 }
 
 async function discoverAgentTranscript(sessionId: string): Promise<boolean> {
@@ -606,21 +664,13 @@ async function discoverAgentTranscript(sessionId: string): Promise<boolean> {
   if (!card || card.archived) return true;
 
   try {
-    const cwd = cardWorkspace(board, card);
-    const candidate = await findClaudeTranscriptCandidate(cwd, state.startedAt);
+    const candidate = await selectTranscriptCandidateForCard(board, card, state.startedAt);
     if (!candidate) return false;
 
-    const nextTerminal = { ...card.terminal, agentSessionId: candidate.id };
-    agentSessionToCard.set(candidate.id, card.id);
-    const nextName = candidate.title && isAutoCardName(card.name) ? candidate.title : card.name;
+    const nextName = nameForAgentTranscript(card, candidate);
     const changed = card.terminal.agentSessionId !== candidate.id || card.name !== nextName;
-    if (changed) {
-      const next: BoardState = {
-        ...board,
-        cards: board.cards.map((c) => (c.id === card.id ? { ...c, name: nextName, terminal: nextTerminal, updatedAt: Date.now() } : c)),
-      };
-      if (saveBoard(next)) publishBoardUpdate();
-    }
+    if (changed && !persistAgentTranscriptCandidate(card.id, candidate)) return false;
+    agentSessionToCard.set(candidate.id, card.id);
     return candidate.title !== null || !isAutoCardName(nextName);
   } catch (err) {
     console.warn(`[agent-discovery] failed for ${sessionId}: ${messageOf(err)}`);
@@ -653,10 +703,15 @@ function scheduleAgentDiscovery(sessionId: string, delay = AGENT_TRANSCRIPT_RETR
   agentDiscoveryTimers.set(sessionId, timer);
 }
 
-function noteAgentForeground(sessionId: string): void {
-  if (!cardTerminalSessions.has(sessionId) || agentDiscoveryState.has(sessionId)) return;
-  agentDiscoveryState.set(sessionId, { startedAt: Date.now(), attempts: 0 });
+function startAgentDiscovery(sessionId: string, startedAt: number, refresh: boolean): void {
+  if (!cardTerminalSessions.has(sessionId)) return;
+  if (!refresh && agentDiscoveryState.has(sessionId)) return;
+  agentDiscoveryState.set(sessionId, { startedAt, attempts: 0 });
   scheduleAgentDiscovery(sessionId, 0);
+}
+
+function noteAgentForeground(sessionId: string): void {
+  startAgentDiscovery(sessionId, Date.now(), false);
 }
 
 // Validate a client-supplied workspace dir: must be an absolute, existing
@@ -749,6 +804,7 @@ function clearAgentActivity(sessionId: string): void {
 function emitAgentPtySignal(sessionId: string, signal: AgentPtySignal): void {
   const cardId = terminalSessionToCard.get(sessionId);
   if (!cardId) return;
+  if (signal === "working") startAgentDiscovery(sessionId, Date.now(), true);
   const status: CellStatus = signal === "working" ? "working" : "done";
   if (l3StatusByCard.get(cardId) === status) return;
   l3StatusByCard.set(cardId, status);
@@ -1122,7 +1178,14 @@ app.delete("/api/cards/:id/terminal", (req, res) => {
 
 const server = http.createServer(app);
 pubsub = createPubSub(server, isAllowedOrigin);
-mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions, prepareBoard: ensureBoardTerminals });
+mountBoardRoutes(app, {
+  isCardViewed,
+  pubsub,
+  onSaved: hydrateCardTerminalSessions,
+  onCardClosed: markCardClosed,
+  onCardRead: markCardViewed,
+  prepareBoard: ensureBoardTerminals,
+});
 
 // Wire the notification REST surface for the toolbar bell.
 await initNotifier({ workspace: CLAUDE_CWD, pubsub });
@@ -1186,7 +1249,7 @@ function reattachPty(entry: PtyEntry, ws: WebSocket, sessionId: string): PtyEntr
   }
   entry.ws = ws;
   if (entry.buffer && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify({ type: "output", data: entry.buffer }));
+    ws.send(JSON.stringify({ type: "replay", data: entry.buffer }));
   }
   return entry;
 }
@@ -1207,6 +1270,19 @@ const DRAFT_FALLBACK_MS = 6000;
 const DRAFT_CONTROL_BYTES_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
 function sanitizeDraftText(text: string): string {
   return text.replace(DRAFT_CONTROL_BYTES_RE, " ").replace(/\s+/g, " ").trim();
+}
+
+const SHELL_DRAFT_DELAY_MS = 500;
+function typeShellDraft(entry: PtyEntry, draft: string | null): void {
+  const draftText = draft ? sanitizeDraftText(draft) : "";
+  if (!draftText) return;
+  setTimeout(() => {
+    try {
+      entry.term.write(draftText);
+    } catch {
+      // pty already gone — nothing to draft into
+    }
+  }, SHELL_DRAFT_DELAY_MS).unref?.();
 }
 
 // Spawn a fresh claude PTY for this session, register it, and wire its output /
@@ -1400,7 +1476,14 @@ function resolveLauncher(index: number): { label: string; command: string } | nu
 // transcript, or resume. The command is run via the login shell with `exec` so it
 // becomes the single foreground process ($SHELL, codex, etc.) — env vars in the
 // command (e.g. $SHELL) expand, and the process stays interactive in the PTY.
-function spawnLauncherPty(sessionId: string, ws: WebSocket | null, command: string, cwd: string, cardId: string | null = null): PtyEntry {
+function spawnLauncherPty(
+  sessionId: string,
+  ws: WebSocket | null,
+  command: string,
+  cwd: string,
+  cardId: string | null = null,
+  draft: string | null = null,
+): PtyEntry {
   const isWindows = process.platform === "win32";
   const shell = isWindows ? "powershell.exe" : process.env.SHELL || "/bin/bash";
   const args = isWindows ? ["-NoLogo", "-Command", command] : ["-lc", `exec ${command}`];
@@ -1410,6 +1493,7 @@ function spawnLauncherPty(sessionId: string, ws: WebSocket | null, command: stri
 
   const entry: PtyEntry = { term, ws, buffer: "", cwd, tmux };
   ptys.set(sessionId, entry);
+  typeShellDraft(entry, draft);
 
   term.onData((data) => {
     entry.buffer = (entry.buffer + data).slice(-OUTPUT_BUFFER_LIMIT);
@@ -1463,6 +1547,7 @@ function handleClientClose(entry: PtyEntry, ws: WebSocket, sessionId: string) {
   // Ignore if a newer client already reattached to this session.
   if (entry.ws !== ws) return;
   entry.ws = null;
+  markCardClosedForSession(sessionId);
   if (cardTerminalSessions.has(sessionId)) {
     console.log(`[ws] suspended card terminal ${sessionId}`);
     return;
@@ -1607,9 +1692,23 @@ function closeWithError(ws: WebSocket, message: string): void {
 // Reattach a same-process live PTY, else spawn a launcher (which itself reattaches a
 // surviving tmux session or creates one). `command` is the resolved launcher command,
 // or the fallback for a tmux reattach with no launcher index.
-function startLaunchEntry(sessionId: string, ws: WebSocket, live: PtyEntry | undefined, command: string, cwd: string, cardId: string | null): PtyEntry {
+function cardResumeDraft(cardId: string | null): string | null {
+  if (!cardId) return null;
+  const card = loadBoard().cards.find((c) => c.id === cardId);
+  return claudeResumeDraft(card?.terminal.agentSessionId);
+}
+
+function startLaunchEntry(
+  sessionId: string,
+  ws: WebSocket,
+  live: PtyEntry | undefined,
+  command: string,
+  cwd: string,
+  cardId: string | null,
+  draft: string | null,
+): PtyEntry {
   if (live) return reattachPty(live, ws, sessionId);
-  return spawnLauncherPty(sessionId, ws, command, cwd, cardId);
+  return spawnLauncherPty(sessionId, ws, command, cwd, cardId, draft);
 }
 
 interface LaunchRequest {
@@ -1658,6 +1757,7 @@ runLaunchWss.on("connection", (ws, req) => {
   if (!command) return closeWithError(ws, "Launcher not found — check Settings → Launch commands.");
 
   const effectiveCwd = live?.cwd ?? request.cwd;
+  const resumeDraft = request.requested && !live && !tmuxAlive ? cardResumeDraft(request.cardId) : null;
   if (request.isCardTerminal) cardTerminalSessions.add(sessionId);
   if (request.cardId) bindTerminalSessionToCard(request.cardId, sessionId, effectiveCwd);
   markDevTerminalSession(sessionId);
@@ -1665,7 +1765,7 @@ runLaunchWss.on("connection", (ws, req) => {
 
   let entry: PtyEntry;
   try {
-    entry = startLaunchEntry(sessionId, ws, live, command, request.cwd, request.cardId);
+    entry = startLaunchEntry(sessionId, ws, live, command, request.cwd, request.cardId, resumeDraft);
   } catch (err) {
     console.error(`[ws/launch] failed to start ${sessionId}: ${messageOf(err)}`);
     return closeWithError(ws, "Failed to start the launch command.");

@@ -63,10 +63,14 @@ interface Conn {
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   attachedEl: HTMLElement | null;
+  replayingOutput: boolean;
+  replayInputDropUntil: number;
 }
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 5000;
+const REPLAY_INPUT_GUARD_MS = 250;
+const ESC = String.fromCharCode(27);
 
 // The heavy per-slot runtime (non-reactive — Vue never needs to track these).
 const conns = new Map<string, Conn>();
@@ -138,6 +142,8 @@ function ensure(key: string, target: ConnTarget): Conn {
     reconnectAttempts: 0,
     reconnectTimer: null,
     attachedEl: null,
+    replayingOutput: false,
+    replayInputDropUntil: 0,
   };
   conns.set(key, c);
   connView.set(key, { status: "connecting", serverCwd: target.cwd });
@@ -145,11 +151,74 @@ function ensure(key: string, target: ConnTarget): Conn {
   // Terminal input -> the slot's CURRENT socket (survives reconnects: `c.ws` is
   // re-read each keystroke, so input always targets the live socket).
   term.onData((data) => {
+    const input = inputForPty(c, data);
+    if (input === null) return;
     if (c.ws && c.ws.readyState === WebSocket.OPEN) {
-      c.ws.send(JSON.stringify({ type: "input", data }));
+      c.ws.send(JSON.stringify({ type: "input", data: input }));
     }
   });
   return c;
+}
+
+export function stripReplayQueryResponses(data: string): string | null {
+  const withoutCsi = stripCsiDeviceAttributes(data);
+  const bare = withoutCsi.split(`${ESC}[`).join("");
+  if (bare === "" || isBareDeviceAttributes(bare)) return null;
+  return withoutCsi;
+}
+
+function stripCsiDeviceAttributes(data: string): string {
+  let result = "";
+  let i = 0;
+  while (i < data.length) {
+    if (data[i] === ESC && data[i + 1] === "[") {
+      const end = deviceAttributesEnd(data, i + 2);
+      if (end !== null) {
+        i = end + 1;
+        continue;
+      }
+    }
+    result += data[i];
+    i++;
+  }
+  return result;
+}
+
+function deviceAttributesEnd(data: string, start: number): number | null {
+  let i = start;
+  if (data[i] === "?" || data[i] === ">") i++;
+  while (i < data.length && ((data[i] >= "0" && data[i] <= "9") || data[i] === ";")) i++;
+  return data[i] === "c" ? i : null;
+}
+
+function isBareDeviceAttributes(text: string): boolean {
+  let i = 0;
+  while (i < text.length) {
+    const end = bareDeviceAttributesEnd(text, i);
+    if (end === null) return false;
+    i = end + 1;
+  }
+  return text.length > 0;
+}
+
+function bareDeviceAttributesEnd(text: string, start: number): number | null {
+  let i = start;
+  if (text[i] === "?" || text[i] === ">") i++;
+  const digitStart = i;
+  while (i < text.length && text[i] >= "0" && text[i] <= "9") i++;
+  if (i === digitStart) return null;
+  while (text[i] === ";") {
+    i++;
+    const segmentStart = i;
+    while (i < text.length && text[i] >= "0" && text[i] <= "9") i++;
+    if (i === segmentStart) return null;
+  }
+  return text[i] === "c" ? i : null;
+}
+
+function inputForPty(c: Conn, data: string): string | null {
+  if (!c.replayingOutput && Date.now() > c.replayInputDropUntil) return data;
+  return stripReplayQueryResponses(data);
 }
 
 function scheduleReconnect(c: Conn) {
@@ -239,6 +308,12 @@ function handleMessage(c: Conn, event: MessageEvent) {
   const msg = JSON.parse(event.data);
   if (msg.type === "output") {
     c.term.write(msg.data);
+  } else if (msg.type === "replay") {
+    c.replayingOutput = true;
+    c.term.write(msg.data, () => {
+      c.replayingOutput = false;
+      c.replayInputDropUntil = Date.now() + REPLAY_INPUT_GUARD_MS;
+    });
   } else if (msg.type === "session") {
     // Server reports the live session id — remember it so a later reconnect resumes
     // THIS session (esp. brand-new sessions that had no id yet) and the effective cwd.

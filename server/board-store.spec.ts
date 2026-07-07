@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyCardStatus, loadBoard, saveBoard, sanitizeBoard } from "./board-store.js";
+import { applyCardStatus, loadBoard, markCardRead, saveBoard, sanitizeBoard } from "./board-store.js";
 
 describe("sanitizeBoard", () => {
   it("keeps valid projects and cards while dropping unsafe project roots", () => {
@@ -67,5 +67,25 @@ describe("applyCardStatus", () => {
     expect(waiting.cards[0]).toMatchObject({ lane: "done", manual: true });
     const started = applyCardStatus(waiting, "c1", "working");
     expect(started.cards[0]).toMatchObject({ lane: "in_progress", manual: false });
+  });
+
+  it("does not mark a viewed card unread on automatic moves", () => {
+    const board = sanitizeBoard({ cards: [{ id: "c1", lane: "todo", lastStatus: "idle" }] });
+    const next = applyCardStatus(board, "c1", "working", { viewed: true });
+    expect(next.cards[0]).toMatchObject({ lane: "in_progress", unread: false });
+  });
+});
+
+describe("markCardRead", () => {
+  it("persists an unread clear without changing other cards", () => {
+    const board = sanitizeBoard({
+      cards: [
+        { id: "c1", unread: true },
+        { id: "c2", unread: true },
+      ],
+    });
+    const next = markCardRead(board, "c1");
+    expect(next.cards[0]).toMatchObject({ id: "c1", unread: false });
+    expect(next.cards[1]).toMatchObject({ id: "c2", unread: true });
   });
 });
