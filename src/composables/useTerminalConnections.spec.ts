@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+const terminalInstances = vi.hoisted(() => [] as Array<{ writes: string[] }>);
+
 // Mock xterm + addons so the manager runs headless (no real DOM terminal / canvas).
 // Factories are hoisted above imports, so the fakes are declared INSIDE them.
 vi.mock("@xterm/xterm", () => ({
@@ -7,10 +9,17 @@ vi.mock("@xterm/xterm", () => ({
     options: Record<string, unknown> = {};
     cols = 80;
     rows = 24;
+    writes: string[] = [];
+    constructor() {
+      terminalInstances.push(this);
+    }
     loadAddon() {}
     open() {}
     onData() {}
-    write() {}
+    write(data: string, callback?: () => void) {
+      this.writes.push(data);
+      callback?.();
+    }
     reset() {}
     focus() {}
     scrollToBottom() {}
@@ -64,9 +73,19 @@ import * as conn from "./useTerminalConnections";
 
 const target = (sessionId: string | null) => ({ sessionId, cwd: "/typed", devTerminal: false, command: null, launcher: null });
 
+const attachSlot = (key: string, handlers: conn.ConnHandlers = {}) => {
+  const el = document.createElement("div");
+  conn.attach(key, target(null), handlers, el);
+  const ws = FakeWebSocket.instances.at(-1);
+  if (!ws) throw new Error("no socket created");
+  ws.onopen?.();
+  return { el, ws, term: terminalInstances.at(-1) };
+};
+
 describe("useTerminalConnections — detached-slot state replay", () => {
   beforeEach(() => {
     FakeWebSocket.instances.length = 0;
+    terminalInstances.length = 0;
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   });
   afterEach(() => {
@@ -112,6 +131,77 @@ describe("useTerminalConnections — detached-slot state replay", () => {
     conn.attach("cell-race", target(null), second, document.createElement("div"));
     expect(second.onSession).not.toHaveBeenCalled();
     expect(second.onCwd).not.toHaveBeenCalled();
+  });
+});
+
+describe("useTerminalConnections — handleMessage characterization", () => {
+  const keys = ["cell-session", "cell-exit", "cell-superseded", "cell-error"];
+
+  beforeEach(() => {
+    FakeWebSocket.instances.length = 0;
+    terminalInstances.length = 0;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    for (const key of keys) conn.release(key);
+    vi.useRealTimers();
+  });
+
+  it("propagates session id and resolved cwd to handlers and connView", () => {
+    const handlers = { onSession: vi.fn(), onCwd: vi.fn() };
+    const { ws } = attachSlot("cell-session", handlers);
+
+    ws.onmessage?.({ data: JSON.stringify({ type: "session", id: "sess-live", cwd: "/repo/resolved" }) });
+
+    expect(handlers.onSession).toHaveBeenCalledTimes(1);
+    expect(handlers.onSession).toHaveBeenCalledWith("sess-live");
+    expect(handlers.onCwd).toHaveBeenCalledTimes(1);
+    expect(handlers.onCwd).toHaveBeenCalledWith("/repo/resolved");
+    expect(conn.connView.get("cell-session")).toEqual({ status: "connected", serverCwd: "/repo/resolved" });
+  });
+
+  it("marks exit as intentional, writes the ended banner, and calls onExit", () => {
+    vi.useFakeTimers();
+    const handlers = { onExit: vi.fn() };
+    const { ws, term } = attachSlot("cell-exit", handlers);
+
+    ws.onmessage?.({ data: JSON.stringify({ type: "exit" }) });
+    ws.onclose?.();
+    vi.advanceTimersByTime(5_000);
+
+    expect(term?.writes).toEqual(["\r\n\x1b[33m[session ended]\x1b[0m\r\n"]);
+    expect(conn.connView.get("cell-exit")).toEqual({ status: "disconnected", serverCwd: "/typed" });
+    expect(handlers.onExit).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("does not reconnect after a superseded message", () => {
+    vi.useFakeTimers();
+    const handlers = { onExit: vi.fn() };
+    const { ws, term } = attachSlot("cell-superseded", handlers);
+
+    ws.onmessage?.({ data: JSON.stringify({ type: "superseded" }) });
+    ws.onclose?.();
+    vi.advanceTimersByTime(5_000);
+
+    expect(term?.writes).toEqual(["\r\n\x1b[33m[detached — this session is open in another window]\x1b[0m\r\n"]);
+    expect(conn.connView.get("cell-superseded")).toEqual({ status: "disconnected", serverCwd: "/typed" });
+    expect(handlers.onExit).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("surfaces server errors in the terminal and calls onExit", () => {
+    const handlers = { onExit: vi.fn() };
+    const { ws, term } = attachSlot("cell-error", handlers);
+
+    ws.onmessage?.({ data: JSON.stringify({ type: "error", message: "missing cli" }) });
+
+    expect(term?.writes).toEqual(["\r\n\x1b[31m[missing cli]\x1b[0m\r\n"]);
+    expect(conn.connView.get("cell-error")).toEqual({ status: "disconnected", serverCwd: "/typed" });
+    expect(handlers.onExit).toHaveBeenCalledTimes(1);
   });
 });
 
