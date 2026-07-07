@@ -50,6 +50,7 @@ import {
   type AgentPtySignal,
 } from "./pty-activity.js";
 import { linkedAgentSessionIds, selectAgentTranscriptCandidate, type AgentTranscriptCandidate } from "./agent-discovery.js";
+import { ptyEnv } from "./pty-env.js";
 
 // Per-session activity flags, driven by Claude hooks (see /api/hook).
 interface Activity {
@@ -1333,7 +1334,7 @@ function typeShellDraft(entry: PtyEntry, draft: string | null): void {
 // pty.spawn with the binary as a PARAMETER (never a string literal at the call site),
 // so the tmux/shell/claude spawns aren't flagged as spawn-of-a-string-literal.
 function spawnPty(bin: string, args: string[], cwd: string): IPty {
-  return pty.spawn(bin, args, { name: "xterm-256color", cols: PTY_COLS, rows: PTY_ROWS, cwd, env: process.env });
+  return pty.spawn(bin, args, { name: "xterm-256color", cols: PTY_COLS, rows: PTY_ROWS, cwd, env: ptyEnv() });
 }
 
 // Spawn a terminal, wrapping it in a persistent tmux session when tmux is available and
@@ -1485,7 +1486,7 @@ function spawnCommandPty(command: string, cwd: string, ws: WebSocket): IPty {
   const isWindows = process.platform === "win32";
   const shell = isWindows ? "powershell.exe" : process.env.SHELL || "/bin/bash";
   const args = isWindows ? ["-NoLogo", "-Command", command] : ["-lc", command];
-  const term = pty.spawn(shell, args, { name: "xterm-256color", cols: 120, rows: 30, cwd, env: process.env });
+  const term = pty.spawn(shell, args, { name: "xterm-256color", cols: 120, rows: 30, cwd, env: ptyEnv() });
   console.log(`[pty] spawned command (pid=${term.pid}) in ${cwd}: ${command}`);
 
   term.onData((data) => {

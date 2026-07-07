@@ -37,7 +37,10 @@ describe("tmuxNewSessionArgs", () => {
   const args = tmuxNewSessionArgs("id1", "/bin/zsh", ["-lc", "exec codex"], "/proj");
 
   it("targets our isolated tmux server and config", () => {
-    expect(args.slice(0, 4)).toEqual(["-L", "kanban-terminal", "-f", expect.stringMatching(/tmux\.conf$/)]);
+    expect(args.slice(0, 5)).toEqual(["-u", "-L", "kanban-terminal", "-f", expect.stringMatching(/tmux\.conf$/)]);
+  });
+  it("forces tmux clients to treat the terminal as UTF-8 capable", () => {
+    expect(args[0]).toBe("-u");
   });
   it("uses new-session -A (create-or-attach) with the kt- session name and cwd", () => {
     expect(args).toContain("new-session");
