@@ -1,5 +1,5 @@
 // GET/POST /api/config — the default workspace dir, the user's directory presets,
-// and an optional custom attention-sound file (persisted at ~/.mulmoterminal/
+// and an optional custom attention-sound file (persisted at ~/.kanban-terminal/
 // config.json), shown/edited in the UI. GET /api/sound streams that sound file.
 // Kept in its own module (mounted from index.ts) so grid/preset work doesn't churn
 // index.ts and collide with unrelated server changes.
@@ -10,7 +10,7 @@ import type { Express } from "express";
 import { sanitizePresets } from "./cwd-presets.js";
 import { loadAppConfig, saveAppConfig, sanitizeSoundFile, sanitizeLaunchers, type AppConfig, type Launcher } from "./app-config.js";
 
-const CONFIG_FILE = path.join(os.homedir(), ".mulmoterminal", "config.json");
+const CONFIG_FILE = path.join(os.homedir(), ".kanban-terminal", "config.json");
 let config: AppConfig = loadAppConfig(CONFIG_FILE);
 
 const BUILTIN_LAUNCHERS: Launcher[] = [{ label: "Shell", command: process.env.SHELL || "/bin/sh" }];

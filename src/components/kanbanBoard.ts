@@ -28,6 +28,14 @@ export interface CardTerminal {
   sessionId: string | null;
   agentKind: AgentKind;
   cwd: string | null;
+  agentSessionId?: string | null;
+}
+
+export interface OverlayFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface KanbanCard {
@@ -39,6 +47,7 @@ export interface KanbanCard {
   archived: boolean;
   unread: boolean;
   terminal: CardTerminal;
+  overlay: OverlayFrame | null;
   createdAt: number;
   updatedAt: number;
   /** Set by a user drag; cleared when a real work-start moves the card again.
@@ -81,6 +90,16 @@ const isAgentKind = (v: unknown): v is AgentKind => v === "claude" || v === "she
 const isCellStatus = (v: unknown): v is CellStatus => v === "blocked" || v === "done" || v === "working" || v === "idle";
 const firstString = (...values: unknown[]): string | null => values.find((v): v is string => typeof v === "string") ?? null;
 
+function parseOverlayFrame(raw: unknown): OverlayFrame | null {
+  if (!isRecord(raw)) return null;
+  const x = typeof raw.x === "number" && Number.isFinite(raw.x) ? raw.x : null;
+  const y = typeof raw.y === "number" && Number.isFinite(raw.y) ? raw.y : null;
+  const width = typeof raw.width === "number" && Number.isFinite(raw.width) ? raw.width : null;
+  const height = typeof raw.height === "number" && Number.isFinite(raw.height) ? raw.height : null;
+  if (x === null || y === null || width === null || height === null) return null;
+  return { x, y, width, height };
+}
+
 function parseCard(raw: unknown): KanbanCard | null {
   if (!isRecord(raw) || typeof raw.id !== "string") return null;
   const terminal = isRecord(raw.terminal) ? raw.terminal : {};
@@ -99,7 +118,9 @@ function parseCard(raw: unknown): KanbanCard | null {
       sessionId,
       agentKind: isAgentKind(terminal.agentKind) ? terminal.agentKind : "shell",
       cwd: typeof terminal.cwd === "string" ? terminal.cwd : null,
+      agentSessionId: firstString(terminal.agentSessionId, terminal.agentSession),
     },
+    overlay: parseOverlayFrame(raw.overlay),
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : now,
     manual: raw.manual === true,
@@ -188,6 +209,7 @@ export function syncSessions(state: KanbanState, sessions: ReadonlyArray<Session
         archived: false,
         unread: false,
         terminal: { sessionId: s.id, agentKind: "claude", cwd: s.cwd ?? null },
+        overlay: null,
         createdAt: now,
         updatedAt: now,
         manual: false,
@@ -216,8 +238,35 @@ export function updateCard(state: KanbanState, cardId: string, patch: Partial<Ka
   return { ...state, cards: state.cards.map((c) => (c.id === cardId ? { ...c, ...patch, updatedAt: Date.now() } : c)) };
 }
 
+export function archiveCards(state: KanbanState, cardIds: ReadonlyArray<string>): KanbanState {
+  const ids = new Set(cardIds);
+  if (!ids.size) return state;
+  let changed = false;
+  const cards = state.cards.map((c) => {
+    if (!ids.has(c.id) || c.archived) return c;
+    changed = true;
+    return { ...c, archived: true, unread: false, updatedAt: Date.now() };
+  });
+  return changed ? { ...state, cards, expanded: state.expanded && ids.has(state.expanded) ? null : state.expanded } : state;
+}
+
+export function restoreCard(state: KanbanState, cardId: string, lane: LaneId): KanbanState {
+  const card = state.cards.find((c) => c.id === cardId);
+  if (!card || !card.archived) return state;
+  const restored: KanbanCard = { ...card, archived: false, lane, manual: true, unread: false, updatedAt: Date.now() };
+  return { ...state, cards: [restored, ...state.cards.filter((c) => c.id !== cardId)] };
+}
+
+export function updateOverlayFrame(state: KanbanState, cardId: string, overlay: OverlayFrame): KanbanState {
+  return updateCard(state, cardId, { overlay });
+}
+
 export function laneCards(state: KanbanState, lane: LaneId): KanbanCard[] {
   return state.cards.filter((c) => !c.archived && c.lane === lane);
+}
+
+export function archivedCards(state: KanbanState): KanbanCard[] {
+  return state.cards.filter((c) => c.archived);
 }
 
 export type LaneCounts = Record<LaneId, number>;

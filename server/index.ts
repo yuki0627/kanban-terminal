@@ -16,7 +16,7 @@ import { applyCardStatus, loadBoard, saveBoard, type BoardState, type Card, type
 import { tmuxAvailable, tmuxNewSessionArgs, tmuxHasSession, tmuxKillSession, tmuxListSessionIds, tmuxPaneCurrentCommand, tmuxPanePid } from "./tmux.js";
 import { publicDirConfig, dirSoundFile } from "./dir-config.js";
 import { loadScripts, resolveScript } from "./scripts.js";
-import { buildClaudeArgs } from "./claude-args.js";
+import { createClaudeAgentKind, detectAgentProcess } from "./agent-kind.js";
 import {
   isRecord,
   parseJsonl,
@@ -103,6 +103,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 34567;
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
+const CLAUDE_AGENT = createClaudeAgentKind(CLAUDE_BIN);
+const AGENT_KINDS = [CLAUDE_AGENT];
 // Permission mode for backend-spawned Claude sessions. Defaults to "auto" so
 // the backend runs hands-off; override with CLAUDE_PERMISSION_MODE (e.g.
 // "default" / "acceptEdits" / "bypassPermissions" / "plan") when needed.
@@ -116,7 +118,7 @@ const PTY_ROWS = 30;
 // session state, so it must exist before we spawn anything into it.
 await fs.mkdir(CLAUDE_CWD, { recursive: true });
 
-const MULMOTERMINAL_HOME = path.join(os.homedir(), ".mulmoterminal");
+const KANBAN_TERMINAL_HOME = path.join(os.homedir(), ".kanban-terminal");
 
 // A session id is always a UUID (server-generated, or a .jsonl basename). Reject
 // anything else so a client can't smuggle CLI flags (e.g. "--resume" followed by
@@ -134,7 +136,7 @@ const CARD_ID_RE = /^[A-Za-z0-9_.:-]{1,160}$/;
 // the exclusion applies ONLY to the unscoped (chat) query; the grid's OWN cwd-scoped
 // resume picker (/api/sessions?cwd=…) must keep listing these so they stay resumable.
 const devTerminalSessions = new Set<string>();
-const DEV_TERMINAL_SESSIONS_FILE = path.join(MULMOTERMINAL_HOME, "dev-terminal-sessions.json");
+const DEV_TERMINAL_SESSIONS_FILE = path.join(KANBAN_TERMINAL_HOME, "dev-terminal-sessions.json");
 
 // Card terminals are suspend-by-default: a detached socket must not idle-reap the
 // underlying PTY. Hydrate persisted card session ids and mark fresh card sockets
@@ -147,6 +149,8 @@ const l3StatusByCard = new Map<string, CellStatus>();
 const agentForegroundSessions = new Set<string>();
 const agentPtyActivity = new Map<string, AgentPtyActivityState>();
 const agentSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const agentDiscoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const agentDiscoveryState = new Map<string, { startedAt: number; attempts: number }>();
 function hydrateCardTerminalSessions(): void {
   cardTerminalSessions.clear();
   terminalSessionToCard.clear();
@@ -182,7 +186,7 @@ let devTerminalPersist: Promise<void> = Promise.resolve();
 function persistDevTerminalSessions(): void {
   devTerminalPersist = devTerminalPersist
     .then(() => devTerminalSessionsHydrated)
-    .then(() => fs.mkdir(MULMOTERMINAL_HOME, { recursive: true }))
+    .then(() => fs.mkdir(KANBAN_TERMINAL_HOME, { recursive: true }))
     .then(() => fs.writeFile(DEV_TERMINAL_SESSIONS_FILE, JSON.stringify([...devTerminalSessions])))
     .catch((e) => console.error(`[dev-terminal-sessions] failed to persist: ${messageOf(e)}`));
 }
@@ -406,13 +410,15 @@ function reap(id: string) {
   cancelReap(id);
   const entry = ptys.get(id);
   if (!entry) return; // already reaped
+  const cardId = terminalSessionToCard.get(id);
   ptys.delete(id);
   cardTerminalSessions.delete(id);
   terminalSessionToCard.delete(id);
-  agentSessionToCard.delete(id);
+  if (cardId) clearAgentSessionLinksForCard(cardId);
   l2StatusBySession.delete(id);
   agentForegroundSessions.delete(id);
   clearAgentActivity(id);
+  clearAgentDiscovery(id);
   // An unpersisted new session vanishes with its pty; a persisted one stays
   // visible via its on-disk record.
   knownSessions.delete(id);
@@ -431,6 +437,44 @@ function reap(id: string) {
   // server). A server crash never runs this, so sessions survive that (the point).
   if (entry.tmux) tmuxKillSession(id);
   pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
+}
+
+function clearAgentSessionLinksForCard(cardId: string): void {
+  for (const [agentSessionId, linkedCardId] of agentSessionToCard) {
+    if (linkedCardId === cardId) agentSessionToCard.delete(agentSessionId);
+  }
+}
+
+function releaseTerminalSession(id: string): boolean {
+  cancelReap(id);
+  const cardId = terminalSessionToCard.get(id);
+  const entry = ptys.get(id);
+  ptys.delete(id);
+  cardTerminalSessions.delete(id);
+  terminalSessionToCard.delete(id);
+  if (cardId) clearAgentSessionLinksForCard(cardId);
+  if (cardId) l3StatusByCard.delete(cardId);
+  l2StatusBySession.delete(id);
+  agentForegroundSessions.delete(id);
+  clearAgentActivity(id);
+  clearAgentDiscovery(id);
+  knownSessions.delete(id);
+  lastPrompts.delete(id);
+  activity.delete(id);
+  if (entry) {
+    try {
+      entry.term.kill();
+    } catch {
+      // already gone
+    }
+    if (entry.tmux) tmuxKillSession(id);
+  } else if (tmuxHasSession(id)) {
+    tmuxKillSession(id);
+  } else {
+    return false;
+  }
+  pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
+  return true;
 }
 
 // Publish a session's current activity (working + waiting) to subscribers.
@@ -507,6 +551,114 @@ function sessionExistsOnDisk(id: string, cwd: string): boolean {
   return existsSync(path.join(projectSessionsDir(cwd), `${id}.jsonl`));
 }
 
+interface AgentTranscriptCandidate {
+  id: string;
+  createdAt: number;
+  title: string | null;
+}
+
+const AGENT_TRANSCRIPT_LOOKBACK_MS = 5_000;
+const AGENT_TRANSCRIPT_RETRY_MS = 1_500;
+const AGENT_TRANSCRIPT_MAX_ATTEMPTS = 240;
+
+function isAutoCardName(name: string): boolean {
+  const trimmed = name.trim();
+  return trimmed === "" || trimmed === "New terminal";
+}
+
+async function findClaudeTranscriptCandidate(cwd: string, startedAt: number): Promise<AgentTranscriptCandidate | null> {
+  const dir = projectSessionsDir(cwd);
+  let dirEntries: string[];
+  try {
+    dirEntries = await fs.readdir(dir);
+  } catch (err) {
+    if (hasErrnoCode(err) && err.code === "ENOENT") return null;
+    throw err;
+  }
+  const files = dirEntries.filter((file) => file.endsWith(".jsonl") && SESSION_ID_RE.test(path.basename(file, ".jsonl")));
+  const candidates = (
+    await Promise.all(
+      files.map(async (file) => {
+        const full = path.join(dir, file);
+        const stat = await fs.stat(full);
+        const createdAt = stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs;
+        if (createdAt < startedAt - AGENT_TRANSCRIPT_LOOKBACK_MS && stat.mtimeMs < startedAt - AGENT_TRANSCRIPT_LOOKBACK_MS) return null;
+        const raw = await fs.readFile(full, "utf8");
+        return {
+          id: path.basename(file, ".jsonl"),
+          createdAt,
+          title: CLAUDE_AGENT.titleFromTranscript(raw),
+        };
+      }),
+    )
+  ).filter((candidate): candidate is AgentTranscriptCandidate => candidate !== null);
+  candidates.sort((a, b) => Math.abs(a.createdAt - startedAt) - Math.abs(b.createdAt - startedAt));
+  return candidates[0] ?? null;
+}
+
+async function discoverAgentTranscript(sessionId: string): Promise<boolean> {
+  const state = agentDiscoveryState.get(sessionId);
+  const cardId = terminalSessionToCard.get(sessionId);
+  if (!state || !cardId) return true;
+
+  const board = loadBoard();
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card || card.archived) return true;
+
+  try {
+    const cwd = cardWorkspace(board, card);
+    const candidate = await findClaudeTranscriptCandidate(cwd, state.startedAt);
+    if (!candidate) return false;
+
+    const nextTerminal = { ...card.terminal, agentSessionId: candidate.id };
+    agentSessionToCard.set(candidate.id, card.id);
+    const nextName = candidate.title && isAutoCardName(card.name) ? candidate.title : card.name;
+    const changed = card.terminal.agentSessionId !== candidate.id || card.name !== nextName;
+    if (changed) {
+      const next: BoardState = {
+        ...board,
+        cards: board.cards.map((c) => (c.id === card.id ? { ...c, name: nextName, terminal: nextTerminal, updatedAt: Date.now() } : c)),
+      };
+      if (saveBoard(next)) publishBoardUpdate();
+    }
+    return candidate.title !== null || !isAutoCardName(nextName);
+  } catch (err) {
+    console.warn(`[agent-discovery] failed for ${sessionId}: ${messageOf(err)}`);
+    return false;
+  }
+}
+
+function clearAgentDiscovery(sessionId: string): void {
+  const timer = agentDiscoveryTimers.get(sessionId);
+  if (timer) clearTimeout(timer);
+  agentDiscoveryTimers.delete(sessionId);
+  agentDiscoveryState.delete(sessionId);
+}
+
+function scheduleAgentDiscovery(sessionId: string, delay = AGENT_TRANSCRIPT_RETRY_MS): void {
+  const current = agentDiscoveryState.get(sessionId);
+  if (!current || current.attempts >= AGENT_TRANSCRIPT_MAX_ATTEMPTS) return;
+  const existing = agentDiscoveryTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    const next = agentDiscoveryState.get(sessionId);
+    if (!next) return;
+    agentDiscoveryState.set(sessionId, { ...next, attempts: next.attempts + 1 });
+    discoverAgentTranscript(sessionId).then((done) => {
+      if (done) clearAgentDiscovery(sessionId);
+      else scheduleAgentDiscovery(sessionId);
+    });
+  }, delay);
+  timer.unref?.();
+  agentDiscoveryTimers.set(sessionId, timer);
+}
+
+function noteAgentForeground(sessionId: string): void {
+  if (!cardTerminalSessions.has(sessionId) || agentDiscoveryState.has(sessionId)) return;
+  agentDiscoveryState.set(sessionId, { startedAt: Date.now(), attempts: 0 });
+  scheduleAgentDiscovery(sessionId, 0);
+}
+
 // Validate a client-supplied workspace dir: must be an absolute, existing
 // directory. Anything else (relative, missing, a file) falls back to CLAUDE_CWD,
 // so a cell can launch a terminal in a chosen dir without trusting raw input.
@@ -526,8 +678,6 @@ const SHELL_COMMANDS = new Set(
     .filter(Boolean)
     .map((v) => v.toLowerCase()),
 );
-const AGENT_COMMANDS = new Set(["claude", "codex", path.basename(CLAUDE_BIN)].filter(Boolean).map((v) => v.toLowerCase()));
-const AGENT_ARGS_RE = /(^|[/\s])(claude|codex)(\s|$)/i;
 
 function normalizedCommand(command: string): string {
   return path.basename(command).toLowerCase();
@@ -537,19 +687,14 @@ function isShellCommand(command: string): boolean {
   return SHELL_COMMANDS.has(normalizedCommand(command));
 }
 
-function isAgentCommand(command: string): boolean {
-  return AGENT_COMMANDS.has(normalizedCommand(command));
-}
-
-function processTreeHasAgent(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
+function processTreeAgentArgs(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): string[] {
   const panePid = tmuxPanePid(sessionId);
-  if (panePid === null) return false;
-  return processTreeRows(rows, panePid).some((row) => AGENT_ARGS_RE.test(row.args));
+  if (panePid === null) return [];
+  return processTreeRows(rows, panePid).map((row) => row.args);
 }
 
 function isAgentForeground(sessionId: string, command: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): boolean {
-  if (isAgentCommand(command)) return true;
-  return processTreeHasAgent(sessionId, rows);
+  return detectAgentProcess(AGENT_KINDS, command, processTreeAgentArgs(sessionId, rows)) !== null;
 }
 
 function pollOneCardProcess(sessionId: string, rows: ReadonlyArray<{ pid: number; ppid: number; args: string }>): void {
@@ -558,10 +703,13 @@ function pollOneCardProcess(sessionId: string, rows: ReadonlyArray<{ pid: number
   const command = tmuxPaneCurrentCommand(sessionId);
   if (!command) return;
   if (isAgentForeground(sessionId, command, rows)) {
+    noteAgentForeground(sessionId);
     agentForegroundSessions.add(sessionId);
     return;
   }
   if (isShellCommand(command)) {
+    const agentState = agentPtyActivity.get(sessionId);
+    if (agentState?.working) emitAgentPtySignal(sessionId, "done");
     agentForegroundSessions.delete(sessionId);
     clearAgentActivity(sessionId);
     const previous = l2StatusBySession.get(sessionId);
@@ -605,6 +753,7 @@ function emitAgentPtySignal(sessionId: string, signal: AgentPtySignal): void {
   if (l3StatusByCard.get(cardId) === status) return;
   l3StatusByCard.set(cardId, status);
   applyBoardSignal(cardId, status);
+  if (signal === "done") scheduleAgentDiscovery(sessionId, 0);
 }
 
 function reduceAgentActivityForSession(sessionId: string, state: AgentPtyActivityState, event: AgentPtyActivityEvent): AgentPtyActivityState {
@@ -699,6 +848,10 @@ async function readSessionMeta(dir: string, file: string): Promise<SessionMeta> 
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, app: "kanban-terminal" });
+});
 
 // Notification REST surface (list active / history, dismiss one) — backs the toolbar
 // bell. The engine is configured below once pubsub + the workspace exist.
@@ -948,6 +1101,25 @@ app.get("/api/memory", async (_req, res) => {
   }
 });
 
+app.delete("/api/cards/:id/terminal", (req, res) => {
+  const cardId = sanitizeCardId(req.params.id ?? null);
+  if (!cardId) return res.status(400).json({ error: "invalid card id" });
+  const board = loadBoard();
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card) return res.status(404).json({ error: "card not found" });
+  if (!card.archived) return res.status(409).json({ error: "card must be archived before releasing its terminal" });
+
+  const sessionId = card.terminal.sessionId;
+  const released = sessionId ? releaseTerminalSession(sessionId) : false;
+  const next: BoardState = {
+    ...board,
+    cards: board.cards.map((c) => (c.id === card.id ? { ...c, terminal: { ...c.terminal, sessionId: null }, lastStatus: "idle", updatedAt: Date.now() } : c)),
+  };
+  if (!saveBoard(next)) return res.status(500).json({ error: "failed to persist board" });
+  publishBoardUpdate();
+  return res.json({ ok: true, released });
+});
+
 const server = http.createServer(app);
 pubsub = createPubSub(server, isAllowedOrigin);
 mountBoardRoutes(app, { pubsub, onSaved: hydrateCardTerminalSessions, prepareBoard: ensureBoardTerminals });
@@ -1073,7 +1245,7 @@ function spawnClaudePty(
   // a session's .jsonl until its first prompt, so a started-but-unused session can't
   // be resumed; we restart fresh (reusing the id via --session-id) instead.
   const canResume = resume !== null && sessionExistsOnDisk(resume, cwd);
-  const args = buildClaudeArgs({
+  const args = CLAUDE_AGENT.resumeCommand({
     sessionId,
     resume,
     canResume,
@@ -1503,7 +1675,7 @@ runLaunchWss.on("connection", (ws, req) => {
   ws.on("close", () => handleClientClose(entry, ws, sessionId));
 });
 
-// Exit code the launcher (bin/mulmoterminal.js) treats as "port was taken at
+// Exit code the launcher (bin/kanban-terminal.js) treats as "port was taken at
 // bind time" so it can retry on a fresh port. Keep in sync with the launcher.
 const PORT_IN_USE_EXIT_CODE = 75;
 
@@ -1511,15 +1683,15 @@ const PORT_IN_USE_EXIT_CODE = 75;
 // unhandled 'error' event / stack trace — exit with a clear message instead.
 server.on("error", (err) => {
   if (hasErrnoCode(err) && err.code === "EADDRINUSE") {
-    console.error(`[mulmoterminal] Port ${PORT} is already in use — set PORT=<n> or pass --port <n>.`);
+    console.error(`[kanban-terminal] Port ${PORT} is already in use — set PORT=<n> or pass --port <n>.`);
     process.exit(PORT_IN_USE_EXIT_CODE);
   }
-  console.error(`[mulmoterminal] server error: ${messageOf(err)}`);
+  console.error(`[kanban-terminal] server error: ${messageOf(err)}`);
   process.exit(1);
 });
 
 server.listen(PORT, () => {
-  console.log(`mulmoterminal running at http://localhost:${PORT}`);
+  console.log(`kanban-terminal running at http://localhost:${PORT}`);
   if (tmuxAvailable()) {
     const surviving = tmuxListSessionIds();
     const detail = surviving.length ? ` — ${surviving.length} session(s) survived; reattach on connect` : "";

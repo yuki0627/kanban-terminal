@@ -19,7 +19,8 @@ describe("sanitizeBoard", () => {
           memo: "notes",
           lane: "in_review",
           archived: true,
-          terminal: { sessionId: "s1", agentKind: "shell", cwd: "/work/app" },
+          terminal: { sessionId: "s1", agentKind: "shell", cwd: "/work/app", agentSessionId: "a1" },
+          overlay: { x: 10, y: 20, width: 900, height: 640 },
           lastStatus: "done",
         },
         { id: "c2", projectId: "missing", lane: "nope" },
@@ -27,7 +28,14 @@ describe("sanitizeBoard", () => {
     });
     expect(board.projects).toHaveLength(1);
     expect(board.projects[0]).toMatchObject({ id: "p1", root: "/work/app", name: "App", sidebarVisible: false });
-    expect(board.cards[0]).toMatchObject({ id: "c1", projectId: "p1", lane: "in_review", archived: true });
+    expect(board.cards[0]).toMatchObject({
+      id: "c1",
+      projectId: "p1",
+      lane: "in_review",
+      archived: true,
+      terminal: { agentSessionId: "a1" },
+      overlay: { x: 10, y: 20, width: 900, height: 640 },
+    });
     expect(board.cards[1]).toMatchObject({ id: "c2", projectId: null, lane: "todo" });
   });
 });

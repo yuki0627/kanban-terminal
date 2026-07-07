@@ -8,7 +8,11 @@ import {
   moveCard,
   setExpanded,
   laneCards,
+  archiveCards,
+  archivedCards,
   countByLane,
+  restoreCard,
+  updateOverlayFrame,
   type KanbanState,
   type KanbanCard,
 } from "./kanbanBoard";
@@ -22,6 +26,7 @@ const card = (over: Partial<KanbanCard> = {}): KanbanCard => ({
   archived: false,
   unread: false,
   terminal: { sessionId: "s1", agentKind: "claude", cwd: null },
+  overlay: null,
   createdAt: 1,
   updatedAt: 1,
   manual: false,
@@ -61,6 +66,28 @@ describe("initialKanbanState", () => {
   it("defaults untyped cards to shell terminals", () => {
     const restored = initialKanbanState({ cards: [{ id: "c1", name: "Task" }] });
     expect(restored.cards[0].terminal.agentKind).toBe("shell");
+  });
+});
+
+describe("archive and restore", () => {
+  it("archives selected cards, clears unread, and closes an archived overlay", () => {
+    const s = archiveCards(state([card({ unread: true }), card({ id: "b" })], "c1"), ["c1"]);
+    expect(s.expanded).toBeNull();
+    expect(s.cards[0]).toMatchObject({ id: "c1", archived: true, unread: false });
+    expect(archivedCards(s).map((c) => c.id)).toEqual(["c1"]);
+  });
+
+  it("restores an archived card to the dropped lane and floats it to that lane top", () => {
+    const s = restoreCard(state([card({ archived: true }), card({ id: "b", lane: "done" })]), "c1", "done");
+    expect(s.cards[0]).toMatchObject({ id: "c1", archived: false, lane: "done", manual: true });
+    expect(laneCards(s, "done").map((c) => c.id)).toEqual(["c1", "b"]);
+  });
+});
+
+describe("updateOverlayFrame", () => {
+  it("persists the user-sized card window frame", () => {
+    const s = updateOverlayFrame(state([card()]), "c1", { x: 10, y: 20, width: 900, height: 640 });
+    expect(s.cards[0].overlay).toEqual({ x: 10, y: 20, width: 900, height: 640 });
   });
 });
 

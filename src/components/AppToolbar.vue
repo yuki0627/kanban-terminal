@@ -12,9 +12,6 @@ const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
     <button type="button" class="launcher-btn active view-marker" title="Kanban board" aria-label="Kanban board">
       <span class="material-symbols-outlined">view_kanban</span>
     </button>
-    <button type="button" class="launcher-btn archive-btn" title="Archive" aria-label="Archive" disabled>
-      <span class="material-symbols-outlined">archive</span>
-    </button>
     <NotificationBell class="toolbar-bell" />
     <button
       type="button"
@@ -72,14 +69,6 @@ const { enabled: soundEnabled, toggle: toggleSound } = useSoundEnabled();
 .launcher-btn:hover {
   background: var(--bg-hover);
   color: var(--text);
-}
-.launcher-btn:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-.launcher-btn:disabled:hover {
-  background: transparent;
-  color: var(--text-muted);
 }
 .launcher-btn.active {
   background: var(--accent-bg);

@@ -81,7 +81,7 @@ jobs:
             echo "regression: $HELPER is not executable (644) after install"; exit 1
           fi
 
-          node_modules/.bin/mulmoterminal --no-open --port 3457 &
+          node_modules/.bin/kanban-terminal --no-open --port 3457 &
           LAUNCHER_PID=$!
           trap 'kill "$LAUNCHER_PID" 2>/dev/null || true' EXIT
           ok=

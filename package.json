@@ -1,7 +1,7 @@
 {
-  "name": "kanban-terminal02",
+  "name": "kanban-terminal",
   "version": "0.1.0",
-  "description": "kanban-terminal — a kanban board over Claude Code terminal sessions, built on MulmoTerminal. One command to start.",
+  "description": "A local kanban board where every card owns a live terminal.",
   "type": "module",
   "packageManager": "yarn@1.22.22",
   "license": "MIT",
@@ -19,7 +19,7 @@
     "kanban-terminal"
   ],
   "bin": {
-    "kanban-terminal02": "bin/mulmoterminal.js"
+    "kanban-terminal": "bin/kanban-terminal.js"
   },
   "files": [
     "bin/",
