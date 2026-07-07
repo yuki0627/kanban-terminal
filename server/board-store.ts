@@ -176,7 +176,7 @@ interface ApplyCardStatusOptions {
 
 export function applyCardStatus(board: BoardState, cardId: string, status: CellStatus, options: ApplyCardStatusOptions = {}): BoardState {
   const card = board.cards.find((c) => c.id === cardId);
-  if (!card || card.lastStatus === status) return board;
+  if (!card || card.archived || card.lastStatus === status) return board;
   const target = laneForStatus(status);
   const protectedFinish = card.manual && FINISHED.has(card.lane) && status !== "working";
   const lane = target !== undefined && !protectedFinish ? target : card.lane;
