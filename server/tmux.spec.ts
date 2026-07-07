@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { tmuxSessionName, tmuxNewSessionArgs } from "./tmux";
+import { tmuxConfigLines, tmuxSessionName, tmuxNewSessionArgs } from "./tmux";
+
+describe("tmuxConfigLines", () => {
+  it("clears inherited NO_COLOR for the isolated tmux server", () => {
+    expect(tmuxConfigLines()).toContain("set-environment -gu NO_COLOR");
+  });
+});
 
 describe("tmuxSessionName", () => {
   it("prefixes the session id", () => {

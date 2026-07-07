@@ -29,7 +29,10 @@ let cachedAvailable: boolean | null = null;
 export function tmuxAvailable(): boolean {
   if (cachedAvailable === null) {
     cachedAvailable = run("tmux", ["-V"]).status === 0;
-    if (cachedAvailable) ensureConf();
+    if (cachedAvailable) {
+      ensureConf();
+      sanitizeTmuxEnvironment();
+    }
   }
   return cachedAvailable;
 }
@@ -37,14 +40,28 @@ export function tmuxAvailable(): boolean {
 // Minimal config for our server: no status bar (this is a terminal INSIDE a terminal),
 // instant escape, generous scrollback, follow the latest client's size, and never
 // destroy a session just because our client detached (that IS the persistence).
+export function tmuxConfigLines(): string[] {
+  return [
+    "set -g status off",
+    "set -g escape-time 0",
+    "set -g history-limit 20000",
+    "set -g window-size latest",
+    "set -g destroy-unattached off",
+    "set-environment -gu NO_COLOR",
+  ];
+}
+
 function ensureConf(): void {
   try {
     mkdirSync(path.dirname(CONF_FILE), { recursive: true });
-    const conf = ["set -g status off", "set -g escape-time 0", "set -g history-limit 20000", "set -g window-size latest", "set -g destroy-unattached off"];
-    writeFileSync(CONF_FILE, conf.join("\n") + "\n");
+    writeFileSync(CONF_FILE, tmuxConfigLines().join("\n") + "\n");
   } catch {
     // non-fatal — tmux falls back to its defaults (a status bar, etc.)
   }
+}
+
+export function sanitizeTmuxEnvironment(): void {
+  tmux(["set-environment", "-gu", "NO_COLOR"]);
 }
 
 export const tmuxSessionName = (id: string): string => `${SESSION_PREFIX}${id}`;

@@ -170,7 +170,11 @@ export function laneForStatus(status: CellStatus): LaneId | undefined {
   return undefined;
 }
 
-export function applyCardStatus(board: BoardState, cardId: string, status: CellStatus): BoardState {
+interface ApplyCardStatusOptions {
+  viewed?: boolean;
+}
+
+export function applyCardStatus(board: BoardState, cardId: string, status: CellStatus, options: ApplyCardStatusOptions = {}): BoardState {
   const card = board.cards.find((c) => c.id === cardId);
   if (!card || card.lastStatus === status) return board;
   const target = laneForStatus(status);
@@ -183,7 +187,13 @@ export function applyCardStatus(board: BoardState, cardId: string, status: CellS
     lastStatus: status,
     updatedAt: Date.now(),
     manual: moved ? false : card.manual,
-    unread: card.unread || moved,
+    unread: options.viewed ? false : card.unread || moved,
   };
   return { ...board, cards: board.cards.map((c) => (c.id === cardId ? next : c)) };
+}
+
+export function markCardRead(board: BoardState, cardId: string): BoardState {
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card || !card.unread) return board;
+  return { ...board, cards: board.cards.map((c) => (c.id === cardId ? { ...c, unread: false, updatedAt: Date.now() } : c)) };
 }
