@@ -991,7 +991,7 @@ app.post("/api/hook", async (req, res) => {
 });
 
 // GET/POST /api/config — in its own module.
-mountConfigRoutes(app, CLAUDE_CWD);
+mountConfigRoutes(app, CLAUDE_CWD, { isAllowedOrigin });
 
 // GRID-ONLY (dev_tool): the `script.json` entries a cell's launcher offers for its
 // chosen directory (?cwd=<dir>, falling back to CLAUDE_CWD). The browser shows
@@ -1184,6 +1184,7 @@ app.delete("/api/cards/:id/terminal", (req, res) => {
 const server = http.createServer(app);
 pubsub = createPubSub(server, isAllowedOrigin);
 mountBoardRoutes(app, {
+  isAllowedOrigin,
   isCardViewed,
   pubsub,
   onSaved: hydrateCardTerminalSessions,
