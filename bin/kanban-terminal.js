@@ -65,15 +65,14 @@ function pickOpenCommand() {
 }
 
 // Resolve with true if nothing is listening on `port`, false otherwise. Binds
-// without a host — same as the server's `server.listen(port)` (the `::`
-// dual-stack address) — so the probe and the real bind agree on availability.
-// Probing 127.0.0.1 here let a port held only on `::` slip through as "free".
+// 127.0.0.1 — same as the server's `server.listen(port, "127.0.0.1")` — so the
+// probe and the real bind agree on availability.
 function isPortFree(port) {
   return new Promise((resolve) => {
     const probe = createServer();
     probe.once("error", () => resolve(false));
     probe.once("listening", () => probe.close(() => resolve(true)));
-    probe.listen(port);
+    probe.listen(port, "127.0.0.1");
   });
 }
 
