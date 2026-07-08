@@ -574,7 +574,6 @@ onUnmounted(() => {
               <span class="card-dot" aria-hidden="true" />
               <span class="card-title">{{ cardTitle(c) }}</span>
               <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
-              <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
               <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
                 <span class="material-symbols-outlined">archive</span>
               </button>
@@ -948,11 +947,6 @@ onUnmounted(() => {
   font-family: ui-monospace, monospace;
   font-size: 11px;
 }
-.card-unread {
-  color: var(--accent);
-  font-size: 10px;
-  flex: 0 0 auto;
-}
 .card-action {
   display: inline-flex;
   align-items: center;
@@ -979,7 +973,13 @@ onUnmounted(() => {
 .card-action .material-symbols-outlined {
   font-size: 17px;
 }
+/*
+ * カードの丸は常に1個・状態は3つだけ(Issue #38)。
+ * 優先順: 実行中(点滅) > 未読(青塗り・静止) > 既読(白抜き)。
+ * done/blocked に丸の専用色は与えない(In Review / Done レーンが語る)。
+ */
 .card-dot {
+  /* 既読(デフォルト): グレー輪郭の白抜き */
   width: 9px;
   height: 9px;
   border-radius: 50%;
@@ -987,22 +987,27 @@ onUnmounted(() => {
   border: 1.5px solid var(--text-muted);
   background: transparent;
 }
-.card.st-working .card-dot {
-  border-color: transparent;
-  background: var(--text-muted);
-  animation: kanban-pulse 1.2s ease-in-out infinite;
-}
-.card.st-blocked .card-dot {
-  border-color: transparent;
-  background: var(--amber);
-}
-.card.st-done .card-dot {
+.card.unread .card-dot {
+  /* 未読: 青の塗りつぶし・静止。ごく淡い静的グローのみ(点滅させない) */
   border-color: transparent;
   background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(74, 140, 255, 0.14);
+}
+.card.st-working .card-dot {
+  /* 実行中: グレー塗り＋点滅。未読より優先(後勝ち)なのでこの位置に置く */
+  border-color: transparent;
+  background: var(--text-muted);
+  box-shadow: none;
+  animation: kanban-pulse 1.2s ease-in-out infinite;
 }
 @keyframes kanban-pulse {
   50% {
     opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.st-working .card-dot {
+    animation: none;
   }
 }
 
