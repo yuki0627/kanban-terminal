@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const terminalInstances = vi.hoisted(() => [] as Array<{ writes: string[] }>);
+const terminalInstances = vi.hoisted(() => [] as Array<{ writes: string[]; keyHandlers: Array<(event: KeyboardEvent) => boolean> }>);
 
 // Mock xterm + addons so the manager runs headless (no real DOM terminal / canvas).
 // Factories are hoisted above imports, so the fakes are declared INSIDE them.
@@ -10,12 +10,16 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     writes: string[] = [];
+    keyHandlers: Array<(event: KeyboardEvent) => boolean> = [];
     constructor() {
       terminalInstances.push(this);
     }
     loadAddon() {}
     open() {}
     onData() {}
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+      this.keyHandlers.push(handler);
+    }
     write(data: string, callback?: () => void) {
       this.writes.push(data);
       callback?.();
@@ -72,6 +76,16 @@ class FakeWebSocket {
 import * as conn from "./useTerminalConnections";
 
 const target = (sessionId: string | null) => ({ sessionId, cwd: "/typed", devTerminal: false, command: null, launcher: null });
+
+const terminalKeyEvent = (overrides: Partial<conn.TerminalKeyEventLike> = {}): conn.TerminalKeyEventLike => ({
+  type: "keydown",
+  key: "Enter",
+  shiftKey: true,
+  ctrlKey: false,
+  altKey: false,
+  metaKey: false,
+  ...overrides,
+});
 
 const attachSlot = (key: string, handlers: conn.ConnHandlers = {}) => {
   const el = document.createElement("div");
@@ -202,6 +216,53 @@ describe("useTerminalConnections — handleMessage characterization", () => {
     expect(term?.writes).toEqual(["\r\n\x1b[31m[missing cli]\x1b[0m\r\n"]);
     expect(conn.connView.get("cell-error")).toEqual({ status: "disconnected", serverCwd: "/typed" });
     expect(handlers.onExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shiftEnterNewlineDecision", () => {
+  it('sends "\\\\r" and suppresses xterm for Shift+Enter keydown', () => {
+    expect(conn.shiftEnterNewlineDecision(terminalKeyEvent())).toEqual({ allowXterm: false, input: "\\\r" });
+  });
+
+  it("passes plain Enter through to xterm", () => {
+    expect(conn.shiftEnterNewlineDecision(terminalKeyEvent({ shiftKey: false }))).toEqual({ allowXterm: true, input: null });
+  });
+
+  it("passes Ctrl / Alt / Meta modified Enter through to xterm", () => {
+    for (const modifier of ["ctrlKey", "altKey", "metaKey"] as const) {
+      expect(conn.shiftEnterNewlineDecision(terminalKeyEvent({ [modifier]: true }))).toEqual({ allowXterm: true, input: null });
+    }
+  });
+
+  it("passes IME-composing Shift+Enter through to xterm", () => {
+    expect(conn.shiftEnterNewlineDecision(terminalKeyEvent({ isComposing: true }))).toEqual({ allowXterm: true, input: null });
+    expect(conn.shiftEnterNewlineDecision(terminalKeyEvent({ keyCode: 229 }))).toEqual({ allowXterm: true, input: null });
+  });
+
+  it("suppresses Shift+Enter keypress / keyup without sending duplicate input", () => {
+    for (const type of ["keypress", "keyup"]) {
+      expect(conn.shiftEnterNewlineDecision(terminalKeyEvent({ type }))).toEqual({ allowXterm: false, input: null });
+    }
+  });
+});
+
+describe("Shift+Enter custom key handler", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances.length = 0;
+    terminalInstances.length = 0;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    conn.release("cell-shift-enter");
+  });
+
+  it("routes Shift+Enter through the slot's current WebSocket input channel", () => {
+    const { ws, term } = attachSlot("cell-shift-enter");
+    const result = term?.keyHandlers[0]?.(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true }));
+
+    expect(result).toBe(false);
+    expect(ws.sent.at(-1)).toBe(JSON.stringify({ type: "input", data: "\\\r" }));
   });
 });
 
