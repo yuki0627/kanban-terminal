@@ -117,6 +117,11 @@
   --err-deep: #b71c1c;
   --err-bg: #4a1414;
   --err-hover-bg: #3a2030;
+  /* "input" pill: this terminal holds keyboard focus. Accent-hued (matches the focus
+     ring) but its own AA-checked fill/text pair, since accent-bg + white fails contrast
+     on the lighter accents (nord/solarized). Dark themes: deep-blue fill, light text. */
+  --input: #a9c9ff;
+  --input-bg: #1c3a6e;
 }
 
 /* Light themes: status pills become light-tinted with dark, saturated text so
@@ -137,6 +142,9 @@
   --err-deep: #fadbd8;
   --err-bg: #fadbd8;
   --err-hover-bg: #f6d4d7;
+  /* Light themes: light-blue tint fill with dark-blue text (AA-checked). */
+  --input: #1d4ed8;
+  --input-bg: #d8e6ff;
 }
 
 * {

@@ -99,12 +99,17 @@ function effectiveTermTheme(): ITheme {
 const dirBadgeStyle = computed(() => badgeStyleFor(props.dirBadgeColor));
 
 let resizeObserver: ResizeObserver;
+// The focus-tracked container, held so onUnmounted can detach the listeners: by the
+// time onUnmounted runs Vue has already nulled terminalRef, so reading the ref there
+// would miss the removeEventListener (like resizeObserver, keep our own handle).
+let focusContainer: HTMLDivElement | null = null;
 
 onMounted(() => {
   const container = terminalRef.value;
   if (!container) return;
   // Register focus tracking BEFORE attach: attach() calls term.focus(), so the
   // listener must already be bound to catch that initial focusin.
+  focusContainer = container;
   container.addEventListener("focusin", onFocusIn);
   container.addEventListener("focusout", onFocusOut);
   // Attach this view to its durable slot: creates + connects the runtime on first
@@ -201,10 +206,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 onUnmounted(() => {
   resizeObserver?.disconnect();
-  const container = terminalRef.value;
-  if (container) {
-    container.removeEventListener("focusin", onFocusIn);
-    container.removeEventListener("focusout", onFocusOut);
+  if (focusContainer) {
+    focusContainer.removeEventListener("focusin", onFocusIn);
+    focusContainer.removeEventListener("focusout", onFocusOut);
+    focusContainer = null;
   }
   // Persisted slot: detach the view but KEEP the connection alive (the whole point —
   // navigating away / off-page paging doesn't reap the PTY). Ephemeral slot (command
@@ -219,7 +224,7 @@ onUnmounted(() => {
     <div class="header">
       <span class="title">Terminal</span>
       <span v-if="dirName" class="dir-badge" :style="dirBadgeStyle" :title="dirName">{{ dirName }}</span>
-      <span :class="['status', statusClass]" :title="focused ? 'This terminal has keyboard focus — your keystrokes go here' : undefined">
+      <span :class="['status', statusClass]" :title="statusClass === 'input' ? 'This terminal has keyboard focus — your keystrokes go here' : undefined">
         <span v-if="statusClass === 'input'" class="live-dot" aria-hidden="true" />
         {{ statusLabel }}
       </span>
@@ -328,14 +333,14 @@ onUnmounted(() => {
   color: var(--err);
 }
 
-/* connected AND focused: keystrokes land in THIS terminal right now. Tied to the
-   accent (same hue as the active ring) so the two focus signals read as one. */
+/* connected AND focused: keystrokes land in THIS terminal right now. Accent-hued (same
+   family as the active ring) via its own AA-checked token pair. */
 .status.input {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: var(--accent-bg);
-  color: #fff;
+  background: var(--input-bg);
+  color: var(--input);
 }
 
 .live-dot {
