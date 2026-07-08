@@ -110,6 +110,14 @@ describe("applyCardStatus", () => {
     const next = applyCardStatus(board, "c1", "working", { viewed: true });
     expect(next.cards[0]).toMatchObject({ lane: "in_progress", unread: false });
   });
+
+  it("ignores status signals for an archived card (no lane move, no unread)", () => {
+    const board = sanitizeBoard({
+      cards: [{ id: "c1", lane: "in_review", archived: true, lastStatus: "done", unread: false }],
+    });
+    const next = applyCardStatus(board, "c1", "working");
+    expect(next.cards[0]).toMatchObject({ lane: "in_review", archived: true, unread: false, lastStatus: "done" });
+  });
 });
 
 describe("markCardRead", () => {
