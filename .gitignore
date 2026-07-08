@@ -23,3 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# make start/stop/restart
+.kanban-dev.pid
