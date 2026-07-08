@@ -113,6 +113,11 @@ function ensure(key: string, target: ConnTarget): Conn {
   }
   const term = new Terminal({
     cursorBlink: true,
+    // Hollow (outline) cursor while this terminal doesn't hold keyboard focus, solid
+    // block while it does — the standard terminal convention (macOS Terminal, iTerm,
+    // VS Code). With multiple terminals on screen this is the character-level signal
+    // for "which one actually receives my keystrokes".
+    cursorInactiveStyle: "outline",
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
   });

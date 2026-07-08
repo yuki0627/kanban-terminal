@@ -64,6 +64,29 @@ const terminalRef = ref<HTMLDivElement>();
 // Connection status + server-resolved cwd are projected reactively from the manager.
 const status = computed(() => conn.connView.get(slotKey)?.status ?? "connecting");
 const dragOver = ref(false);
+
+// Whether this terminal currently holds the keyboard focus. xterm's hidden textarea
+// lives inside terminalRef, so focusin/focusout on the container track it (they bubble,
+// unlike focus/blur). Drives the active ring and the "input" state on the status pill —
+// answering "is my typing going HERE, or to the memo / another terminal?".
+const focused = ref(false);
+function onFocusIn() {
+  focused.value = true;
+}
+function onFocusOut(e: FocusEvent) {
+  // Ignore focus moving between xterm's own helper elements inside the container.
+  const container = terminalRef.value;
+  if (container && e.relatedTarget instanceof Node && container.contains(e.relatedTarget)) return;
+  focused.value = false;
+}
+
+// The status pill folds connection state (color) and focus (the "input" state) into one
+// signal: connected+focused => keys land here now; connected+unfocused => live but idle.
+const statusLabel = computed(() => {
+  if (status.value === "connected") return focused.value ? "input" : "connected";
+  return status.value;
+});
+const statusClass = computed(() => (status.value === "connected" && focused.value ? "input" : status.value));
 const { themeId } = useTheme();
 
 // A dir-pinned theme wins over the app-wide selection for this terminal's canvas,
@@ -80,6 +103,10 @@ let resizeObserver: ResizeObserver;
 onMounted(() => {
   const container = terminalRef.value;
   if (!container) return;
+  // Register focus tracking BEFORE attach: attach() calls term.focus(), so the
+  // listener must already be bound to catch that initial focusin.
+  container.addEventListener("focusin", onFocusIn);
+  container.addEventListener("focusout", onFocusOut);
   // Attach this view to its durable slot: creates + connects the runtime on first
   // mount, or re-parents the already-live xterm here on a remount (no cold resume).
   // session/cwd/exit are forwarded so the parent's existing wiring is unchanged.
@@ -174,6 +201,11 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 onUnmounted(() => {
   resizeObserver?.disconnect();
+  const container = terminalRef.value;
+  if (container) {
+    container.removeEventListener("focusin", onFocusIn);
+    container.removeEventListener("focusout", onFocusOut);
+  }
   // Persisted slot: detach the view but KEEP the connection alive (the whole point —
   // navigating away / off-page paging doesn't reap the PTY). Ephemeral slot (command
   // cells, whose process is unresumable): tear it down as before.
@@ -183,11 +215,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="terminal-wrapper">
+  <div class="terminal-wrapper" :class="{ 'is-focused': focused }">
     <div class="header">
       <span class="title">Terminal</span>
       <span v-if="dirName" class="dir-badge" :style="dirBadgeStyle" :title="dirName">{{ dirName }}</span>
-      <span :class="['status', status]">{{ status }}</span>
+      <span :class="['status', statusClass]" :title="focused ? 'This terminal has keyboard focus — your keystrokes go here' : undefined">
+        <span v-if="statusClass === 'input'" class="live-dot" aria-hidden="true" />
+        {{ statusLabel }}
+      </span>
       <div class="header-actions">
         <button type="button" class="icon-btn" title="Insert a file path" aria-label="Insert a file path" @click="pickFile">
           <span class="material-symbols-outlined">attach_file</span>
@@ -207,6 +242,14 @@ onUnmounted(() => {
   min-height: 0;
   height: 100%;
   background: var(--bg-base);
+}
+
+/* Active ring: frame the whole terminal panel while it holds keyboard focus, so with
+   several terminals (or a memo beside it) it's unmistakable which one takes input.
+   Inset outline never shifts layout and isn't clipped by the overlay's overflow. */
+.terminal-wrapper.is-focused {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .header {
@@ -283,6 +326,40 @@ onUnmounted(() => {
 .status.disconnected {
   background: var(--err-deep);
   color: var(--err);
+}
+
+/* connected AND focused: keystrokes land in THIS terminal right now. Tied to the
+   accent (same hue as the active ring) so the two focus signals read as one. */
+.status.input {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-bg);
+  color: #fff;
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: term-input-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes term-input-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    animation: none;
+  }
 }
 
 /* min-height:0 is load-bearing: a flex item's default min-height is `auto`
