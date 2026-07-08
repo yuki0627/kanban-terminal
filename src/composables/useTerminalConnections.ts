@@ -71,6 +71,23 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 5000;
 const REPLAY_INPUT_GUARD_MS = 250;
 const ESC = String.fromCharCode(27);
+const CLAUDE_SHIFT_ENTER_NEWLINE_INPUT = "\\\r";
+
+export interface TerminalKeyEventLike {
+  type: string;
+  key: string;
+  shiftKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+}
+
+export interface TerminalKeyDecision {
+  allowXterm: boolean;
+  input: string | null;
+}
 
 // The heavy per-slot runtime (non-reactive — Vue never needs to track these).
 const conns = new Map<string, Conn>();
@@ -82,6 +99,16 @@ export const connView = reactive(new Map<string, { status: ConnStatus; serverCwd
 function setStatus(c: Conn, s: ConnStatus) {
   const v = connView.get(c.key);
   if (v) v.status = s;
+}
+
+export function shiftEnterNewlineDecision(event: TerminalKeyEventLike): TerminalKeyDecision {
+  if (event.isComposing || event.keyCode === 229) return { allowXterm: true, input: null };
+  if (event.key !== "Enter" || !event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) {
+    return { allowXterm: true, input: null };
+  }
+  if (event.type === "keydown") return { allowXterm: false, input: CLAUDE_SHIFT_ENTER_NEWLINE_INPUT };
+  if (event.type === "keypress" || event.type === "keyup") return { allowXterm: false, input: null };
+  return { allowXterm: true, input: null };
 }
 
 // Claude Code emits OSC 52 with an EMPTY selection (`ESC ] 52 ; ; <base64>`), which
@@ -147,6 +174,16 @@ function ensure(key: string, target: ConnTarget): Conn {
   };
   conns.set(key, c);
   connView.set(key, { status: "connecting", serverCwd: target.cwd });
+
+  term.attachCustomKeyEventHandler((event) => {
+    const decision = shiftEnterNewlineDecision(event);
+    if (decision.input !== null && c.ws && c.ws.readyState === WebSocket.OPEN) {
+      // Claude Code's backslash+Enter line continuation is plain input that tmux
+      // can forward reliably; CSI u would depend on tmux extended-keys support.
+      c.ws.send(JSON.stringify({ type: "input", data: decision.input }));
+    }
+    return decision.allowXterm;
+  });
 
   // Terminal input -> the slot's CURRENT socket (survives reconnects: `c.ws` is
   // re-read each keystroke, so input always targets the live socket).
