@@ -7,6 +7,7 @@ import TerminalView from "./Terminal.vue";
 import { useAppConfig } from "../composables/useAppConfig";
 import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
+import { useCardSize } from "../composables/useCardSize";
 import type { CellStatus } from "./activityStatus";
 import {
   LANES,
@@ -103,6 +104,10 @@ function cardTitle(card: KanbanCard): string {
 function cardStatus(card: KanbanCard): CellStatus {
   return card.lastStatus;
 }
+
+// Board-wide card density (small / medium / large), bound onto each lane's card
+// list; the toolbar segment control writes it. See useCardSize.
+const { cardSize } = useCardSize();
 
 // ---- projects sidebar ----
 const sidebarCollapsed = ref(false);
@@ -555,7 +560,7 @@ onUnmounted(() => {
             <span class="lane-title">{{ lane.title }}</span>
             <span class="lane-count">{{ visibleLaneCards(lane.id).length }}</span>
           </header>
-          <div class="lane-cards">
+          <div class="lane-cards" :data-size="cardSize">
             <article
               v-for="c in visibleLaneCards(lane.id)"
               :key="c.id"
@@ -571,13 +576,21 @@ onUnmounted(() => {
               @click="openCard(c.id)"
               @keydown.enter="openCard(c.id)"
             >
-              <span class="card-dot" aria-hidden="true" />
-              <span class="card-title">{{ cardTitle(c) }}</span>
-              <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
-              <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
-              <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
-                <span class="material-symbols-outlined">archive</span>
-              </button>
+              <div class="card-main">
+                <span class="card-dot" aria-hidden="true" />
+                <span class="card-title">{{ cardTitle(c) }}</span>
+                <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
+                <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
+                <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
+                  <span class="material-symbols-outlined">archive</span>
+                </button>
+              </div>
+              <!-- Only surfaced at the "large" density (see .lane-cards[data-size="l"]). -->
+              <div v-if="projectFor(c)" class="card-meta">
+                <span class="card-project-swatch" :style="{ background: projectFor(c)?.color ?? NONE_COLOR }" />
+                <span class="card-project-name">{{ projectFor(c)?.name }}</span>
+              </div>
+              <p v-if="c.memo" class="card-memo">{{ c.memo }}</p>
             </article>
           </div>
         </section>
@@ -614,9 +627,11 @@ onUnmounted(() => {
                 @dragstart="onDragStart(c.id, $event)"
                 @dragend="onDragEnd"
               >
-                <span class="card-dot" aria-hidden="true" />
-                <span class="card-title">{{ cardTitle(c) }}</span>
-                <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
+                <div class="card-main">
+                  <span class="card-dot" aria-hidden="true" />
+                  <span class="card-title">{{ cardTitle(c) }}</span>
+                  <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
+                </div>
               </article>
               <div v-if="archivedVisibleCards.length === 0" class="archive-empty">No archived cards</div>
             </div>
@@ -909,8 +924,8 @@ onUnmounted(() => {
 
 .card {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 10px 12px;
   background: var(--bg-base);
   border: 1px solid var(--border);
@@ -929,6 +944,12 @@ onUnmounted(() => {
 }
 .card.dragging {
   opacity: 0.5;
+}
+.card-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .card-title {
   flex: 1;
@@ -1004,6 +1025,96 @@ onUnmounted(() => {
   50% {
     opacity: 0.3;
   }
+}
+
+/* Project name + memo preview — only surfaced at the "large" card size. */
+.card-meta,
+.card-memo {
+  display: none;
+}
+.card-meta {
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.card-project-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+.card-project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-memo {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ---- card size: small — maximise density, strip decoration ---- */
+.lane-cards[data-size="s"] {
+  gap: 4px;
+  padding: 8px;
+}
+.lane-cards[data-size="s"] .card {
+  gap: 0;
+  padding: 6px 8px;
+  border-left-width: 3px;
+  border-radius: 6px;
+}
+.lane-cards[data-size="s"] .card-main {
+  gap: 6px;
+}
+.lane-cards[data-size="s"] .card-title {
+  font-size: 12px;
+}
+.lane-cards[data-size="s"] .card-memory {
+  font-size: 10px;
+}
+.lane-cards[data-size="s"] .card-dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* ---- card size: large — surface project name + memo preview ---- */
+.lane-cards[data-size="l"] {
+  gap: 12px;
+  padding: 12px;
+}
+.lane-cards[data-size="l"] .card {
+  gap: 8px;
+  padding: 14px 16px;
+  border-left-width: 6px;
+  border-radius: 10px;
+}
+.lane-cards[data-size="l"] .card-main {
+  gap: 10px;
+}
+.lane-cards[data-size="l"] .card-title {
+  font-size: 15px;
+}
+.lane-cards[data-size="l"] .card-memory {
+  font-size: 12px;
+}
+.lane-cards[data-size="l"] .card-dot {
+  width: 11px;
+  height: 11px;
+}
+.lane-cards[data-size="l"] .card-meta {
+  display: flex;
+}
+.lane-cards[data-size="l"] .card-memo {
+  display: -webkit-box;
 }
 
 .archive-strip {
