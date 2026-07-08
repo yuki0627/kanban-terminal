@@ -1056,6 +1056,7 @@ onUnmounted(() => {
   line-height: 1.5;
   color: var(--text-muted);
   overflow: hidden;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
