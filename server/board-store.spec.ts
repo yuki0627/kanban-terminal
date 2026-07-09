@@ -39,6 +39,15 @@ describe("sanitizeBoard", () => {
     expect(board.cards[1]).toMatchObject({ id: "c2", projectId: null, lane: "todo" });
   });
 
+  it("keeps a valid memo panel and drops malformed ones", () => {
+    const board = sanitizeBoard({
+      cards: [{ id: "c1", memoPanel: { collapsed: true, height: 140 } }, { id: "c2", memoPanel: { collapsed: "yes", height: "tall" } }, { id: "c3" }],
+    });
+    expect(board.cards[0].memoPanel).toEqual({ collapsed: true, height: 140 });
+    expect(board.cards[1].memoPanel).toBeNull();
+    expect(board.cards[2].memoPanel).toBeNull();
+  });
+
   it("deduplicates projects by root, sorts them by order, and keeps the first card per id", () => {
     const board = sanitizeBoard({
       projects: [

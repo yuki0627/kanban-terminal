@@ -21,9 +21,11 @@ import {
   restoreCard,
   updateCard,
   updateOverlayFrame,
+  updateMemoPanel,
   type KanbanCard,
   type KanbanState,
   type LaneId,
+  type MemoPanel,
   type OverlayFrame,
   type Project,
 } from "./kanbanBoard";
@@ -346,6 +348,60 @@ function beginOverlayDrag(e: PointerEvent) {
 
 function beginOverlayResize(e: PointerEvent) {
   beginOverlayPointer(e, "resize");
+}
+
+// ---- memo panel (collapse + resize) ----
+// A never-toggled card (memoPanel null) opens collapsed when the memo is empty
+// and expanded when it has content; an explicit toggle wins from then on.
+const MEMO_DEFAULT_HEIGHT = 120;
+const MEMO_MIN_HEIGHT = 48;
+const memoPanelDraft = ref<MemoPanel | null>(null);
+const overlayBodyRef = ref<HTMLElement | null>(null);
+
+const activeMemoPanel = computed<MemoPanel>(() => {
+  if (memoPanelDraft.value) return memoPanelDraft.value;
+  const card = activeCard.value;
+  if (card?.memoPanel) return card.memoPanel;
+  return { collapsed: !(card?.memo ?? "").trim(), height: MEMO_DEFAULT_HEIGHT };
+});
+const memoCollapsed = computed(() => activeMemoPanel.value.collapsed);
+const memoPreview = computed(
+  () =>
+    memoDraft.value
+      .split("\n")
+      .find((line) => line.trim())
+      ?.trim() ?? "",
+);
+
+function clampMemoHeight(height: number): number {
+  const body = overlayBodyRef.value;
+  const max = body ? Math.max(MEMO_MIN_HEIGHT, Math.round(body.clientHeight * 0.6)) : 400;
+  return Math.min(Math.max(MEMO_MIN_HEIGHT, Math.round(height)), max);
+}
+
+function toggleMemoPanel() {
+  const card = activeCard.value;
+  if (!card) return;
+  const panel = activeMemoPanel.value;
+  commit(updateMemoPanel(state.value, card.id, { collapsed: !panel.collapsed, height: panel.height }));
+}
+
+function beginMemoResize(e: PointerEvent) {
+  const card = activeCard.value;
+  if (!card || e.button !== 0) return;
+  e.preventDefault();
+  const start = activeMemoPanel.value;
+  const originY = e.clientY;
+  const move = (ev: PointerEvent) => {
+    memoPanelDraft.value = { collapsed: false, height: clampMemoHeight(start.height + (ev.clientY - originY)) };
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    if (memoPanelDraft.value) commit(updateMemoPanel(state.value, card.id, memoPanelDraft.value));
+    memoPanelDraft.value = null;
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up, { once: true });
 }
 
 // ---- memory visibility ----
@@ -720,8 +776,23 @@ onUnmounted(() => {
             <span class="material-symbols-outlined">close</span>
           </button>
         </header>
-        <div class="overlay-body">
-          <textarea v-model="memoDraft" class="memo" placeholder="Memo" aria-label="Memo" @change="saveCardText" />
+        <div ref="overlayBodyRef" class="overlay-body">
+          <button type="button" class="memo-bar" :aria-expanded="!memoCollapsed" @click="toggleMemoPanel">
+            <span class="memo-chevron material-symbols-outlined" aria-hidden="true">{{ memoCollapsed ? "chevron_right" : "expand_more" }}</span>
+            <span class="memo-label">Memo</span>
+            <span v-if="memoCollapsed && memoPreview" class="memo-preview">{{ memoPreview }}</span>
+          </button>
+          <template v-if="!memoCollapsed">
+            <textarea
+              v-model="memoDraft"
+              class="memo"
+              :style="{ height: `${activeMemoPanel.height}px` }"
+              placeholder="Memo"
+              aria-label="Memo"
+              @change="saveCardText"
+            />
+            <div class="memo-resize" role="separator" aria-orientation="horizontal" aria-label="Resize memo" @pointerdown="beginMemoResize" />
+          </template>
           <div class="terminal-panel">
             <TerminalView
               ref="terminalRef"
@@ -1448,21 +1519,68 @@ onUnmounted(() => {
 .overlay-body {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(92px, 22%) minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+}
+.memo-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.memo-bar:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.memo-chevron {
+  font-size: 16px;
+}
+.memo-label {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.memo-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
 }
 .memo {
+  flex: none;
   width: 100%;
   min-height: 0;
   padding: 10px 12px;
   border: none;
-  border-bottom: 1px solid var(--border);
   resize: none;
   outline: none;
   background: var(--bg-base);
   color: var(--text);
   font-family: system-ui, sans-serif;
   font-size: 13px;
+}
+.memo-resize {
+  flex: none;
+  height: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  cursor: row-resize;
+  touch-action: none;
+}
+.memo-resize:hover {
+  background: var(--accent-bg);
 }
 .terminal-panel {
   min-height: 0;

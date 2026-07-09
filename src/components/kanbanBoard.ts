@@ -38,6 +38,13 @@ export interface OverlayFrame {
   height: number;
 }
 
+/** Collapse state + expanded height (px) of the memo panel above a card's terminal.
+ *  null = the user never toggled it; the UI derives a default from memo emptiness. */
+export interface MemoPanel {
+  collapsed: boolean;
+  height: number;
+}
+
 export interface KanbanCard {
   id: string;
   projectId: string | null;
@@ -48,6 +55,7 @@ export interface KanbanCard {
   unread: boolean;
   terminal: CardTerminal;
   overlay: OverlayFrame | null;
+  memoPanel: MemoPanel | null;
   createdAt: number;
   updatedAt: number;
   /** Set by a user drag; cleared when a real work-start moves the card again.
@@ -90,6 +98,13 @@ function parseOverlayFrame(raw: unknown): OverlayFrame | null {
   return { x, y, width, height };
 }
 
+function parseMemoPanel(raw: unknown): MemoPanel | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.collapsed !== "boolean") return null;
+  if (typeof raw.height !== "number" || !Number.isFinite(raw.height)) return null;
+  return { collapsed: raw.collapsed, height: raw.height };
+}
+
 function parseCard(raw: unknown): KanbanCard | null {
   if (!isRecord(raw) || typeof raw.id !== "string") return null;
   const terminal = isRecord(raw.terminal) ? raw.terminal : {};
@@ -111,6 +126,7 @@ function parseCard(raw: unknown): KanbanCard | null {
       agentSessionId: firstString(terminal.agentSessionId, terminal.agentSession),
     },
     overlay: parseOverlayFrame(raw.overlay),
+    memoPanel: parseMemoPanel(raw.memoPanel),
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : now,
     manual: raw.manual === true,
@@ -185,6 +201,10 @@ export function restoreCard(state: KanbanState, cardId: string, lane: LaneId): K
 
 export function updateOverlayFrame(state: KanbanState, cardId: string, overlay: OverlayFrame): KanbanState {
   return updateCard(state, cardId, { overlay });
+}
+
+export function updateMemoPanel(state: KanbanState, cardId: string, memoPanel: MemoPanel): KanbanState {
+  return updateCard(state, cardId, { memoPanel });
 }
 
 export function laneCards(state: KanbanState, lane: LaneId): KanbanCard[] {

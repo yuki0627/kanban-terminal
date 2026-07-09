@@ -387,6 +387,7 @@ function createBoardCard(board: BoardState, draft: CreateCardDraft): Card | null
     unread: false,
     terminal: { sessionId: null, agentKind: "shell", cwd: draft.cwd },
     overlay: null,
+    memoPanel: null,
     createdAt: now,
     updatedAt: now,
     manual: false,
