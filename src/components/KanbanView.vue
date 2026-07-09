@@ -112,6 +112,13 @@ const { cardSize } = useCardSize();
 
 // ---- projects sidebar ----
 const sidebarCollapsed = ref(false);
+const collapsedLanes = ref<Set<LaneId>>(new Set());
+function toggleLaneCollapse(lane: LaneId) {
+  const next = new Set(collapsedLanes.value);
+  if (next.has(lane)) next.delete(lane);
+  else next.add(lane);
+  collapsedLanes.value = next;
+}
 const unassignedVisible = ref(true);
 const sortedProjects = computed(() => [...state.value.projects].sort((a, b) => a.order - b.order));
 const visibleProjectIds = computed(() => new Set(sortedProjects.value.filter((p) => p.sidebarVisible).map((p) => p.id)));
@@ -124,6 +131,9 @@ function projectVisible(card: KanbanCard): boolean {
 }
 function visibleLaneCards(lane: LaneId): KanbanCard[] {
   return laneCards(state.value, lane).filter(projectVisible);
+}
+function laneHasUnread(lane: LaneId): boolean {
+  return visibleLaneCards(lane).some((c) => c.unread);
 }
 function projectCount(projectId: string | null): number {
   return state.value.cards.filter((c) => !c.archived && c.projectId === projectId).length;
@@ -542,7 +552,7 @@ onUnmounted(() => {
           v-for="lane in LANES"
           :key="lane.id"
           class="lane"
-          :class="{ 'drop-target': dropLane === lane.id }"
+          :class="{ 'drop-target': dropLane === lane.id, collapsed: collapsedLanes.has(lane.id) }"
           role="listitem"
           :aria-label="lane.title"
           @dragover.prevent="dropLane = lane.id"
@@ -550,10 +560,21 @@ onUnmounted(() => {
           @drop.prevent="onDrop(lane.id)"
         >
           <header class="lane-header">
+            <button
+              type="button"
+              class="lane-collapse-btn"
+              :title="collapsedLanes.has(lane.id) ? `Expand ${lane.title}` : `Collapse ${lane.title}`"
+              :aria-label="collapsedLanes.has(lane.id) ? `Expand ${lane.title}` : `Collapse ${lane.title}`"
+              :aria-expanded="!collapsedLanes.has(lane.id)"
+              @click="toggleLaneCollapse(lane.id)"
+            >
+              <span class="material-symbols-outlined">chevron_left</span>
+            </button>
             <span class="lane-title">{{ lane.title }}</span>
             <span class="lane-count">{{ visibleLaneCards(lane.id).length }}</span>
+            <span v-if="collapsedLanes.has(lane.id) && laneHasUnread(lane.id)" class="lane-unread" title="Moved while closed">●</span>
           </header>
-          <div class="lane-cards" :data-size="cardSize">
+          <div v-if="!collapsedLanes.has(lane.id)" class="lane-cards" :data-size="cardSize">
             <article
               v-for="c in visibleLaneCards(lane.id)"
               :key="c.id"
@@ -876,10 +897,60 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 8px;
   min-height: 0;
+  overflow: hidden;
 }
 .lane.drop-target {
   border-color: var(--accent);
   background: var(--bg-hover);
+}
+.lane.collapsed {
+  flex: 0 0 42px;
+  min-width: 42px;
+}
+.lane.collapsed .lane-header {
+  flex-direction: column;
+  height: 100%;
+  padding: 12px 6px 10px;
+  border-bottom: none;
+  gap: 8px;
+}
+.lane.collapsed .lane-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lane.collapsed .lane-count {
+  padding: 1px 6px;
+}
+.lane.collapsed .lane-collapse-btn .material-symbols-outlined {
+  transform: rotate(180deg);
+}
+.lane-collapse-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.lane-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.lane-collapse-btn .material-symbols-outlined {
+  font-size: 18px;
 }
 .lane-header {
   display: flex;
@@ -902,6 +973,11 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 1px 7px;
+}
+.lane-unread {
+  color: var(--accent);
+  font-size: 10px;
+  flex-shrink: 0;
 }
 .lane-cards {
   flex: 1;
@@ -1124,6 +1200,7 @@ onUnmounted(() => {
 
 .archive-strip {
   flex: 0 0 42px;
+  margin-left: auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
