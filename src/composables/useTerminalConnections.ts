@@ -21,6 +21,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import { buildTerminalWsUrl, buildRunWsUrl, buildLaunchWsUrl } from "../components/wsUrl";
+import { forceCursorBlink } from "./cursorBlinkOverride";
 
 export type ConnStatus = "connecting" | "connected" | "disconnected";
 
@@ -148,6 +149,9 @@ function ensure(key: string, target: ConnTarget): Conn {
     fontSize: 14,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
   });
+  // Keep the focused cursor blinking even though Claude Code requests a steady
+  // cursor via DECSCUSR/DECRST 12 (Ghostty-style override; shape changes still apply).
+  forceCursorBlink(term);
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon());
