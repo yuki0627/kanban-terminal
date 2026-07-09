@@ -9,6 +9,7 @@ import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import { useCardSize } from "../composables/useCardSize";
 import type { CellStatus } from "./activityStatus";
+import { memoHasOverflow } from "./cardMemo";
 import {
   LANES,
   emptyKanbanState,
@@ -380,6 +381,7 @@ function onDrop(lane: LaneId) {
 const archiveExpanded = ref(false);
 const archiveDropTarget = ref(false);
 const selectedCardIds = ref(new Set<string>());
+const expandedMemos = ref(new Set<string>());
 const boardRef = ref<HTMLElement | null>(null);
 const selectionRect = ref<{ x: number; y: number; width: number; height: number } | null>(null);
 const archivedVisibleCards = computed(() => archivedCards(state.value).filter(projectVisible));
@@ -414,6 +416,10 @@ async function archiveCardIds(ids: string[]) {
     ),
   );
   selectedCardIds.value = new Set();
+  // Drop archived cards' memo-expansion state so an unarchive later starts collapsed.
+  const remaining = new Set(expandedMemos.value);
+  for (const card of cards) remaining.delete(card.id);
+  expandedMemos.value = remaining;
   for (const card of cards) await releaseCardTerminal(card);
 }
 
@@ -464,6 +470,13 @@ function beginSelection(e: PointerEvent) {
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up, { once: true });
+}
+
+function toggleMemo(id: string) {
+  const next = new Set(expandedMemos.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedMemos.value = next;
 }
 
 const showSettings = ref(false);
@@ -581,7 +594,22 @@ onUnmounted(() => {
                 <span class="card-project-swatch" :style="{ background: projectFor(c)?.color ?? NONE_COLOR }" />
                 <span class="card-project-name">{{ projectFor(c)?.name }}</span>
               </div>
-              <p v-if="c.memo" class="card-memo">{{ c.memo }}</p>
+              <!-- Memo preview: hidden at "s", clamped at "m"/"l" (see .card-memo-row). -->
+              <div v-if="c.memo.trim()" class="card-memo-row">
+                <p class="card-memo" :class="{ expanded: expandedMemos.has(c.id) }">{{ c.memo }}</p>
+                <button
+                  v-if="memoHasOverflow(c.memo, cardSize)"
+                  type="button"
+                  class="memo-toggle"
+                  :title="expandedMemos.has(c.id) ? 'Collapse memo' : 'Expand memo'"
+                  :aria-label="expandedMemos.has(c.id) ? 'Collapse memo' : 'Expand memo'"
+                  :aria-expanded="expandedMemos.has(c.id)"
+                  @keydown.enter.stop
+                  @click.stop="toggleMemo(c.id)"
+                >
+                  <span class="material-symbols-outlined">{{ expandedMemos.has(c.id) ? "expand_less" : "expand_more" }}</span>
+                </button>
+              </div>
             </article>
           </div>
         </section>
@@ -1020,12 +1048,9 @@ onUnmounted(() => {
   }
 }
 
-/* Project name + memo preview — only surfaced at the "large" card size. */
-.card-meta,
-.card-memo {
-  display: none;
-}
+/* Project name — only surfaced at the "large" card size (see below). */
 .card-meta {
+  display: none;
   align-items: center;
   gap: 6px;
   font-size: 11px;
@@ -1043,16 +1068,49 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Memo preview: hidden at "s", clamped to 1 line at "m" / 3 lines at "l", with
+   an expand/collapse toggle surfaced only when the memo overflows the clamp
+   (see .memo-toggle and cardMemo.ts). */
+.card-memo-row {
+  display: none;
+}
 .card-memo {
   margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-muted);
-  overflow: hidden;
+  white-space: pre-line;
   overflow-wrap: anywhere;
-  text-overflow: ellipsis;
-  -webkit-line-clamp: 2;
+  display: -webkit-box;
   -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.memo-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.memo-toggle:hover {
+  color: var(--text);
+}
+.memo-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.memo-toggle .material-symbols-outlined {
+  font-size: 17px;
 }
 
 /* ---- card size: small — maximise density, strip decoration ---- */
@@ -1077,7 +1135,20 @@ onUnmounted(() => {
   height: 7px;
 }
 
-/* ---- card size: large — surface project name + memo preview ---- */
+/* ---- card size: medium — surface a 1-line memo preview ---- */
+.lane-cards[data-size="m"] .card-memo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.lane-cards[data-size="m"] .card-memo {
+  -webkit-line-clamp: 1;
+}
+.lane-cards[data-size="m"] .card-memo.expanded {
+  -webkit-line-clamp: unset;
+}
+
+/* ---- card size: large — surface project name + a 3-line memo preview ---- */
 .lane-cards[data-size="l"] {
   gap: 12px;
   padding: 12px;
@@ -1101,8 +1172,16 @@ onUnmounted(() => {
 .lane-cards[data-size="l"] .card-meta {
   display: flex;
 }
+.lane-cards[data-size="l"] .card-memo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
 .lane-cards[data-size="l"] .card-memo {
-  display: -webkit-box;
+  -webkit-line-clamp: 3;
+}
+.lane-cards[data-size="l"] .card-memo.expanded {
+  -webkit-line-clamp: unset;
 }
 
 .archive-strip {
