@@ -7,7 +7,6 @@ import TerminalView from "./Terminal.vue";
 import { useAppConfig } from "../composables/useAppConfig";
 import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
-import type { CellStatus } from "./activityStatus";
 import {
   LANES,
   emptyKanbanState,
@@ -100,8 +99,10 @@ async function markCardClosed(cardId: string) {
 function cardTitle(card: KanbanCard): string {
   return card.name || card.id.slice(0, 8);
 }
-function cardStatus(card: KanbanCard): CellStatus {
-  return card.lastStatus;
+function dotState(card: KanbanCard): "working" | "unread" | "read" {
+  if (card.lastStatus === "working") return "working";
+  if (card.unread) return "unread";
+  return "read";
 }
 
 // ---- projects sidebar ----
@@ -561,7 +562,7 @@ onUnmounted(() => {
               :key="c.id"
               :data-card-id="c.id"
               class="card"
-              :class="[`st-${cardStatus(c)}`, { unread: c.unread, dragging: dragging === c.id, selected: selectedCardIds.has(c.id) }]"
+              :class="{ unread: c.unread, dragging: dragging === c.id, selected: selectedCardIds.has(c.id) }"
               :style="{ borderLeftColor: projectFor(c)?.color ?? NONE_COLOR }"
               draggable="true"
               tabindex="0"
@@ -571,8 +572,9 @@ onUnmounted(() => {
               @click="openCard(c.id)"
               @keydown.enter="openCard(c.id)"
             >
-              <span class="card-dot" aria-hidden="true" />
+              <span class="card-dot" :class="`dot-${dotState(c)}`" :title="c.unread ? 'Moved while closed' : undefined" aria-hidden="true" />
               <span class="card-title">{{ cardTitle(c) }}</span>
+              <span v-if="c.unread" class="sr-only">Unread: moved while closed</span>
               <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
               <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
                 <span class="material-symbols-outlined">archive</span>
@@ -606,14 +608,14 @@ onUnmounted(() => {
                 v-for="c in archivedVisibleCards"
                 :key="c.id"
                 class="card archived-card"
-                :class="[`st-${cardStatus(c)}`, { dragging: dragging === c.id }]"
+                :class="{ dragging: dragging === c.id }"
                 draggable="true"
                 tabindex="0"
                 :title="cardTitle(c)"
                 @dragstart="onDragStart(c.id, $event)"
                 @dragend="onDragEnd"
               >
-                <span class="card-dot" aria-hidden="true" />
+                <span class="card-dot" :class="`dot-${dotState(c)}`" aria-hidden="true" />
                 <span class="card-title">{{ cardTitle(c) }}</span>
                 <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
               </article>
@@ -941,6 +943,17 @@ onUnmounted(() => {
 .card.unread .card-title {
   font-weight: 700;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .card-memory {
   flex: 0 0 auto;
   color: var(--text-muted);
@@ -975,7 +988,7 @@ onUnmounted(() => {
 }
 /*
  * カードの丸は常に1個・状態は3つだけ(Issue #38)。
- * 優先順: 実行中(点滅) > 未読(青塗り・静止) > 既読(白抜き)。
+ * 優先順(working > unread > read)は dotState 関数(script)が明示的に決める。
  * done/blocked に丸の専用色は与えない(In Review / Done レーンが語る)。
  */
 .card-dot {
@@ -987,17 +1000,16 @@ onUnmounted(() => {
   border: 1.5px solid var(--text-muted);
   background: transparent;
 }
-.card.unread .card-dot {
+.card-dot.dot-unread {
   /* 未読: 青の塗りつぶし・静止。ごく淡い静的グローのみ(点滅させない) */
   border-color: transparent;
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(74, 140, 255, 0.14);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
 }
-.card.st-working .card-dot {
-  /* 実行中: グレー塗り＋点滅。未読より優先(後勝ち)なのでこの位置に置く */
+.card-dot.dot-working {
+  /* 実行中: グレー塗り＋点滅 */
   border-color: transparent;
   background: var(--text-muted);
-  box-shadow: none;
   animation: kanban-pulse 1.2s ease-in-out infinite;
 }
 @keyframes kanban-pulse {
@@ -1006,7 +1018,7 @@ onUnmounted(() => {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .card.st-working .card-dot {
+  .card-dot.dot-working {
     animation: none;
   }
 }
