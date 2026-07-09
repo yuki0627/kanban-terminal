@@ -115,6 +115,7 @@ const { cardSize } = useCardSize();
 
 // ---- projects sidebar ----
 const sidebarCollapsed = ref(false);
+const hiddenExpanded = ref(false);
 const collapsedLanes = ref<Set<LaneId>>(new Set());
 function toggleLaneCollapse(lane: LaneId) {
   const next = new Set(collapsedLanes.value);
@@ -125,6 +126,12 @@ function toggleLaneCollapse(lane: LaneId) {
 const unassignedVisible = ref(true);
 const sortedProjects = computed(() => [...state.value.projects].sort((a, b) => a.order - b.order));
 const visibleProjectIds = computed(() => new Set(sortedProjects.value.filter((p) => p.sidebarVisible).map((p) => p.id)));
+// Sidebar splits projects into a shown list and a collapsible "hidden" drawer at
+// the bottom. Hidden = sidebarVisible === false (the same flag that filters a
+// project's cards off the board). The unassigned row joins the drawer when off.
+const shownProjects = computed(() => sortedProjects.value.filter((p) => p.sidebarVisible));
+const hiddenProjects = computed(() => sortedProjects.value.filter((p) => !p.sidebarVisible));
+const hiddenCount = computed(() => hiddenProjects.value.length + (unassignedVisible.value ? 0 : 1));
 
 function projectFor(card: KanbanCard): Project | null {
   return card.projectId ? (state.value.projects.find((p) => p.id === card.projectId) ?? null) : null;
@@ -590,7 +597,7 @@ onUnmounted(() => {
               <span class="material-symbols-outlined">create_new_folder</span>
             </button>
           </div>
-          <button type="button" class="project-row" :class="{ off: !unassignedVisible }" @click="toggleProject(null)">
+          <button v-if="unassignedVisible" type="button" class="project-row" @click="toggleProject(null)">
             <span class="project-swatch" :style="{ background: NONE_COLOR }" />
             <span class="project-name">Projectなし</span>
             <span class="project-count">{{ projectCount(null) }}</span>
@@ -598,14 +605,7 @@ onUnmounted(() => {
               <span class="material-symbols-outlined">add</span>
             </span>
           </button>
-          <button
-            v-for="project in sortedProjects"
-            :key="project.id"
-            type="button"
-            class="project-row"
-            :class="{ off: !project.sidebarVisible }"
-            @click="toggleProject(project.id)"
-          >
+          <button v-for="project in shownProjects" :key="project.id" type="button" class="project-row" @click="toggleProject(project.id)">
             <span class="project-swatch" :style="{ background: project.color }" />
             <span class="project-name">{{ project.name }}</span>
             <span class="project-count">{{ projectCount(project.id) }}</span>
@@ -613,6 +613,37 @@ onUnmounted(() => {
               <span class="material-symbols-outlined">add</span>
             </span>
           </button>
+
+          <div class="projects-spacer" aria-hidden="true" />
+
+          <div v-if="hiddenCount >= 1" class="hidden-section" :class="{ open: hiddenExpanded }">
+            <div class="hidden-divider" />
+            <button type="button" class="hidden-toggle" :aria-expanded="hiddenExpanded" @click="hiddenExpanded = !hiddenExpanded">
+              <span class="hidden-chevron material-symbols-outlined">{{ hiddenExpanded ? "expand_more" : "chevron_right" }}</span>
+              <span class="hidden-label">非表示</span>
+              <span class="hidden-count">({{ hiddenCount }})</span>
+            </button>
+            <div class="hidden-panel">
+              <div class="hidden-list">
+                <button v-if="!unassignedVisible" type="button" class="project-row is-hidden" @click="toggleProject(null)">
+                  <span class="project-swatch" :style="{ background: NONE_COLOR }" />
+                  <span class="project-name">Projectなし</span>
+                  <span class="project-count">{{ projectCount(null) }}</span>
+                  <span class="project-add" title="表示に戻す" aria-label="表示に戻す" @click.stop="toggleProject(null)">
+                    <span class="material-symbols-outlined">visibility</span>
+                  </span>
+                </button>
+                <button v-for="project in hiddenProjects" :key="project.id" type="button" class="project-row is-hidden" @click="toggleProject(project.id)">
+                  <span class="project-swatch" :style="{ background: project.color }" />
+                  <span class="project-name">{{ project.name }}</span>
+                  <span class="project-count">{{ projectCount(project.id) }}</span>
+                  <span class="project-add" title="表示に戻す" aria-label="表示に戻す" @click.stop="toggleProject(project.id)">
+                    <span class="material-symbols-outlined">visibility</span>
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
         </template>
       </aside>
 
@@ -868,6 +899,8 @@ onUnmounted(() => {
 
 .projects {
   position: relative;
+  display: flex;
+  flex-direction: column;
   flex: 0 0 230px;
   min-width: 0;
   padding: 10px 8px;
@@ -976,6 +1009,91 @@ onUnmounted(() => {
 .icon-btn .material-symbols-outlined,
 .overlay-close .material-symbols-outlined {
   font-size: 18px;
+}
+
+/* Push the hidden drawer to the sidebar's bottom edge. */
+.projects-spacer {
+  flex: 1 1 auto;
+  min-height: 12px;
+}
+.hidden-divider {
+  height: 1px;
+  margin: 0 4px 4px;
+  background: var(--border);
+}
+.hidden-toggle {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.hidden-toggle:hover {
+  background: var(--bg-hover);
+}
+/* Chevron swaps glyph (chevron_right → expand_more) rather than rotating:
+   Material Symbols font elements don't honor CSS transform. */
+.hidden-chevron {
+  color: var(--text-muted);
+}
+.hidden-label {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.hidden-count {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+/* Collapsible panel: max-height animation. A grid 0fr→1fr track collapses here
+   because the sidebar's flex spacer claims all free space, so use max-height. */
+.hidden-panel {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hidden-section.open .hidden-panel {
+  max-height: 360px;
+}
+.hidden-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 2px;
+}
+.project-row.is-hidden {
+  opacity: 0.45;
+  transition:
+    opacity 0.15s ease,
+    background 0.12s ease;
+}
+.project-row.is-hidden:hover {
+  opacity: 0.9;
+  background: var(--bg-hover);
+}
+.project-row.is-hidden .project-add {
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.project-row.is-hidden:hover .project-add {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hidden-panel {
+    transition: none;
+  }
 }
 
 .board {
