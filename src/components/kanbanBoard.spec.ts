@@ -11,6 +11,7 @@ import {
   countByLane,
   restoreCard,
   updateOverlayFrame,
+  updateMemoPanel,
   type KanbanState,
   type KanbanCard,
 } from "./kanbanBoard";
@@ -25,6 +26,7 @@ const card = (over: Partial<KanbanCard> = {}): KanbanCard => ({
   unread: false,
   terminal: { sessionId: "s1", agentKind: "claude", cwd: null },
   overlay: null,
+  memoPanel: null,
   createdAt: 1,
   updatedAt: 1,
   manual: false,
@@ -65,6 +67,15 @@ describe("initialKanbanState", () => {
     const restored = initialKanbanState({ cards: [{ id: "c1", name: "Task" }] });
     expect(restored.cards[0].terminal.agentKind).toBe("shell");
   });
+
+  it("restores a saved memo panel and drops malformed ones", () => {
+    const restored = initialKanbanState({
+      cards: [{ id: "c1", memoPanel: { collapsed: true, height: 140 } }, { id: "c2", memoPanel: { collapsed: "yes", height: "tall" } }, { id: "c3" }],
+    });
+    expect(restored.cards[0].memoPanel).toEqual({ collapsed: true, height: 140 });
+    expect(restored.cards[1].memoPanel).toBeNull();
+    expect(restored.cards[2].memoPanel).toBeNull();
+  });
 });
 
 describe("archive and restore", () => {
@@ -86,6 +97,18 @@ describe("updateOverlayFrame", () => {
   it("persists the user-sized card window frame", () => {
     const s = updateOverlayFrame(state([card()]), "c1", { x: 10, y: 20, width: 900, height: 640 });
     expect(s.cards[0].overlay).toEqual({ x: 10, y: 20, width: 900, height: 640 });
+  });
+});
+
+describe("updateMemoPanel", () => {
+  it("persists the per-card memo collapse state and panel height", () => {
+    const s = updateMemoPanel(state([card()]), "c1", { collapsed: true, height: 140 });
+    expect(s.cards[0].memoPanel).toEqual({ collapsed: true, height: 140 });
+  });
+
+  it("ignores unknown cards", () => {
+    const before = state([card()]);
+    expect(updateMemoPanel(before, "ghost", { collapsed: false, height: 120 }).cards).toEqual(before.cards);
   });
 });
 

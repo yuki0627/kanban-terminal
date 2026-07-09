@@ -35,6 +35,11 @@ export interface Card {
     width: number;
     height: number;
   } | null;
+  /** Collapse state + expanded height (px) of the memo panel; null until the user toggles it. */
+  memoPanel: {
+    collapsed: boolean;
+    height: number;
+  } | null;
   createdAt: number;
   updatedAt: number;
   manual: boolean;
@@ -100,6 +105,8 @@ function sanitizeCard(raw: unknown, projectIds: Set<string>, index: number): Car
   const overlayY = timestamp(overlay.y, NaN);
   const overlayWidth = timestamp(overlay.width, NaN);
   const overlayHeight = timestamp(overlay.height, NaN);
+  const memoPanel = isRecord(raw.memoPanel) ? raw.memoPanel : {};
+  const memoPanelHeight = timestamp(memoPanel.height, NaN);
   return {
     id,
     projectId,
@@ -118,6 +125,8 @@ function sanitizeCard(raw: unknown, projectIds: Set<string>, index: number): Car
       Number.isFinite(overlayX) && Number.isFinite(overlayY) && Number.isFinite(overlayWidth) && Number.isFinite(overlayHeight)
         ? { x: overlayX, y: overlayY, width: overlayWidth, height: overlayHeight }
         : null,
+    memoPanel:
+      typeof memoPanel.collapsed === "boolean" && Number.isFinite(memoPanelHeight) ? { collapsed: memoPanel.collapsed, height: memoPanelHeight } : null,
     createdAt: timestamp(raw.createdAt, now),
     updatedAt: timestamp(raw.updatedAt, now),
     manual: raw.manual === true,
