@@ -7,6 +7,7 @@ const terminalInstances = vi.hoisted(() => [] as Array<{ writes: string[]; keyHa
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
+    parser = { registerCsiHandler: () => ({ dispose() {} }) };
     cols = 80;
     rows = 24;
     writes: string[] = [];

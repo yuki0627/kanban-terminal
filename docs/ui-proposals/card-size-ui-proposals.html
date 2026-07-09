@@ -1,0 +1,1582 @@
+<meta charset="utf-8" />
+<title>カードサイズ切替UI モック比較</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0f141b;
+    --page-ink: #d7dee8;
+    --page-muted: #8f9aaa;
+    --page-panel: #151b23;
+    --page-line: #2b343f;
+    --page-accent: #4a8cff;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: var(--page); color: var(--page-ink); }
+
+  .gallery-page {
+    display: grid;
+    gap: 24px;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 28px 20px 60px;
+  }
+
+  .gallery-brief { display: grid; gap: 8px; }
+  .gallery-eyebrow {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--page-accent);
+  }
+  .gallery-brief h1 { margin: 0; font-size: 21px; color: var(--page-ink); }
+  .gallery-brief p { margin: 0; max-width: 720px; font-size: 13px; line-height: 1.75; color: var(--page-muted); }
+
+  .gallery-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 4px;
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    width: fit-content;
+  }
+  .gallery-tab {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--page-muted);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .gallery-tab:hover { color: var(--page-ink); }
+  .gallery-tab.is-active { background: var(--page-accent); color: #ffffff; }
+  .gallery-tab:focus-visible { outline: 2px solid var(--page-accent); outline-offset: 2px; }
+
+  .gallery-panels { display: block; }
+  .proposal { display: none; }
+  .proposal.is-active { display: block; }
+
+  .gallery-footnote { font-size: 11.5px; color: var(--page-muted); line-height: 1.7; }
+</style>
+
+<div class="gallery-page">
+  <header class="gallery-brief">
+    <p class="gallery-eyebrow">kanban-terminal · UI mock</p>
+    <h1>カードサイズ切替UI — 3方向性の比較</h1>
+    <p>
+      カンバンボードのカード表示サイズを「小・中・大」の3段階で切り替えられるUIを検討中。現状のサイズ(中)は既定値として3案とも維持し、
+      (1) 切替コントロールをどこに・どんな操作パターンで置くか、(2) サイズごとに何を見せて何を隠すか、の2軸で方向性を分けた3案を並べている。
+      各タブは実際にクリックして小/中/大を切り替えられる。
+    </p>
+  </header>
+
+  <nav class="gallery-tabs" role="tablist" aria-label="モック案の切り替え">
+    <button type="button" class="gallery-tab is-active" data-target="proposal-a" role="tab" aria-selected="true">A. ツールバー セグメント</button>
+    <button type="button" class="gallery-tab" data-target="proposal-b" role="tab" aria-selected="false">B. ボード直上スライダー</button>
+    <button type="button" class="gallery-tab" data-target="proposal-c" role="tab" aria-selected="false">C. サイクル切替ボタン</button>
+  </nav>
+
+  <div class="gallery-panels">
+    <section class="proposal proposal-a is-active" id="proposal-a">
+
+      <h3 class="propa-heading">A. トップツールバー セグメントコントロール</h3>
+      <p class="propa-caption">
+        切替UIはアプリ最上部ツールバーの右端、設定・通知・サウンドの並びに「セグメントコントロール」として常設する。既存 <code>.launcher-btn</code> と同じ 30px 角丸ボタン言語を踏襲しつつ、選択中の項目をアクセントカラーの発光スライダーが追従する構成にした。密度アイコン自体を「行の詰まり方（細い縞＝小／太い縞＝大）」で描き分け、ラベルなしでも直感的に違いが伝わるようにしている。カードは中(M)を基準点に、小(S)は装飾を削り密度を最大化、大(L)はステータス文言・プロジェクトカラーのタグ・メモのプレビューという「普段は隠れている情報」を展開する。
+      </p>
+
+      <div class="propa-stage">
+        <div class="propa-app-frame">
+
+          <div class="propa-toolbar">
+            <span class="propa-toolbar-title">kanban-terminal</span>
+
+            <div class="propa-toolbar-icons" aria-hidden="true">
+              <button class="propa-launcher-btn" type="button" title="通知">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+              </button>
+              <button class="propa-launcher-btn" type="button" title="サウンド">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+              </button>
+              <button class="propa-launcher-btn" type="button" title="設定">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              </button>
+            </div>
+
+            <span class="propa-divider"></span>
+
+            <div class="propa-segment" role="group" aria-label="カードサイズ" style="--propa-index:1;">
+              <span class="propa-segment-thumb" aria-hidden="true"></span>
+              <button class="propa-seg-btn" type="button" data-size="s" title="小" aria-pressed="false">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="12" height="1.3" rx="0.65" fill="currentColor"></rect><rect x="2" y="5.3" width="12" height="1.3" rx="0.65" fill="currentColor"></rect><rect x="2" y="8.6" width="12" height="1.3" rx="0.65" fill="currentColor"></rect><rect x="2" y="11.9" width="12" height="1.3" rx="0.65" fill="currentColor"></rect></svg>
+                <span class="propa-visually-hidden">小</span>
+              </button>
+              <button class="propa-seg-btn is-active" type="button" data-size="m" title="中" aria-pressed="true">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2.5" width="12" height="1.7" rx="0.85" fill="currentColor"></rect><rect x="2" y="7.2" width="12" height="1.7" rx="0.85" fill="currentColor"></rect><rect x="2" y="11.9" width="12" height="1.7" rx="0.85" fill="currentColor"></rect></svg>
+                <span class="propa-visually-hidden">中</span>
+              </button>
+              <button class="propa-seg-btn" type="button" data-size="l" title="大" aria-pressed="false">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2.7" width="12" height="2.6" rx="1.3" fill="currentColor"></rect><rect x="2" y="10.7" width="12" height="2.6" rx="1.3" fill="currentColor"></rect></svg>
+                <span class="propa-visually-hidden">大</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="propa-lane-cards" data-size="m">
+
+            <div class="propa-card" style="--proj-color:#4a8cff;" data-status="working">
+              <div class="propa-card-main">
+                <span class="propa-card-dot"></span>
+                <span class="propa-card-title">Refactor auth middleware</span>
+                <span class="propa-card-memory">182MB</span>
+              </div>
+              <div class="propa-card-meta">
+                <span class="propa-card-status-label">稼働中</span>
+                <span class="propa-card-project" aria-label="プロジェクトカラー"><i class="propa-project-swatch"></i></span>
+              </div>
+              <p class="propa-card-memo">セッショントークンの保存方式をcompliance要件に合わせて見直す</p>
+            </div>
+
+            <div class="propa-card" style="--proj-color:#e2a53a;" data-status="idle" data-unread="true">
+              <div class="propa-card-main">
+                <span class="propa-card-dot"></span>
+                <span class="propa-card-title">Fix flaky WebSocket reconnect test that fails intermittently in CI</span>
+                <span class="propa-card-memory">64MB</span>
+                <span class="propa-card-unread" aria-hidden="true">●</span>
+              </div>
+              <div class="propa-card-meta">
+                <span class="propa-card-status-label">待機中</span>
+                <span class="propa-card-project" aria-label="プロジェクトカラー"><i class="propa-project-swatch"></i></span>
+              </div>
+              <p class="propa-card-memo">再接続時のタイムアウト値を調整</p>
+            </div>
+
+            <div class="propa-card" style="--proj-color:#9aa5c4;" data-status="idle">
+              <div class="propa-card-main">
+                <span class="propa-card-dot"></span>
+                <span class="propa-card-title">Update README</span>
+              </div>
+              <div class="propa-card-meta">
+                <span class="propa-card-status-label">待機中</span>
+                <span class="propa-card-project" aria-label="プロジェクトカラー"><i class="propa-project-swatch"></i></span>
+              </div>
+            </div>
+
+            <div class="propa-card" style="--proj-color:#8b7bf0;" data-status="working">
+              <div class="propa-card-main">
+                <span class="propa-card-dot"></span>
+                <span class="propa-card-title">Investigate memory leak in Terminal.vue</span>
+                <span class="propa-card-memory">512MB</span>
+              </div>
+              <div class="propa-card-meta">
+                <span class="propa-card-status-label">稼働中</span>
+                <span class="propa-card-project" aria-label="プロジェクトカラー"><i class="propa-project-swatch"></i></span>
+              </div>
+              <p class="propa-card-memo">xterm addon の dispose 漏れを疑っている</p>
+            </div>
+
+            <div class="propa-card" style="--proj-color:#34b56f;" data-status="idle">
+              <div class="propa-card-main">
+                <span class="propa-card-dot"></span>
+                <span class="propa-card-title">Design card size toggle UI</span>
+                <span class="propa-card-memory">40MB</span>
+              </div>
+              <div class="propa-card-meta">
+                <span class="propa-card-status-label">待機中</span>
+                <span class="propa-card-project" aria-label="プロジェクトカラー"><i class="propa-project-swatch"></i></span>
+              </div>
+              <p class="propa-card-memo">S/M/Lの3段階、既定は中</p>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <style>
+        .proposal-a {
+          --bg-base: #1a1a2e;
+          --bg-panel: #16213e;
+          --bg-hover: #2a3b66;
+          --border: #2a2a4e;
+          --accent: #4a8cff;
+          --accent-bg: #2f5bd0;
+          --on-accent: #ffffff;
+          --text: #e6e6f0;
+          --text-secondary: #c7cdf0;
+          --text-muted: #9aa5c4;
+          --text-dim: #7c87a8;
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+          color: var(--text);
+        }
+
+        .proposal-a .propa-heading {
+          margin: 0 0 8px;
+          font-size: 14px;
+          font-weight: 700;
+          letter-spacing: 0.01em;
+          color: var(--text);
+        }
+
+        .proposal-a .propa-caption {
+          margin: 0 0 16px;
+          max-width: 680px;
+          font-size: 13px;
+          line-height: 1.75;
+          color: var(--text-secondary);
+        }
+
+        .proposal-a .propa-caption code {
+          font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+          font-size: 12px;
+          background: var(--bg-hover);
+          padding: 1px 5px;
+          border-radius: 4px;
+          color: var(--text);
+        }
+
+        .proposal-a .propa-stage {
+          background: var(--bg-panel);
+          padding: 20px;
+          border-radius: 12px;
+        }
+
+        .proposal-a .propa-app-frame {
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          overflow: hidden;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+        }
+
+        .proposal-a .propa-toolbar {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 7px 10px;
+          background: var(--bg-panel);
+          border-bottom: 1px solid var(--border);
+        }
+
+        .proposal-a .propa-toolbar-title {
+          flex: 1;
+          min-width: 0;
+          font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+          font-size: 12px;
+          color: var(--text-dim);
+          letter-spacing: 0.02em;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .proposal-a .propa-toolbar-icons {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+        }
+
+        .proposal-a .propa-launcher-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 30px;
+          width: 30px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          border-radius: 6px;
+          cursor: pointer;
+        }
+        .proposal-a .propa-launcher-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+        .proposal-a .propa-divider {
+          width: 1px;
+          height: 18px;
+          background: var(--border);
+          margin: 0 6px;
+          flex: 0 0 auto;
+        }
+
+        .proposal-a .propa-segment {
+          position: relative;
+          display: flex;
+          align-items: center;
+          height: 30px;
+          padding: 2px;
+          border-radius: 8px;
+          background: var(--bg-hover);
+          flex: 0 0 auto;
+        }
+
+        .proposal-a .propa-segment-thumb {
+          position: absolute;
+          top: 2px;
+          left: 2px;
+          width: 30px;
+          height: 26px;
+          border-radius: 6px;
+          background: var(--accent-bg);
+          box-shadow: 0 0 0 1px rgba(74, 140, 255, 0.4), 0 0 10px rgba(74, 140, 255, 0.45);
+          transform: translateX(calc(var(--propa-index, 1) * 30px));
+          transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+          z-index: 0;
+        }
+
+        .proposal-a .propa-seg-btn {
+          position: relative;
+          z-index: 1;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 30px;
+          height: 26px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          border-radius: 6px;
+          cursor: pointer;
+        }
+        .proposal-a .propa-seg-btn:hover:not(.is-active) { color: var(--text); }
+        .proposal-a .propa-seg-btn.is-active { color: var(--on-accent); }
+        .proposal-a .propa-seg-btn:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
+
+        .proposal-a .propa-visually-hidden {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+
+        .proposal-a .propa-lane-cards {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: 10px;
+          transition: gap 0.18s ease, padding 0.18s ease;
+        }
+
+        .proposal-a .propa-card {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+          padding: 10px 12px;
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+          border-left-width: 4px;
+          border-left-color: var(--proj-color, var(--border));
+          border-radius: 8px;
+          cursor: pointer;
+          user-select: none;
+          transition: padding 0.18s ease, border-radius 0.18s ease, border-left-width 0.18s ease, gap 0.18s ease;
+        }
+        .proposal-a .propa-card:hover { background: var(--bg-hover); }
+
+        .proposal-a .propa-card-main {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+
+        .proposal-a .propa-card-title {
+          flex: 1;
+          min-width: 0;
+          font-size: 13px;
+          color: var(--text);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          transition: font-size 0.18s ease;
+        }
+        .proposal-a .propa-card[data-unread="true"] .propa-card-title { font-weight: 700; }
+
+        .proposal-a .propa-card-memory {
+          flex: 0 0 auto;
+          color: var(--text-muted);
+          font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+          font-size: 11px;
+        }
+
+        .proposal-a .propa-card-unread { color: var(--accent); font-size: 10px; flex: 0 0 auto; line-height: 1; }
+
+        .proposal-a .propa-card-dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          flex: 0 0 auto;
+          border: 1.5px solid var(--text-muted);
+          background: transparent;
+          transition: width 0.18s ease, height 0.18s ease;
+        }
+        .proposal-a .propa-card[data-status="working"] .propa-card-dot {
+          border-color: transparent;
+          background: var(--text-muted);
+          animation: propa-kanban-pulse 1.2s ease-in-out infinite;
+        }
+        @keyframes propa-kanban-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+        .proposal-a .propa-card-meta,
+        .proposal-a .propa-card-memo {
+          display: none;
+        }
+
+        .proposal-a .propa-card-meta {
+          align-items: center;
+          gap: 8px;
+          font-size: 11px;
+          color: var(--text-dim);
+        }
+        .proposal-a .propa-card-status-label { flex: 0 0 auto; }
+        .proposal-a .propa-card-project { display: inline-flex; align-items: center; }
+        .proposal-a .propa-project-swatch {
+          width: 8px;
+          height: 8px;
+          border-radius: 2px;
+          background: var(--proj-color, var(--text-muted));
+          display: inline-block;
+        }
+
+        .proposal-a .propa-card-memo {
+          margin: 0;
+          font-size: 12px;
+          line-height: 1.5;
+          color: var(--text-muted);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+        }
+
+        .proposal-a .propa-lane-cards[data-size="s"] { gap: 4px; padding: 8px; }
+        .proposal-a .propa-lane-cards[data-size="s"] .propa-card { padding: 6px 8px; border-left-width: 3px; border-radius: 6px; }
+        .proposal-a .propa-lane-cards[data-size="s"] .propa-card-main { gap: 6px; }
+        .proposal-a .propa-lane-cards[data-size="s"] .propa-card-title { font-size: 12px; }
+        .proposal-a .propa-lane-cards[data-size="s"] .propa-card-memory { font-size: 10px; }
+        .proposal-a .propa-lane-cards[data-size="s"] .propa-card-dot { width: 7px; height: 7px; }
+
+        .proposal-a .propa-lane-cards[data-size="m"] { gap: 8px; padding: 10px; }
+        .proposal-a .propa-lane-cards[data-size="m"] .propa-card { padding: 10px 12px; border-left-width: 4px; border-radius: 8px; }
+        .proposal-a .propa-lane-cards[data-size="m"] .propa-card-main { gap: 8px; }
+
+        .proposal-a .propa-lane-cards[data-size="l"] { gap: 12px; padding: 12px; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card { padding: 14px 16px; gap: 8px; border-left-width: 6px; border-radius: 10px; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card-main { gap: 10px; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card-title { font-size: 15px; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card-memory { font-size: 12px; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card-dot { width: 11px; height: 11px; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card-meta { display: flex; }
+        .proposal-a .propa-lane-cards[data-size="l"] .propa-card-memo { display: -webkit-box; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .proposal-a .propa-segment-thumb,
+          .proposal-a .propa-card,
+          .proposal-a .propa-card-title,
+          .proposal-a .propa-card-dot,
+          .proposal-a .propa-lane-cards {
+            transition: none !important;
+          }
+          .proposal-a .propa-card[data-status="working"] .propa-card-dot {
+            animation: none !important;
+          }
+        }
+
+        @media (max-width: 480px) {
+          .proposal-a .propa-stage { padding: 12px; }
+          .proposal-a .propa-lane-cards[data-size="l"] .propa-card-title { font-size: 14px; }
+        }
+      </style>
+
+      <script>
+        (function () {
+          var root = document.getElementById('proposal-a');
+          if (!root) return;
+
+          var segment = root.querySelector('.propa-segment');
+          var buttons = Array.prototype.slice.call(root.querySelectorAll('.propa-seg-btn'));
+          var laneCards = root.querySelector('.propa-lane-cards');
+
+          function activate(size, index) {
+            buttons.forEach(function (btn) {
+              var isActive = btn.getAttribute('data-size') === size;
+              btn.classList.toggle('is-active', isActive);
+              btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+            segment.style.setProperty('--propa-index', index);
+            laneCards.setAttribute('data-size', size);
+          }
+
+          buttons.forEach(function (btn, index) {
+            btn.addEventListener('click', function () {
+              activate(btn.getAttribute('data-size'), index);
+            });
+          });
+        })();
+      </script>
+
+    </section>
+
+    <section class="proposal proposal-b" id="proposal-b">
+
+      <p class="propb-caption">
+        密度スイッチはツールバーではなく、ボード枠の右上角に半分めり込む形で「密着」させた小さなフェーダー。3段のバーアイコンは行の高さそのものを縮図化している。
+        サイズが上がるほどプロジェクトカラーの主張位置を 下辺の細線（小）→左ボーダー（中・現状維持）→上部の太いバー（大） と移動させ、密度と主張の強さを一つの規則で連動させた。
+      </p>
+
+      <div class="propb-stage">
+        <div class="propb-board">
+
+          <div class="propb-density">
+            <span class="propb-density-tag">密度</span>
+            <div class="propb-track" data-active="m" id="propb-track">
+              <div class="propb-thumb" aria-hidden="true"></div>
+
+              <button type="button" class="propb-stop" data-size="s" aria-pressed="false" title="小 — 最大密度">
+                <svg class="propb-icon" viewBox="0 0 16 14" aria-hidden="true">
+                  <rect x="2" y="2.9" width="12" height="1.3" rx="0.65"></rect>
+                  <rect x="2" y="6.35" width="12" height="1.3" rx="0.65"></rect>
+                  <rect x="2" y="9.8" width="12" height="1.3" rx="0.65"></rect>
+                </svg>
+                <span class="propb-sr-only">小サイズに切り替え</span>
+              </button>
+
+              <button type="button" class="propb-stop" data-size="m" aria-pressed="true" title="中 — 標準（既定）">
+                <svg class="propb-icon" viewBox="0 0 16 14" aria-hidden="true">
+                  <rect x="2" y="1.9" width="12" height="1.6" rx="0.8"></rect>
+                  <rect x="2" y="6.2" width="12" height="1.6" rx="0.8"></rect>
+                  <rect x="2" y="10.5" width="12" height="1.6" rx="0.8"></rect>
+                </svg>
+                <span class="propb-sr-only">中サイズに切り替え</span>
+              </button>
+
+              <button type="button" class="propb-stop" data-size="l" aria-pressed="false" title="大 — カードを強調">
+                <svg class="propb-icon" viewBox="0 0 16 14" aria-hidden="true">
+                  <rect x="2" y="0.6" width="12" height="2.4" rx="1.2"></rect>
+                  <rect x="2" y="5.8" width="12" height="2.4" rx="1.2"></rect>
+                  <rect x="2" y="11" width="12" height="2.4" rx="1.2"></rect>
+                </svg>
+                <span class="propb-sr-only">大サイズに切り替え</span>
+              </button>
+            </div>
+            <span class="propb-density-current" id="propb-density-current" aria-live="polite">中</span>
+          </div>
+
+          <div class="propb-lane-cards propb-size-m" id="propb-lane-cards">
+
+            <div class="propb-card propb-st-working" style="--propb-accent:#4a8cff">
+              <span class="propb-dot"></span>
+              <span class="propb-title">Refactor auth middleware</span>
+              <span class="propb-unread-mark" aria-hidden="true">●</span>
+              <p class="propb-memo">セッショントークンの保存方式をcompliance要件に合わせて見直す</p>
+              <span class="propb-meta">
+                <span class="propb-status-word">実行中</span>
+                <span class="propb-mem" data-full="182MB" data-short="182M">182MB</span>
+              </span>
+            </div>
+
+            <div class="propb-card propb-st-idle propb-unread" style="--propb-accent:#e2a53a">
+              <span class="propb-dot"></span>
+              <span class="propb-title">Fix flaky WebSocket reconnect test that fails intermittently in CI</span>
+              <span class="propb-unread-mark" aria-hidden="true">●</span>
+              <span class="propb-unread-badge">未読</span>
+              <p class="propb-memo">再接続時のタイムアウト値を調整</p>
+              <span class="propb-meta">
+                <span class="propb-status-word">待機中</span>
+                <span class="propb-mem" data-full="64MB" data-short="64M">64MB</span>
+              </span>
+            </div>
+
+            <div class="propb-card propb-st-idle" style="--propb-accent:#9aa5c4">
+              <span class="propb-dot"></span>
+              <span class="propb-title">Update README</span>
+              <span class="propb-unread-mark" aria-hidden="true">●</span>
+              <p class="propb-memo propb-memo-empty"></p>
+              <span class="propb-meta">
+                <span class="propb-status-word">待機中</span>
+                <span class="propb-mem propb-mem-empty" data-full="" data-short=""></span>
+              </span>
+            </div>
+
+            <div class="propb-card propb-st-working" style="--propb-accent:#8b7bf0">
+              <span class="propb-dot"></span>
+              <span class="propb-title">Investigate memory leak in Terminal.vue</span>
+              <span class="propb-unread-mark" aria-hidden="true">●</span>
+              <p class="propb-memo">xterm addon の dispose 漏れを疑っている</p>
+              <span class="propb-meta">
+                <span class="propb-status-word">実行中</span>
+                <span class="propb-mem" data-full="512MB" data-short="512M">512MB</span>
+              </span>
+            </div>
+
+            <div class="propb-card propb-st-idle" style="--propb-accent:#34b56f">
+              <span class="propb-dot"></span>
+              <span class="propb-title">Design card size toggle UI</span>
+              <span class="propb-unread-mark" aria-hidden="true">●</span>
+              <p class="propb-memo">S/M/Lの3段階、既定は中</p>
+              <span class="propb-meta">
+                <span class="propb-status-word">待機中</span>
+                <span class="propb-mem" data-full="40MB" data-short="40M">40MB</span>
+              </span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <style>
+        .proposal-b {
+          --bg-base: #1a1a2e;
+          --bg-panel: #16213e;
+          --bg-hover: #2a3b66;
+          --border: #2a2a4e;
+          --accent: #4a8cff;
+          --accent-bg: #2f5bd0;
+          --on-accent: #ffffff;
+          --text: #e6e6f0;
+          --text-secondary: #c7cdf0;
+          --text-muted: #9aa5c4;
+          --text-dim: #7c87a8;
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+          color: var(--text);
+        }
+
+        .proposal-b .propb-sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+
+        .proposal-b .propb-caption {
+          margin: 0 0 18px;
+          padding: 10px 14px;
+          font-size: 12.5px;
+          line-height: 1.7;
+          color: var(--text-dim);
+          background: var(--bg-panel);
+          border: 1px dashed var(--border);
+          border-radius: 8px;
+        }
+
+        .proposal-b .propb-stage {
+          padding-top: 22px;
+        }
+
+        .proposal-b .propb-board {
+          position: relative;
+          background: var(--bg-panel);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding-top: 6px;
+        }
+
+        .proposal-b .propb-density {
+          position: absolute;
+          top: -17px;
+          right: 16px;
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          padding: 5px 9px 5px 10px;
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+          z-index: 2;
+        }
+
+        .proposal-b .propb-density-tag {
+          font-size: 9.5px;
+          letter-spacing: 0.08em;
+          color: var(--text-dim);
+          white-space: nowrap;
+        }
+
+        .proposal-b .propb-track {
+          position: relative;
+          display: flex;
+          gap: 2px;
+          padding: 3px;
+          background: var(--bg-panel);
+          border: 1px solid var(--border);
+          border-radius: 999px;
+        }
+
+        .proposal-b .propb-thumb {
+          position: absolute;
+          top: 3px;
+          left: 3px;
+          width: 26px;
+          height: 22px;
+          background: linear-gradient(180deg, var(--accent), var(--accent-bg));
+          border-radius: 999px;
+          box-shadow: 0 2px 6px rgba(74, 140, 255, 0.5);
+          transition: transform 240ms cubic-bezier(0.34, 1.4, 0.4, 1);
+        }
+
+        .proposal-b .propb-track[data-active="m"] .propb-thumb { transform: translateX(28px); }
+        .proposal-b .propb-track[data-active="l"] .propb-thumb { transform: translateX(56px); }
+
+        .proposal-b .propb-stop {
+          position: relative;
+          z-index: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 26px;
+          height: 22px;
+          padding: 0;
+          background: transparent;
+          border: none;
+          border-radius: 999px;
+          cursor: pointer;
+          color: var(--text-muted);
+        }
+
+        .proposal-b .propb-stop:hover { color: var(--text-secondary); }
+
+        .proposal-b .propb-stop:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
+
+        .proposal-b .propb-stop[aria-pressed="true"] { color: var(--on-accent); }
+
+        .proposal-b .propb-icon rect {
+          fill: currentColor;
+          transition: fill 240ms ease;
+        }
+
+        .proposal-b .propb-density-current {
+          min-width: 1em;
+          font-family: ui-monospace, monospace;
+          font-size: 11px;
+          font-weight: 700;
+          color: var(--text-secondary);
+        }
+
+        .proposal-b .propb-lane-cards {
+          display: flex;
+          flex-direction: column;
+          transition: opacity 140ms ease;
+        }
+
+        .proposal-b .propb-card {
+          cursor: pointer;
+          user-select: none;
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+        }
+
+        .proposal-b .propb-card:hover { background: var(--bg-hover); }
+
+        .proposal-b .propb-title {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: var(--text);
+        }
+
+        .proposal-b .propb-unread .propb-title { font-weight: 700; }
+
+        .proposal-b .propb-mem {
+          flex: 0 0 auto;
+          color: var(--text-muted);
+          font-family: ui-monospace, monospace;
+        }
+
+        .proposal-b .propb-dot {
+          flex: 0 0 auto;
+          border-radius: 50%;
+          border: 1.5px solid var(--text-muted);
+          background: transparent;
+        }
+
+        .proposal-b .propb-st-working .propb-dot {
+          border-color: transparent;
+          background: var(--text-muted);
+          animation: propb-pulse 1.2s ease-in-out infinite;
+        }
+
+        @keyframes propb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+        .proposal-b .propb-memo { display: none; margin: 0; color: var(--text-secondary); }
+        .proposal-b .propb-unread-mark {
+          display: none;
+          flex: 0 0 auto;
+          color: var(--accent);
+        }
+        .proposal-b .propb-unread-badge {
+          display: none;
+          flex: 0 0 auto;
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--on-accent);
+          background: var(--accent-bg);
+          border-radius: 999px;
+          padding: 1px 7px;
+        }
+        .proposal-b .propb-status-word { display: none; color: var(--text-muted); }
+        .proposal-b .propb-meta { display: contents; }
+
+        .proposal-b .propb-size-m {
+          gap: 8px;
+          padding: 10px;
+        }
+
+        .proposal-b .propb-size-m .propb-card {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 12px;
+          border-left-width: 4px;
+          border-left-color: var(--propb-accent, var(--border));
+          border-radius: 8px;
+        }
+
+        .proposal-b .propb-size-m .propb-title { flex: 1; font-size: 13px; }
+        .proposal-b .propb-size-m .propb-mem { font-size: 11px; }
+        .proposal-b .propb-size-m .propb-dot { width: 9px; height: 9px; }
+        .proposal-b .propb-size-m .propb-unread .propb-unread-mark { display: inline; font-size: 10px; }
+
+        .proposal-b .propb-size-s {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
+          gap: 5px;
+          padding: 8px;
+        }
+
+        .proposal-b .propb-size-s .propb-card {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 8px;
+          border-radius: 6px;
+          border-bottom-width: 2px;
+          border-bottom-color: var(--propb-accent, var(--border));
+        }
+
+        .proposal-b .propb-size-s .propb-title { flex: 1; font-size: 10.5px; }
+        .proposal-b .propb-size-s .propb-mem { font-size: 9px; }
+        .proposal-b .propb-size-s .propb-dot { width: 6px; height: 6px; border-width: 1.2px; }
+        .proposal-b .propb-size-s .propb-unread .propb-unread-mark { display: inline; font-size: 8px; }
+
+        .proposal-b .propb-size-l {
+          gap: 12px;
+          padding: 14px;
+        }
+
+        .proposal-b .propb-size-l .propb-card {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 6px 10px;
+          padding: 14px 16px 12px;
+          border-radius: 10px;
+          border-top-width: 3px;
+          border-top-color: var(--propb-accent, var(--border));
+          box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
+        }
+
+        .proposal-b .propb-size-l .propb-title { flex: 1 1 auto; font-size: 14.5px; font-weight: 600; }
+        .proposal-b .propb-size-l .propb-dot { width: 8px; height: 8px; }
+
+        .proposal-b .propb-size-l .propb-memo {
+          display: block;
+          flex: 1 1 100%;
+          font-size: 12px;
+          line-height: 1.5;
+        }
+        .proposal-b .propb-size-l .propb-memo.propb-memo-empty { display: none; }
+
+        .proposal-b .propb-size-l .propb-meta {
+          display: flex;
+          flex: 1 1 100%;
+          align-items: center;
+          justify-content: space-between;
+          padding-top: 6px;
+          border-top: 1px solid var(--border);
+          margin-top: 2px;
+        }
+        .proposal-b .propb-size-l .propb-status-word { display: inline-block; font-size: 11px; }
+        .proposal-b .propb-size-l .propb-mem {
+          font-size: 11px;
+          padding: 2px 8px;
+          background: var(--bg-panel);
+          border: 1px solid var(--border);
+          border-radius: 999px;
+        }
+        .proposal-b .propb-size-l .propb-mem.propb-mem-empty { display: none; }
+        .proposal-b .propb-size-l .propb-unread .propb-unread-badge {
+          display: inline-block;
+          flex: 0 0 auto;
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--on-accent);
+          background: var(--accent-bg);
+          border-radius: 999px;
+          padding: 1px 8px;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .proposal-b .propb-thumb { transition: none; }
+          .proposal-b .propb-lane-cards { transition: none; }
+        }
+      </style>
+
+      <script>
+        (function () {
+          var root = document.getElementById('proposal-b');
+          if (!root) return;
+
+          var track = root.querySelector('#propb-track');
+          var laneCards = root.querySelector('#propb-lane-cards');
+          var currentLabel = root.querySelector('#propb-density-current');
+          var stops = root.querySelectorAll('.propb-stop');
+          var memEls = root.querySelectorAll('.propb-mem');
+
+          var LABELS = { s: '小', m: '中', l: '大' };
+
+          function setSize(size) {
+            track.setAttribute('data-active', size);
+            laneCards.className = 'propb-lane-cards propb-size-' + size;
+            currentLabel.textContent = LABELS[size];
+
+            stops.forEach(function (btn) {
+              btn.setAttribute('aria-pressed', btn.getAttribute('data-size') === size ? 'true' : 'false');
+            });
+
+            memEls.forEach(function (el) {
+              var full = el.getAttribute('data-full');
+              var short = el.getAttribute('data-short');
+              if (!full) return;
+              el.textContent = size === 's' ? short : full;
+            });
+
+            laneCards.style.opacity = '0.55';
+            window.requestAnimationFrame(function () {
+              laneCards.style.opacity = '1';
+            });
+          }
+
+          stops.forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              setSize(btn.getAttribute('data-size'));
+            });
+          });
+        })();
+      </script>
+    </section>
+
+    <section class="proposal proposal-c" id="proposal-c">
+
+      <header class="propc-head">
+        <p class="propc-eyebrow">Proposal C</p>
+        <h3 class="propc-headline">省スペース・サイクル切替アイコン</h3>
+        <p class="propc-caption">
+          ツールバー右端のアクション群（通知・サウンド・設定と同列）に、密度を可視化する1個のアイコンボタンを配置する。クリックまたは
+          <kbd>S</kbd> キーで「小→中→大」をサイクルし、3択を並べて見せない。アイコン自体の線幅・本数が現在のサイズ状態を表す。
+          「小」はメモリ・未読マーカーをホバー/フォーカス時のみ開示して密度を最大化し、「大」はプロジェクトチップ・メモ抜粋・ステータス文言を新たに開示する。
+        </p>
+      </header>
+
+      <style>
+        .proposal-c {
+          --bg-base: #1a1a2e;
+          --bg-panel: #16213e;
+          --bg-hover: #2a3b66;
+          --border: #2a2a4e;
+          --accent: #4a8cff;
+          --accent-bg: #2f5bd0;
+          --on-accent: #ffffff;
+          --text: #e6e6f0;
+          --text-secondary: #c7cdf0;
+          --text-muted: #9aa5c4;
+          --text-dim: #7c87a8;
+
+          box-sizing: border-box;
+          width: 100%;
+          max-width: 380px;
+          margin: 0 auto;
+          padding: 20px;
+          background: var(--bg-panel);
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+          color: var(--text);
+        }
+        .proposal-c *,
+        .proposal-c *::before,
+        .proposal-c *::after { box-sizing: border-box; }
+
+        .proposal-c .propc-eyebrow {
+          margin: 0 0 4px;
+          font-size: 10.5px;
+          font-weight: 700;
+          letter-spacing: .12em;
+          text-transform: uppercase;
+          color: var(--text-muted);
+        }
+        .proposal-c .propc-headline {
+          margin: 0 0 8px;
+          font-size: 16px;
+          font-weight: 700;
+          color: var(--text);
+        }
+        .proposal-c .propc-caption {
+          margin: 0 0 18px;
+          font-size: 12.5px;
+          line-height: 1.7;
+          color: var(--text-muted);
+        }
+        .proposal-c .propc-caption kbd {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 16px;
+          height: 16px;
+          padding: 0 4px;
+          margin: 0 1px;
+          border-radius: 4px;
+          background: var(--bg-hover);
+          border: 1px solid var(--border);
+          color: var(--text-secondary);
+          font-family: ui-monospace, monospace;
+          font-size: 10px;
+          font-style: normal;
+        }
+
+        .proposal-c .propc-toolbar-mock {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 8px 8px 8px 12px;
+          margin-bottom: 14px;
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+        }
+        .proposal-c .propc-toolbar-label {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--text-secondary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .proposal-c .propc-toolbar-actions {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          flex: 0 0 auto;
+        }
+        .proposal-c .propc-toolbar-icon {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 30px;
+          width: 30px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background .12s ease, color .12s ease;
+        }
+        .proposal-c .propc-toolbar-icon:hover { background: var(--bg-hover); color: var(--text); }
+        .proposal-c .propc-toolbar-icon svg { display: block; }
+
+        .proposal-c .propc-size-toggle {
+          position: relative;
+        }
+        .proposal-c .propc-size-toggle:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
+        .proposal-c .propc-size-icon { color: inherit; }
+        .proposal-c .propc-bar {
+          fill: currentColor;
+          transition: y .2s ease, height .2s ease, opacity .2s ease;
+        }
+        .proposal-c .propc-bar-1 { y: 3px;  height: 2px; opacity: 1; }
+        .proposal-c .propc-bar-2 { y: 7px;  height: 2px; opacity: 1; }
+        .proposal-c .propc-bar-3 { y: 11px; height: 2px; opacity: 1; }
+        .proposal-c .propc-bar-4 { y: 11px; height: 0px; opacity: 0; }
+        .proposal-c .propc-chip-dot {
+          fill: var(--accent);
+          opacity: 0;
+          transform: scale(.4);
+          transform-origin: 13.2px 2.6px;
+          transition: opacity .2s ease, transform .2s ease;
+        }
+
+        .proposal-c .propc-size-toggle[data-size="sm"] .propc-bar-1 { y: 2px;   height: 1.3px; }
+        .proposal-c .propc-size-toggle[data-size="sm"] .propc-bar-2 { y: 4.4px; height: 1.3px; }
+        .proposal-c .propc-size-toggle[data-size="sm"] .propc-bar-3 { y: 6.8px; height: 1.3px; }
+        .proposal-c .propc-size-toggle[data-size="sm"] .propc-bar-4 { y: 9.2px; height: 1.3px; opacity: 1; }
+        .proposal-c .propc-size-toggle[data-size="sm"] .propc-chip-dot { opacity: 0; transform: scale(.4); }
+
+        .proposal-c .propc-size-toggle[data-size="lg"] .propc-bar-1 { y: 3px;   height: 3.6px; }
+        .proposal-c .propc-size-toggle[data-size="lg"] .propc-bar-2 { y: 9.4px; height: 3.6px; }
+        .proposal-c .propc-size-toggle[data-size="lg"] .propc-bar-3 { y: 8px; height: 0px; opacity: 0; }
+        .proposal-c .propc-size-toggle[data-size="lg"] .propc-bar-4 { y: 8px; height: 0px; opacity: 0; }
+        .proposal-c .propc-size-toggle[data-size="lg"] .propc-chip-dot { opacity: 1; transform: scale(1); }
+
+        .proposal-c .propc-tooltip {
+          position: absolute;
+          top: calc(100% + 8px);
+          right: 0;
+          width: max-content;
+          min-width: 168px;
+          max-width: 224px;
+          background: var(--bg-panel);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 8px 10px;
+          box-shadow: 0 10px 28px rgba(0, 0, 0, .5);
+          opacity: 0;
+          visibility: hidden;
+          pointer-events: none;
+          transform: translateY(-4px);
+          transition: opacity .14s ease, transform .14s ease, visibility .14s;
+          z-index: 30;
+          text-align: left;
+        }
+        .proposal-c .propc-size-toggle:hover .propc-tooltip,
+        .proposal-c .propc-size-toggle:focus-visible .propc-tooltip {
+          opacity: 1;
+          visibility: visible;
+          transform: translateY(0);
+        }
+        .proposal-c .propc-tooltip-main {
+          display: block;
+          font-size: 11.5px;
+          line-height: 1.5;
+          color: var(--text);
+        }
+        .proposal-c .propc-tooltip-key {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-top: 7px;
+          padding-top: 7px;
+          border-top: 1px solid var(--border);
+        }
+        .proposal-c .propc-key-cap {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 18px;
+          height: 18px;
+          padding: 0 5px;
+          border-radius: 4px;
+          background: var(--bg-hover);
+          border: 1px solid var(--border);
+          color: var(--text-secondary);
+          font-family: ui-monospace, monospace;
+          font-size: 10px;
+          flex: 0 0 auto;
+        }
+        .proposal-c .propc-tooltip-key-label {
+          font-size: 10.5px;
+          color: var(--text-muted);
+        }
+
+        .proposal-c .propc-demo-panel {
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          overflow: hidden;
+        }
+
+        .proposal-c .propc-lane {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .proposal-c .propc-card {
+          display: flex;
+          align-items: center;
+          background: var(--bg-base);
+          border: 1px solid var(--border);
+          border-left-width: 4px;
+          border-left-color: var(--propc-project, var(--border));
+          border-radius: 8px;
+          cursor: pointer;
+          font-family: system-ui, sans-serif;
+          user-select: none;
+          transition: background .12s ease, padding .18s ease, gap .18s ease,
+                      border-radius .18s ease, row-gap .18s ease, column-gap .18s ease;
+        }
+        .proposal-c .propc-card:hover { background: var(--bg-hover); }
+        .proposal-c .propc-card:focus-visible {
+          outline: none;
+          box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--accent);
+        }
+
+        .proposal-c .propc-title {
+          flex: 1;
+          min-width: 0;
+          color: var(--text);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .proposal-c .propc-card[data-unread="true"] .propc-title { font-weight: 700; }
+
+        .proposal-c .propc-memory {
+          flex: 0 0 auto;
+          color: var(--text-muted);
+          font-family: ui-monospace, monospace;
+        }
+
+        .proposal-c .propc-dot {
+          border-radius: 50%;
+          flex: 0 0 auto;
+          border: 1.5px solid var(--text-muted);
+          background: transparent;
+        }
+        .proposal-c .propc-card[data-status="working"] .propc-dot {
+          border-color: transparent;
+          background: var(--text-muted);
+          animation: propc-pulse 1.2s ease-in-out infinite;
+        }
+        @keyframes propc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+        .proposal-c .propc-status-text { display: none; }
+        .proposal-c .propc-project-chip { display: none; }
+        .proposal-c .propc-memo { display: none; }
+
+        .proposal-c .propc-unread-mark {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          flex: 0 0 auto;
+          color: var(--accent);
+        }
+        .proposal-c .propc-unread-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--accent);
+          display: inline-block;
+        }
+        .proposal-c .propc-unread-text { display: none; }
+
+        .proposal-c .propc-lane[data-size="md"] { gap: 8px; padding: 10px; }
+        .proposal-c .propc-lane[data-size="md"] .propc-card { gap: 8px; padding: 10px 12px; border-radius: 8px; }
+        .proposal-c .propc-lane[data-size="md"] .propc-title { font-size: 13px; }
+        .proposal-c .propc-lane[data-size="md"] .propc-memory { font-size: 11px; }
+        .proposal-c .propc-lane[data-size="md"] .propc-dot { width: 9px; height: 9px; }
+        .proposal-c .propc-lane[data-size="md"] .propc-unread-mark { font-size: 10px; }
+
+        .proposal-c .propc-lane[data-size="sm"] { gap: 5px; padding: 8px; }
+        .proposal-c .propc-lane[data-size="sm"] .propc-card { gap: 6px; padding: 6px 10px; border-radius: 6px; }
+        .proposal-c .propc-lane[data-size="sm"] .propc-title { font-size: 12px; }
+        .proposal-c .propc-lane[data-size="sm"] .propc-memory { font-size: 10.5px; }
+        .proposal-c .propc-lane[data-size="sm"] .propc-dot { width: 7px; height: 7px; }
+        .proposal-c .propc-lane[data-size="sm"] .propc-unread-mark { font-size: 10px; }
+        .proposal-c .propc-lane[data-size="sm"] .propc-memory,
+        .proposal-c .propc-lane[data-size="sm"] .propc-unread-mark {
+          opacity: 0;
+          transition: opacity .12s ease;
+          pointer-events: none;
+        }
+        .proposal-c .propc-lane[data-size="sm"] .propc-card:hover .propc-memory,
+        .proposal-c .propc-lane[data-size="sm"] .propc-card:hover .propc-unread-mark,
+        .proposal-c .propc-lane[data-size="sm"] .propc-card:focus-visible .propc-memory,
+        .proposal-c .propc-lane[data-size="sm"] .propc-card:focus-visible .propc-unread-mark {
+          opacity: 1;
+        }
+
+        .proposal-c .propc-lane[data-size="lg"] { gap: 12px; padding: 12px; }
+        .proposal-c .propc-lane[data-size="lg"] .propc-card {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          grid-template-areas:
+            "dot    status chip"
+            "title  title  title"
+            "memo   memo   memo"
+            "memory memory unread";
+          align-items: center;
+          row-gap: 5px;
+          column-gap: 8px;
+          padding: 14px 16px;
+          border-radius: 12px;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-dot { grid-area: dot; width: 9px; height: 9px; }
+        .proposal-c .propc-lane[data-size="lg"] .propc-status-text {
+          grid-area: status;
+          display: inline-flex;
+          font-size: 11px;
+          justify-self: start;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-card[data-status="working"] .propc-status-text {
+          color: var(--text-secondary);
+          animation: propc-pulse 1.2s ease-in-out infinite;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-card[data-status="idle"] .propc-status-text {
+          color: var(--text-dim);
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-project-chip {
+          grid-area: chip;
+          display: inline-flex;
+          justify-self: end;
+          align-items: center;
+          background: rgba(var(--propc-project-rgb, 154, 165, 196), .16);
+          color: var(--propc-project, var(--text-muted));
+          border: 1px solid rgba(var(--propc-project-rgb, 154, 165, 196), .4);
+          font-size: 10.5px;
+          font-weight: 600;
+          letter-spacing: .02em;
+          padding: 2px 8px;
+          border-radius: 999px;
+          white-space: nowrap;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-title {
+          grid-area: title;
+          min-width: 0;
+          font-size: 14px;
+          font-weight: 500;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-card[data-unread="true"] .propc-title { font-weight: 700; }
+        .proposal-c .propc-lane[data-size="lg"] .propc-memo {
+          grid-area: memo;
+          display: block;
+          min-width: 0;
+          font-size: 11.5px;
+          color: var(--text-dim);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-memory {
+          grid-area: memory;
+          font-size: 11.5px;
+          justify-self: start;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-unread-mark {
+          grid-area: unread;
+          justify-self: end;
+          font-size: 10.5px;
+        }
+        .proposal-c .propc-lane[data-size="lg"] .propc-unread-text {
+          display: inline;
+          color: var(--accent);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .proposal-c * {
+            animation-duration: .01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: .01ms !important;
+          }
+        }
+      </style>
+
+      <div class="propc-toolbar-mock">
+        <span class="propc-toolbar-label">Board · in-progress</span>
+        <div class="propc-toolbar-actions">
+          <button type="button" class="propc-toolbar-icon" tabindex="-1" aria-hidden="true" title="通知">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M8 2a3 3 0 0 0-3 3v1.6c0 .9-.3 1.8-.9 2.5L3.5 10h9l-.6-.9a4 4 0 0 1-.9-2.5V5a3 3 0 0 0-3-3z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+              <path d="M6.5 12a1.5 1.5 0 0 0 3 0" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button type="button" class="propc-toolbar-icon" tabindex="-1" aria-hidden="true" title="サウンド">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M2.5 6.2h2.1L7.8 3.6v8.8L4.6 9.8H2.5z" fill="currentColor"/>
+              <path d="M10.2 5.6a3.6 3.6 0 0 1 0 4.8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+              <path d="M11.8 4a5.8 5.8 0 0 1 0 8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".6"/>
+            </svg>
+          </button>
+
+          <button type="button" id="propc-size-toggle" class="propc-toolbar-icon propc-size-toggle" data-size="md"
+                  aria-describedby="propc-size-tooltip">
+            <svg class="propc-size-icon" width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <rect class="propc-bar propc-bar-1" x="2" width="12" rx="1"></rect>
+              <rect class="propc-bar propc-bar-2" x="2" width="12" rx="1"></rect>
+              <rect class="propc-bar propc-bar-3" x="2" width="12" rx="1"></rect>
+              <rect class="propc-bar propc-bar-4" x="2" width="12" rx="1"></rect>
+              <circle class="propc-chip-dot" cx="13.2" cy="2.6" r="1.3"></circle>
+            </svg>
+            <span class="propc-tooltip" id="propc-size-tooltip" role="tooltip">
+              <span class="propc-tooltip-main">現在: 中 / クリックで大に切替</span>
+              <span class="propc-tooltip-key">
+                <span class="propc-key-cap">S</span>
+                <span class="propc-tooltip-key-label">キーでもサイクル切替</span>
+              </span>
+            </span>
+          </button>
+
+          <button type="button" class="propc-toolbar-icon" tabindex="-1" aria-hidden="true" title="設定">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M8 2.4v1.4M8 12.2v1.4M13.6 8h-1.4M3.8 8H2.4M11.9 4.1l-1 1M5.1 10.9l-1 1M11.9 11.9l-1-1M5.1 5.1l-1-1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="propc-demo-panel">
+        <div class="propc-lane" data-size="md">
+
+          <div class="propc-card" data-status="working" data-unread="false" role="button" tabindex="0"
+               aria-label="Refactor auth middleware, working, memory 182MB"
+               style="--propc-project:#4a8cff; --propc-project-rgb:74,140,255;">
+            <span class="propc-dot" aria-hidden="true"></span>
+            <span class="propc-status-text">Working…</span>
+            <span class="propc-title">Refactor auth middleware</span>
+            <span class="propc-project-chip">auth-svc</span>
+            <span class="propc-memo">セッショントークンの保存方式をcompliance要件に合わせて見直す</span>
+            <span class="propc-memory">182MB</span>
+          </div>
+
+          <div class="propc-card" data-status="idle" data-unread="true" role="button" tabindex="0"
+               aria-label="Fix flaky WebSocket reconnect test that fails intermittently in CI, unread, memory 64MB"
+               style="--propc-project:#e2a53a; --propc-project-rgb:226,165,58;">
+            <span class="propc-dot" aria-hidden="true"></span>
+            <span class="propc-status-text">Idle</span>
+            <span class="propc-title">Fix flaky WebSocket reconnect test that fails intermittently in CI</span>
+            <span class="propc-project-chip">ci</span>
+            <span class="propc-memo">再接続時のタイムアウト値を調整</span>
+            <span class="propc-memory">64MB</span>
+            <span class="propc-unread-mark" aria-hidden="true">
+              <span class="propc-unread-dot"></span><span class="propc-unread-text">unread</span>
+            </span>
+          </div>
+
+          <div class="propc-card" data-status="idle" data-unread="false" role="button" tabindex="0"
+               aria-label="Update README, idle"
+               style="--propc-project:#9aa5c4; --propc-project-rgb:154,165,196;">
+            <span class="propc-dot" aria-hidden="true"></span>
+            <span class="propc-status-text">Idle</span>
+            <span class="propc-title">Update README</span>
+            <span class="propc-project-chip">docs</span>
+          </div>
+
+          <div class="propc-card" data-status="working" data-unread="false" role="button" tabindex="0"
+               aria-label="Investigate memory leak in Terminal.vue, working, memory 512MB"
+               style="--propc-project:#8b7bf0; --propc-project-rgb:139,123,240;">
+            <span class="propc-dot" aria-hidden="true"></span>
+            <span class="propc-status-text">Working…</span>
+            <span class="propc-title">Investigate memory leak in Terminal.vue</span>
+            <span class="propc-project-chip">term-core</span>
+            <span class="propc-memo">xterm addon の dispose 漏れを疑っている</span>
+            <span class="propc-memory">512MB</span>
+          </div>
+
+          <div class="propc-card" data-status="idle" data-unread="false" role="button" tabindex="0"
+               aria-label="Design card size toggle UI, idle, memory 40MB"
+               style="--propc-project:#34b56f; --propc-project-rgb:52,181,111;">
+            <span class="propc-dot" aria-hidden="true"></span>
+            <span class="propc-status-text">Idle</span>
+            <span class="propc-title">Design card size toggle UI</span>
+            <span class="propc-project-chip">kanban-ui</span>
+            <span class="propc-memo">S/M/Lの3段階、既定は中</span>
+            <span class="propc-memory">40MB</span>
+          </div>
+
+        </div>
+      </div>
+
+      <script>
+        (function () {
+          var root = document.getElementById('proposal-c');
+          if (!root) return;
+
+          var lane = root.querySelector('.propc-lane');
+          var btn = root.querySelector('#propc-size-toggle');
+          var tooltipMain = root.querySelector('.propc-tooltip-main');
+          if (!lane || !btn || !tooltipMain) return;
+
+          var sizes = ['sm', 'md', 'lg'];
+          var labels = { sm: '小', md: '中', lg: '大' };
+          var idx = 1;
+
+          function render() {
+            var size = sizes[idx];
+            var next = sizes[(idx + 1) % sizes.length];
+            lane.setAttribute('data-size', size);
+            btn.setAttribute('data-size', size);
+            var msg = '現在: ' + labels[size] + ' / クリックで' + labels[next] + 'に切替';
+            tooltipMain.textContent = msg;
+            btn.setAttribute('aria-label', 'カードサイズ切替。' + msg);
+          }
+
+          function cycle() {
+            idx = (idx + 1) % sizes.length;
+            render();
+          }
+
+          btn.addEventListener('click', cycle);
+
+          root.addEventListener('keydown', function (e) {
+            var tag = (e.target && e.target.tagName) || '';
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            if (e.key === 's' || e.key === 'S') {
+              cycle();
+              e.preventDefault();
+            }
+          });
+
+          render();
+        })();
+      </script>
+
+    </section>
+  </div>
+
+  <p class="gallery-footnote">
+    3案とも「中」は実装済みの <code>.card</code> CSS を忠実に再現した基準点。採用案が決まったら、対応する <code>KanbanView.vue</code> のテンプレート／スタイルへ反映する。
+  </p>
+</div>
+
+<script>
+  (function () {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.gallery-tab'));
+    var panels = {};
+    document.querySelectorAll('.gallery-panels .proposal').forEach(function (panel) {
+      panels[panel.id] = panel;
+    });
+
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var target = tab.getAttribute('data-target');
+        tabs.forEach(function (t) {
+          var active = t === tab;
+          t.classList.toggle('is-active', active);
+          t.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        Object.keys(panels).forEach(function (key) {
+          panels[key].classList.toggle('is-active', key === target);
+        });
+      });
+    });
+  })();
+</script>
