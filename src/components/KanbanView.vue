@@ -8,7 +8,6 @@ import { useAppConfig } from "../composables/useAppConfig";
 import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import { useCardSize } from "../composables/useCardSize";
-import type { CellStatus } from "./activityStatus";
 import { memoHasOverflow } from "./cardMemo";
 import {
   LANES,
@@ -102,8 +101,10 @@ async function markCardClosed(cardId: string) {
 function cardTitle(card: KanbanCard): string {
   return card.name || card.id.slice(0, 8);
 }
-function cardStatus(card: KanbanCard): CellStatus {
-  return card.lastStatus;
+function dotState(card: KanbanCard): "working" | "unread" | "read" {
+  if (card.lastStatus === "working") return "working";
+  if (card.unread) return "unread";
+  return "read";
 }
 
 // Board-wide card density (small / medium / large), bound onto each lane's card
@@ -112,6 +113,13 @@ const { cardSize } = useCardSize();
 
 // ---- projects sidebar ----
 const sidebarCollapsed = ref(false);
+const collapsedLanes = ref<Set<LaneId>>(new Set());
+function toggleLaneCollapse(lane: LaneId) {
+  const next = new Set(collapsedLanes.value);
+  if (next.has(lane)) next.delete(lane);
+  else next.add(lane);
+  collapsedLanes.value = next;
+}
 const unassignedVisible = ref(true);
 const sortedProjects = computed(() => [...state.value.projects].sort((a, b) => a.order - b.order));
 const visibleProjectIds = computed(() => new Set(sortedProjects.value.filter((p) => p.sidebarVisible).map((p) => p.id)));
@@ -124,6 +132,9 @@ function projectVisible(card: KanbanCard): boolean {
 }
 function visibleLaneCards(lane: LaneId): KanbanCard[] {
   return laneCards(state.value, lane).filter(projectVisible);
+}
+function laneHasUnread(lane: LaneId): boolean {
+  return visibleLaneCards(lane).some((c) => c.unread);
 }
 function projectCount(projectId: string | null): number {
   return state.value.cards.filter((c) => !c.archived && c.projectId === projectId).length;
@@ -554,7 +565,7 @@ onUnmounted(() => {
           v-for="lane in LANES"
           :key="lane.id"
           class="lane"
-          :class="{ 'drop-target': dropLane === lane.id }"
+          :class="{ 'drop-target': dropLane === lane.id, collapsed: collapsedLanes.has(lane.id) }"
           role="listitem"
           :aria-label="lane.title"
           @dragover.prevent="dropLane = lane.id"
@@ -562,16 +573,27 @@ onUnmounted(() => {
           @drop.prevent="onDrop(lane.id)"
         >
           <header class="lane-header">
+            <button
+              type="button"
+              class="lane-collapse-btn"
+              :title="collapsedLanes.has(lane.id) ? `Expand ${lane.title}` : `Collapse ${lane.title}`"
+              :aria-label="collapsedLanes.has(lane.id) ? `Expand ${lane.title}` : `Collapse ${lane.title}`"
+              :aria-expanded="!collapsedLanes.has(lane.id)"
+              @click="toggleLaneCollapse(lane.id)"
+            >
+              <span class="material-symbols-outlined">chevron_left</span>
+            </button>
             <span class="lane-title">{{ lane.title }}</span>
             <span class="lane-count">{{ visibleLaneCards(lane.id).length }}</span>
+            <span v-if="collapsedLanes.has(lane.id) && laneHasUnread(lane.id)" class="lane-unread" title="Moved while closed">●</span>
           </header>
-          <div class="lane-cards" :data-size="cardSize">
+          <div v-if="!collapsedLanes.has(lane.id)" class="lane-cards" :data-size="cardSize">
             <article
               v-for="c in visibleLaneCards(lane.id)"
               :key="c.id"
               :data-card-id="c.id"
               class="card"
-              :class="[`st-${cardStatus(c)}`, { unread: c.unread, dragging: dragging === c.id, selected: selectedCardIds.has(c.id) }]"
+              :class="{ unread: c.unread, dragging: dragging === c.id, selected: selectedCardIds.has(c.id) }"
               :style="{ borderLeftColor: projectFor(c)?.color ?? NONE_COLOR }"
               draggable="true"
               tabindex="0"
@@ -582,9 +604,9 @@ onUnmounted(() => {
               @keydown.enter="openCard(c.id)"
             >
               <div class="card-main">
-                <span class="card-dot" aria-hidden="true" />
+                <span class="card-dot" :class="`dot-${dotState(c)}`" :title="c.unread ? 'Moved while closed' : undefined" aria-hidden="true" />
                 <span class="card-title">{{ cardTitle(c) }}</span>
-                <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
+                <span v-if="c.unread" class="sr-only">Unread: moved while closed</span>
                 <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
                   <span class="material-symbols-outlined">archive</span>
                 </button>
@@ -639,7 +661,7 @@ onUnmounted(() => {
                 v-for="c in archivedVisibleCards"
                 :key="c.id"
                 class="card archived-card"
-                :class="[`st-${cardStatus(c)}`, { dragging: dragging === c.id }]"
+                :class="{ dragging: dragging === c.id }"
                 draggable="true"
                 tabindex="0"
                 :title="cardTitle(c)"
@@ -647,7 +669,7 @@ onUnmounted(() => {
                 @dragend="onDragEnd"
               >
                 <div class="card-main">
-                  <span class="card-dot" aria-hidden="true" />
+                  <span class="card-dot" :class="`dot-${dotState(c)}`" aria-hidden="true" />
                   <span class="card-title">{{ cardTitle(c) }}</span>
                 </div>
               </article>
@@ -903,10 +925,60 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 8px;
   min-height: 0;
+  overflow: hidden;
 }
 .lane.drop-target {
   border-color: var(--accent);
   background: var(--bg-hover);
+}
+.lane.collapsed {
+  flex: 0 0 42px;
+  min-width: 42px;
+}
+.lane.collapsed .lane-header {
+  flex-direction: column;
+  height: 100%;
+  padding: 12px 6px 10px;
+  border-bottom: none;
+  gap: 8px;
+}
+.lane.collapsed .lane-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lane.collapsed .lane-count {
+  padding: 1px 6px;
+}
+.lane.collapsed .lane-collapse-btn .material-symbols-outlined {
+  transform: rotate(180deg);
+}
+.lane-collapse-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.lane-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.lane-collapse-btn .material-symbols-outlined {
+  font-size: 18px;
 }
 .lane-header {
   display: flex;
@@ -929,6 +1001,11 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 1px 7px;
+}
+.lane-unread {
+  color: var(--accent);
+  font-size: 10px;
+  flex-shrink: 0;
 }
 .lane-cards {
   flex: 1;
@@ -985,10 +1062,16 @@ onUnmounted(() => {
 .card.unread .card-title {
   font-weight: 700;
 }
-.card-unread {
-  color: var(--accent);
-  font-size: 10px;
-  flex: 0 0 auto;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .card-action {
   position: absolute;
@@ -1021,7 +1104,13 @@ onUnmounted(() => {
 .card-action .material-symbols-outlined {
   font-size: 17px;
 }
+/*
+ * カードの丸は常に1個・状態は3つだけ(Issue #38)。
+ * 優先順(working > unread > read)は dotState 関数(script)が明示的に決める。
+ * done/blocked に丸の専用色は与えない(In Review / Done レーンが語る)。
+ */
 .card-dot {
+  /* 既読(デフォルト): グレー輪郭の白抜き */
   width: 9px;
   height: 9px;
   border-radius: 50%;
@@ -1029,22 +1118,26 @@ onUnmounted(() => {
   border: 1.5px solid var(--text-muted);
   background: transparent;
 }
-.card.st-working .card-dot {
+.card-dot.dot-unread {
+  /* 未読: 青の塗りつぶし・静止。ごく淡い静的グローのみ(点滅させない) */
+  border-color: transparent;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.card-dot.dot-working {
+  /* 実行中: グレー塗り＋点滅 */
   border-color: transparent;
   background: var(--text-muted);
   animation: kanban-pulse 1.2s ease-in-out infinite;
 }
-.card.st-blocked .card-dot {
-  border-color: transparent;
-  background: var(--amber);
-}
-.card.st-done .card-dot {
-  border-color: transparent;
-  background: var(--accent);
-}
 @keyframes kanban-pulse {
   50% {
     opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-dot.dot-working {
+    animation: none;
   }
 }
 
@@ -1186,6 +1279,7 @@ onUnmounted(() => {
 
 .archive-strip {
   flex: 0 0 42px;
+  margin-left: auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
