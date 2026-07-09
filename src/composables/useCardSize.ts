@@ -6,10 +6,10 @@ import { ref } from "vue";
 // pattern as useTheme / useSoundEnabled.
 export type CardSizeId = "s" | "m" | "l";
 
-export const CARD_SIZES: { id: CardSizeId; label: string; icon: string }[] = [
-  { id: "s", label: "Small", icon: "density_small" },
-  { id: "m", label: "Medium", icon: "density_medium" },
-  { id: "l", label: "Large", icon: "density_large" },
+export const CARD_SIZES: { id: CardSizeId; label: string }[] = [
+  { id: "s", label: "Small" },
+  { id: "m", label: "Medium" },
+  { id: "l", label: "Large" },
 ];
 
 const STORAGE_KEY = "card_size";
@@ -42,5 +42,11 @@ export function useCardSize() {
       // storage blocked: the size still applies for this session, just isn't persisted
     }
   }
-  return { cardSize, sizes: CARD_SIZES, setCardSize };
+  // Cycles s -> m -> l -> s, used by the toolbar's single cycle-toggle button.
+  function cycleCardSize() {
+    const index = CARD_SIZES.findIndex((s) => s.id === cardSize.value);
+    const next = CARD_SIZES[(index + 1) % CARD_SIZES.length];
+    setCardSize(next.id);
+  }
+  return { cardSize, sizes: CARD_SIZES, setCardSize, cycleCardSize };
 }

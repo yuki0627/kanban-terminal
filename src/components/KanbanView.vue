@@ -337,17 +337,10 @@ function beginOverlayResize(e: PointerEvent) {
 }
 
 // ---- memory visibility ----
-const memoryBySession = ref(new Map<string, number>());
 const totalRssKb = ref(0);
 function formatMemory(kb: number): string {
   if (kb <= 0) return "0 MB";
   return `${Math.max(1, Math.round(kb / 1024))} MB`;
-}
-function cardMemory(card: KanbanCard): string | null {
-  const sessionId = card.terminal.sessionId;
-  if (!sessionId) return null;
-  const kb = memoryBySession.value.get(sessionId) ?? 0;
-  return kb > 0 ? formatMemory(kb) : null;
 }
 async function loadMemory() {
   try {
@@ -355,7 +348,6 @@ async function loadMemory() {
     if (!res.ok) return;
     const data = (await res.json()) as { totalRssKb?: number; sessions?: Array<{ sessionId: string; rssKb: number }> };
     totalRssKb.value = typeof data.totalRssKb === "number" ? data.totalRssKb : 0;
-    memoryBySession.value = new Map((data.sessions ?? []).map((item) => [item.sessionId, item.rssKb]));
   } catch {
     // best-effort metric
   }
@@ -579,7 +571,6 @@ onUnmounted(() => {
               <div class="card-main">
                 <span class="card-dot" aria-hidden="true" />
                 <span class="card-title">{{ cardTitle(c) }}</span>
-                <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
                 <span v-if="c.unread" class="card-unread" title="Moved while closed">●</span>
                 <button type="button" class="card-action" title="Archive" aria-label="Archive" @keydown.enter.stop @click="archiveOne(c, $event)">
                   <span class="material-symbols-outlined">archive</span>
@@ -630,7 +621,6 @@ onUnmounted(() => {
                 <div class="card-main">
                   <span class="card-dot" aria-hidden="true" />
                   <span class="card-title">{{ cardTitle(c) }}</span>
-                  <span v-if="cardMemory(c)" class="card-memory">{{ cardMemory(c) }}</span>
                 </div>
               </article>
               <div v-if="archivedVisibleCards.length === 0" class="archive-empty">No archived cards</div>
@@ -945,7 +935,10 @@ onUnmounted(() => {
 .card.dragging {
   opacity: 0.5;
 }
+/* Anchor for the absolutely-positioned archive action so it stays centered on
+   this row even when the large size adds project/memo rows below. */
 .card-main {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -955,6 +948,7 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
   font-size: 13px;
+  line-height: 1.15;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -963,18 +957,16 @@ onUnmounted(() => {
 .card.unread .card-title {
   font-weight: 700;
 }
-.card-memory {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-}
 .card-unread {
   color: var(--accent);
   font-size: 10px;
   flex: 0 0 auto;
 }
 .card-action {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -992,6 +984,7 @@ onUnmounted(() => {
 .card:focus-within .card-action,
 .card.selected .card-action {
   opacity: 1;
+  background: var(--bg-hover);
 }
 .card-action:hover {
   background: var(--bg-panel);
@@ -1079,9 +1072,6 @@ onUnmounted(() => {
 .lane-cards[data-size="s"] .card-title {
   font-size: 12px;
 }
-.lane-cards[data-size="s"] .card-memory {
-  font-size: 10px;
-}
 .lane-cards[data-size="s"] .card-dot {
   width: 7px;
   height: 7px;
@@ -1103,9 +1093,6 @@ onUnmounted(() => {
 }
 .lane-cards[data-size="l"] .card-title {
   font-size: 15px;
-}
-.lane-cards[data-size="l"] .card-memory {
-  font-size: 12px;
 }
 .lane-cards[data-size="l"] .card-dot {
   width: 11px;
