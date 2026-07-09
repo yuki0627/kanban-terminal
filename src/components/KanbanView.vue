@@ -9,6 +9,8 @@ import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import { useCardSize } from "../composables/useCardSize";
 import { memoHasOverflow } from "./cardMemo";
+import { buildArchiveGroups, NO_PROJECT_LABEL } from "./archiveGroups";
+import { formatCwd, homeRelative } from "./cwdDisplay";
 import {
   LANES,
   emptyKanbanState,
@@ -454,6 +456,31 @@ const selectionRect = ref<{ x: number; y: number; width: number; height: number 
 const archivedVisibleCards = computed(() => archivedCards(state.value).filter(projectVisible));
 const selectedCards = computed(() => state.value.cards.filter((card) => selectedCardIds.value.has(card.id) && !card.archived));
 
+// ---- archive grouping (by project / original directory) + read-only detail ----
+const archiveGroups = computed(() => buildArchiveGroups(archivedVisibleCards.value, state.value.projects, home.value));
+const expandedArchiveGroups = ref(new Set<string>());
+const archiveDetailCardId = ref<string | null>(null);
+
+function toggleArchiveGroup(key: string) {
+  const next = new Set(expandedArchiveGroups.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedArchiveGroups.value = next;
+}
+function toggleArchiveDetail(cardId: string) {
+  archiveDetailCardId.value = archiveDetailCardId.value === cardId ? null : cardId;
+}
+function restoreArchivedCard(card: KanbanCard) {
+  archiveDetailCardId.value = null;
+  commit(restoreCard(state.value, card.id, card.lane));
+}
+function laneTitle(lane: LaneId): string {
+  return LANES.find((l) => l.id === lane)?.title ?? lane;
+}
+function archivedAtLabel(card: KanbanCard): string {
+  return new Date(card.updatedAt).toLocaleString();
+}
+
 function isRunningCard(card: KanbanCard): boolean {
   return card.lastStatus === "working" || card.lane === "in_progress";
 }
@@ -713,23 +740,69 @@ onUnmounted(() => {
           </button>
           <template v-if="archiveExpanded">
             <div class="archive-cards">
-              <article
-                v-for="c in archivedVisibleCards"
-                :key="c.id"
-                class="card archived-card"
-                :class="{ dragging: dragging === c.id }"
-                draggable="true"
-                tabindex="0"
-                :title="cardTitle(c)"
-                @dragstart="onDragStart(c.id, $event)"
-                @dragend="onDragEnd"
-              >
-                <div class="card-main">
-                  <span class="card-dot" :class="`dot-${dotState(c)}`" aria-hidden="true" />
-                  <span class="card-title">{{ cardTitle(c) }}</span>
-                </div>
-              </article>
-              <div v-if="archivedVisibleCards.length === 0" class="archive-empty">No archived cards</div>
+              <section v-for="g in archiveGroups" :key="g.key" class="archive-group">
+                <button
+                  type="button"
+                  class="archive-group-header"
+                  :aria-expanded="expandedArchiveGroups.has(g.key)"
+                  :title="g.label"
+                  @click="toggleArchiveGroup(g.key)"
+                >
+                  <span class="material-symbols-outlined archive-group-chevron">
+                    {{ expandedArchiveGroups.has(g.key) ? "expand_more" : "chevron_right" }}
+                  </span>
+                  <span class="archive-group-swatch" :style="{ background: g.color ?? NONE_COLOR }" />
+                  <span class="archive-group-label" :class="{ path: g.kind === 'directory' }">{{ g.label }}</span>
+                  <span class="archive-count">{{ g.cards.length }}</span>
+                </button>
+                <template v-if="expandedArchiveGroups.has(g.key)">
+                  <article
+                    v-for="c in g.cards"
+                    :key="c.id"
+                    class="card archived-card"
+                    :class="{ dragging: dragging === c.id, 'detail-open': archiveDetailCardId === c.id }"
+                    :style="{ borderLeftColor: g.color ?? NONE_COLOR }"
+                    :draggable="archiveDetailCardId !== c.id"
+                    tabindex="0"
+                    :aria-expanded="archiveDetailCardId === c.id"
+                    :title="cardTitle(c)"
+                    @dragstart="onDragStart(c.id, $event)"
+                    @dragend="onDragEnd"
+                    @click="toggleArchiveDetail(c.id)"
+                    @keydown.enter="toggleArchiveDetail(c.id)"
+                  >
+                    <div class="card-main">
+                      <span class="card-dot" :class="`dot-${dotState(c)}`" aria-hidden="true" />
+                      <span class="card-title">{{ cardTitle(c) }}</span>
+                    </div>
+                    <div class="archived-card-meta">
+                      <span class="archived-lane-tag">{{ laneTitle(c.lane) }}</span>
+                      <span v-if="c.terminal.cwd" class="archived-cwd">{{ formatCwd(c.terminal.cwd, home, 26) }}</span>
+                    </div>
+                    <div v-if="archiveDetailCardId === c.id" class="archived-detail" @click.stop @keydown.enter.stop>
+                      <p v-if="c.memo.trim()" class="archived-memo">{{ c.memo }}</p>
+                      <div class="detail-row">
+                        <span class="detail-label">Lane</span>
+                        <span>{{ laneTitle(c.lane) }}</span>
+                      </div>
+                      <div class="detail-row">
+                        <span class="detail-label">Dir</span>
+                        <span class="detail-path">{{ c.terminal.cwd ? homeRelative(c.terminal.cwd, home) : "—" }}</span>
+                      </div>
+                      <div class="detail-row">
+                        <span class="detail-label">Project</span>
+                        <span>{{ g.kind === "project" ? g.label : NO_PROJECT_LABEL }}</span>
+                      </div>
+                      <div class="detail-row">
+                        <span class="detail-label">Archived</span>
+                        <span>{{ archivedAtLabel(c) }}</span>
+                      </div>
+                      <button type="button" class="btn archive-restore" @click="restoreArchivedCard(c)">Restore to {{ laneTitle(c.lane) }}</button>
+                    </div>
+                  </article>
+                </template>
+              </section>
+              <div v-if="archiveGroups.length === 0" class="archive-empty">No archived cards</div>
             </div>
           </template>
         </aside>
@@ -1360,7 +1433,10 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .archive-strip.expanded {
-  flex-basis: 260px;
+  /* Wide enough for grouped rows, but allowed to shrink (never below the old
+     260px width) so narrow windows don't lose the lanes. */
+  flex: 0 1 380px;
+  min-width: 260px;
 }
 .archive-strip.drop-target {
   border-color: var(--accent);
@@ -1427,9 +1503,127 @@ onUnmounted(() => {
   padding: 10px;
   overflow-y: auto;
 }
+.archive-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.archive-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+}
+.archive-group-header:hover {
+  background: var(--bg-hover);
+}
+.archive-group-chevron {
+  font-size: 16px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.archive-group-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.archive-group-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-weight: 600;
+}
+.archive-group-label.path {
+  font-family: ui-monospace, monospace;
+  font-weight: 400;
+  font-size: 11px;
+}
+/* Muted rather than grayscaled: the group/left-border project color must stay
+   readable (a grayscale filter would wash it out too). */
 .archived-card {
-  filter: grayscale(1);
   opacity: 0.72;
+}
+.archived-card:hover,
+.archived-card.detail-open {
+  opacity: 1;
+}
+.archived-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.archived-lane-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+}
+.archived-cwd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+}
+.archived-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: default;
+  /* Readable detail: allow copying memo/paths despite .card's user-select:none
+     (the card also stops being draggable while its detail is open). */
+  user-select: text;
+}
+.archived-memo {
+  margin: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.detail-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.detail-label {
+  flex: 0 0 52px;
+  color: var(--text-dim);
+}
+.detail-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+}
+.archive-restore {
+  align-self: flex-start;
+  margin-top: 3px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 .archive-empty {
   padding: 12px 4px;
