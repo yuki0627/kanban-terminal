@@ -20,27 +20,24 @@ const sizeToggleTitle = computed(() => `Card size: ${currentSizeLabel.value} —
 // styles because Vue's SVG attribute binding is guaranteed to apply the raw `y`/
 // `height`/`opacity` presentation attributes across browsers.
 type BarGeometry = { y?: number; height?: number; opacity?: number };
-const BAR_GEOMETRY: Record<CardSizeId, { bar1: BarGeometry; bar2: BarGeometry; bar3: BarGeometry; bar4: BarGeometry; chipDotOpacity: number }> = {
+const BAR_GEOMETRY: Record<CardSizeId, { bar1: BarGeometry; bar2: BarGeometry; bar3: BarGeometry; bar4: BarGeometry }> = {
   s: {
     bar1: { y: 2, height: 1.3 },
     bar2: { y: 4.4, height: 1.3 },
     bar3: { y: 6.8, height: 1.3, opacity: 1 },
     bar4: { y: 9.2, height: 1.3, opacity: 1 },
-    chipDotOpacity: 0,
   },
   m: {
     bar1: { y: 3, height: 2 },
     bar2: { y: 7, height: 2 },
     bar3: { y: 11, height: 2, opacity: 1 },
     bar4: { opacity: 0 },
-    chipDotOpacity: 0,
   },
   l: {
     bar1: { y: 3, height: 3.6 },
     bar2: { y: 9.4, height: 3.6 },
     bar3: { opacity: 0 },
     bar4: { opacity: 0 },
-    chipDotOpacity: 1,
   },
 };
 const iconGeometry = computed(() => BAR_GEOMETRY[cardSize.value]);
@@ -48,7 +45,6 @@ const bar1 = computed(() => iconGeometry.value.bar1);
 const bar2 = computed(() => iconGeometry.value.bar2);
 const bar3 = computed(() => iconGeometry.value.bar3);
 const bar4 = computed(() => iconGeometry.value.bar4);
-const chipDotOpacity = computed(() => iconGeometry.value.chipDotOpacity);
 </script>
 
 <template>
@@ -75,7 +71,6 @@ const chipDotOpacity = computed(() => iconGeometry.value.chipDotOpacity);
         <rect class="bar" x="2" width="12" rx="1" :y="bar2.y" :height="bar2.height" />
         <rect class="bar" x="2" width="12" rx="1" :y="bar3.y" :height="bar3.height" :opacity="bar3.opacity" />
         <rect class="bar" x="2" width="12" rx="1" :y="bar4.y" :height="bar4.height" :opacity="bar4.opacity" />
-        <circle class="chip-dot" cx="13.2" cy="2.6" r="1.3" :opacity="chipDotOpacity" />
       </svg>
     </button>
     <button type="button" class="launcher-btn settings-btn" title="Settings" aria-label="Settings" @click="emit('settings')">
@@ -141,11 +136,7 @@ const chipDotOpacity = computed(() => iconGeometry.value.chipDotOpacity);
 .size-icon {
   display: block;
 }
-.bar,
-.chip-dot {
+.bar {
   fill: currentColor;
-}
-.chip-dot {
-  fill: var(--accent);
 }
 </style>
