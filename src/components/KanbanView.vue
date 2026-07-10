@@ -8,7 +8,7 @@ import { useAppConfig } from "../composables/useAppConfig";
 import { usePubSub } from "../composables/usePubSub";
 import { reportActiveTerminals } from "../composables/useUnloadGuard";
 import { useCardSize } from "../composables/useCardSize";
-import { memoHasOverflow } from "./cardMemo";
+import { memoHasOverflow, clampMemoHeight } from "./cardMemo";
 import { buildArchiveGroups, NO_PROJECT_LABEL } from "./archiveGroups";
 import { formatCwd, homeRelative } from "./cwdDisplay";
 import {
@@ -355,8 +355,9 @@ function beginOverlayResize(e: PointerEvent) {
 // ---- memo panel (collapse + resize) ----
 // A never-toggled card (memoPanel null) opens collapsed when the memo is empty
 // and expanded when it has content; an explicit toggle wins from then on.
+// The expanded memo floats OVER the terminal (see .memo-overlay) so opening or
+// resizing it never resizes the terminal — the PTY keeps its rows/cols.
 const MEMO_DEFAULT_HEIGHT = 120;
-const MEMO_MIN_HEIGHT = 48;
 const memoPanelDraft = ref<MemoPanel | null>(null);
 const overlayBodyRef = ref<HTMLElement | null>(null);
 
@@ -375,12 +376,6 @@ const memoPreview = computed(
       ?.trim() ?? "",
 );
 
-function clampMemoHeight(height: number): number {
-  const body = overlayBodyRef.value;
-  const max = body ? Math.max(MEMO_MIN_HEIGHT, Math.round(body.clientHeight * 0.6)) : 400;
-  return Math.min(Math.max(MEMO_MIN_HEIGHT, Math.round(height)), max);
-}
-
 function toggleMemoPanel() {
   const card = activeCard.value;
   if (!card) return;
@@ -395,7 +390,7 @@ function beginMemoResize(e: PointerEvent) {
   const start = activeMemoPanel.value;
   const originY = e.clientY;
   const move = (ev: PointerEvent) => {
-    memoPanelDraft.value = { collapsed: false, height: clampMemoHeight(start.height + (ev.clientY - originY)) };
+    memoPanelDraft.value = { collapsed: false, height: clampMemoHeight(start.height + (ev.clientY - originY), overlayBodyRef.value?.clientHeight ?? null) };
   };
   const up = () => {
     window.removeEventListener("pointermove", move);
@@ -850,22 +845,24 @@ onUnmounted(() => {
           </button>
         </header>
         <div ref="overlayBodyRef" class="overlay-body">
-          <button type="button" class="memo-bar" :aria-expanded="!memoCollapsed" @click="toggleMemoPanel">
-            <span class="memo-chevron material-symbols-outlined" aria-hidden="true">{{ memoCollapsed ? "chevron_right" : "expand_more" }}</span>
-            <span class="memo-label">Memo</span>
-            <span v-if="memoCollapsed && memoPreview" class="memo-preview">{{ memoPreview }}</span>
-          </button>
-          <template v-if="!memoCollapsed">
-            <textarea
-              v-model="memoDraft"
-              class="memo"
-              :style="{ height: `${activeMemoPanel.height}px` }"
-              placeholder="Memo"
-              aria-label="Memo"
-              @change="saveCardText"
-            />
-            <div class="memo-resize" role="separator" aria-orientation="horizontal" aria-label="Resize memo" @pointerdown="beginMemoResize" />
-          </template>
+          <div class="memo-region">
+            <button type="button" class="memo-bar" :aria-expanded="!memoCollapsed" @click="toggleMemoPanel">
+              <span class="memo-chevron material-symbols-outlined" aria-hidden="true">{{ memoCollapsed ? "chevron_right" : "expand_more" }}</span>
+              <span class="memo-label">Memo</span>
+              <span v-if="memoCollapsed && memoPreview" class="memo-preview">{{ memoPreview }}</span>
+            </button>
+            <div v-if="!memoCollapsed" class="memo-overlay">
+              <textarea
+                v-model="memoDraft"
+                class="memo"
+                :style="{ height: `${activeMemoPanel.height}px` }"
+                placeholder="Memo"
+                aria-label="Memo"
+                @change="saveCardText"
+              />
+              <div class="memo-resize" role="separator" aria-orientation="horizontal" aria-label="Resize memo" @pointerdown="beginMemoResize" />
+            </div>
+          </div>
           <div class="terminal-panel">
             <TerminalView
               ref="terminalRef"
@@ -1716,8 +1713,25 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
 }
-.memo-bar {
+/* Anchor for the floating memo: only the bar lives in the column flow, so the
+   expanded memo (absolutely positioned below the bar) covers the terminal
+   instead of pushing it — the terminal never resizes on memo open/resize. */
+.memo-region {
+  position: relative;
   flex: none;
+}
+.memo-overlay {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.35);
+}
+.memo-bar {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1776,7 +1790,11 @@ onUnmounted(() => {
 .memo-resize:hover {
   background: var(--accent-bg);
 }
+/* flex:1 is load-bearing: the terminal always fills everything below the memo
+   bar. Without it the panel sizes to content and leaves dead space under the
+   prompt (and FitAddon then reads the wrong height). */
 .terminal-panel {
+  flex: 1;
   min-height: 0;
   display: flex;
 }
