@@ -12,8 +12,12 @@ import {
   restoreCard,
   updateOverlayFrame,
   updateMemoPanel,
+  setProjectVisibility,
+  setProjectColor,
+  moveProjectBefore,
   type KanbanState,
   type KanbanCard,
+  type Project,
 } from "./kanbanBoard";
 
 const card = (over: Partial<KanbanCard> = {}): KanbanCard => ({
@@ -35,6 +39,20 @@ const card = (over: Partial<KanbanCard> = {}): KanbanCard => ({
 });
 
 const state = (cards: KanbanCard[], expanded: string | null = null): KanbanState => ({ projects: [], cards, expanded });
+
+const project = (id: string, order: number, over: Partial<Project> = {}): Project => ({
+  id,
+  root: `/work/${id}`,
+  name: id,
+  color: "#2563eb",
+  sidebarVisible: true,
+  order,
+  ...over,
+});
+
+const projectState = (projects: Project[]): KanbanState => ({ projects, cards: [], expanded: null });
+
+const orderedIds = (s: KanbanState): string[] => [...s.projects].sort((a, b) => a.order - b.order).map((p) => p.id);
 
 describe("laneForStatus", () => {
   it("maps working to in_progress and waiting (done/blocked) to in_review", () => {
@@ -139,5 +157,55 @@ describe("countByLane", () => {
   it("tallies every non-archived lane", () => {
     const s = state([card(), card({ id: "s2", lane: "in_review" }), card({ id: "s3", lane: "in_review", archived: true })]);
     expect(countByLane(s)).toEqual({ todo: 1, in_progress: 0, in_review: 1, done: 0, canceled: 0 });
+  });
+});
+
+describe("setProjectVisibility", () => {
+  it("hides and restores only the target project", () => {
+    const before = projectState([project("a", 0), project("b", 1)]);
+    const hidden = setProjectVisibility(before, "a", false);
+    expect(hidden.projects.map((p) => p.sidebarVisible)).toEqual([false, true]);
+    const restored = setProjectVisibility(hidden, "a", true);
+    expect(restored.projects.map((p) => p.sidebarVisible)).toEqual([true, true]);
+  });
+
+  it("ignores unknown projects", () => {
+    const before = projectState([project("a", 0)]);
+    expect(setProjectVisibility(before, "ghost", false).projects).toEqual(before.projects);
+  });
+});
+
+describe("setProjectColor", () => {
+  it("recolors only the target project", () => {
+    const before = projectState([project("a", 0), project("b", 1)]);
+    const after = setProjectColor(before, "b", "#dc2626");
+    expect(after.projects.map((p) => p.color)).toEqual(["#2563eb", "#dc2626"]);
+  });
+});
+
+describe("moveProjectBefore", () => {
+  it("moves a project before another and renumbers orders sequentially", () => {
+    const before = projectState([project("a", 0), project("b", 1), project("c", 2)]);
+    const after = moveProjectBefore(before, "c", "a");
+    expect(orderedIds(after)).toEqual(["c", "a", "b"]);
+    expect([...after.projects].sort((x, y) => x.order - y.order).map((p) => p.order)).toEqual([0, 1, 2]);
+  });
+
+  it("moves a project to the end with a null target", () => {
+    const before = projectState([project("a", 0), project("b", 1), project("c", 2)]);
+    expect(orderedIds(moveProjectBefore(before, "a", null))).toEqual(["b", "c", "a"]);
+  });
+
+  it("keeps hidden projects in place relative to the shown ones", () => {
+    const before = projectState([project("a", 0), project("h", 1, { sidebarVisible: false }), project("b", 2), project("c", 3)]);
+    const after = moveProjectBefore(before, "c", "b");
+    expect(orderedIds(after)).toEqual(["a", "h", "c", "b"]);
+  });
+
+  it("ignores unknown sources, unknown targets, and self-targets", () => {
+    const before = projectState([project("a", 0), project("b", 1)]);
+    expect(moveProjectBefore(before, "ghost", "a")).toBe(before);
+    expect(moveProjectBefore(before, "a", "ghost")).toBe(before);
+    expect(moveProjectBefore(before, "a", "a")).toBe(before);
   });
 });
