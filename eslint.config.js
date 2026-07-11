@@ -7,7 +7,7 @@ import security from "eslint-plugin-security";
 import prettierRecommended from "eslint-plugin-prettier/recommended";
 
 export default [
-  { ignores: ["dist/", "node_modules/"] },
+  { ignores: ["dist/", "node_modules/", ".claude/", "**/.claude/worktrees/**"] },
   js.configs.recommended,
   ...tseslint.configs.strict,
   ...pluginVue.configs["flat/recommended"],
