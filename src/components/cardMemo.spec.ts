@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { memoLineCount, memoClampLines, memoHasOverflow } from "./cardMemo";
+import { memoLineCount, memoClampLines, memoHasOverflow, clampMemoHeight, MEMO_MIN_HEIGHT } from "./cardMemo";
 
 describe("memoLineCount", () => {
   it("returns 0 for an empty string", () => {
@@ -66,5 +66,29 @@ describe("memoHasOverflow", () => {
 
   it("at size l is true for 4 lines", () => {
     expect(memoHasOverflow("a\nb\nc\nd", "l")).toBe(true);
+  });
+});
+
+describe("clampMemoHeight", () => {
+  it("rounds and passes through a height within range", () => {
+    expect(clampMemoHeight(120.4, 600)).toBe(120);
+  });
+
+  it("clamps below the minimum up to MEMO_MIN_HEIGHT", () => {
+    expect(clampMemoHeight(10, 600)).toBe(MEMO_MIN_HEIGHT);
+    expect(clampMemoHeight(-50, 600)).toBe(MEMO_MIN_HEIGHT);
+  });
+
+  it("caps at 60% of the body height so the terminal prompt stays visible", () => {
+    expect(clampMemoHeight(500, 600)).toBe(360);
+  });
+
+  it("keeps the minimum even when 60% of the body is smaller than it", () => {
+    expect(clampMemoHeight(500, 60)).toBe(MEMO_MIN_HEIGHT);
+  });
+
+  it("falls back to a 400px cap when the body height is unknown", () => {
+    expect(clampMemoHeight(1000, null)).toBe(400);
+    expect(clampMemoHeight(120, null)).toBe(120);
   });
 });
