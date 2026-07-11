@@ -34,10 +34,10 @@ import {
   type OverlayFrame,
   type Project,
 } from "./kanbanBoard";
+import { PROJECT_COLORS, autoProjectColor } from "./projectColors";
 
 const BOARD_CHANNEL = "board";
 const NONE_COLOR = "#64748b";
-const PROJECT_COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#4f46e5", "#be123c"];
 
 const state = ref<KanbanState>(emptyKanbanState());
 const boardLoading = ref(true);
@@ -153,9 +153,6 @@ function laneHasUnread(lane: LaneId): boolean {
 function projectCount(projectId: string | null): number {
   return state.value.cards.filter((c) => !c.archived && c.projectId === projectId).length;
 }
-function colorFor(index: number): string {
-  return PROJECT_COLORS[index % PROJECT_COLORS.length];
-}
 function projectNameFromRoot(root: string): string {
   return root.split("/").filter(Boolean).at(-1) || root;
 }
@@ -178,7 +175,7 @@ async function addProject() {
       id: newId("project"),
       root,
       name: projectNameFromRoot(root),
-      color: colorFor(state.value.projects.length),
+      color: autoProjectColor(state.value.projects.length),
       sidebarVisible: true,
       order: state.value.projects.length,
     };
@@ -1385,7 +1382,7 @@ onUnmounted(() => {
 }
 .ctx-swatches {
   display: grid;
-  grid-template-columns: repeat(4, 22px);
+  grid-template-columns: repeat(6, 22px);
   gap: 8px;
   justify-content: start;
   padding: 4px 10px 8px;
