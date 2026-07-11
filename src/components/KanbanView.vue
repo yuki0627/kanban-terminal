@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
 import type { StyleValue } from "vue";
 import AppToolbar from "./AppToolbar.vue";
 import SettingsModal from "./SettingsModal.vue";
@@ -24,6 +24,9 @@ import {
   updateCard,
   updateOverlayFrame,
   updateMemoPanel,
+  setProjectVisibility,
+  setProjectColor,
+  moveProjectBefore,
   type KanbanCard,
   type KanbanState,
   type LaneId,
@@ -190,6 +193,98 @@ function toggleProject(projectId: string | null) {
     return;
   }
   commit({ ...state.value, projects: state.value.projects.map((p) => (p.id === projectId ? { ...p, sidebarVisible: !p.sidebarVisible } : p)) });
+}
+
+// ---- project context menu ----
+// Right-click on a row: hide/restore + recolor. Reordering stays a drag gesture,
+// so the menu never grows move-up/move-down noise.
+const projectMenu = ref<{ projectId: string | null; hidden: boolean; x: number; y: number } | null>(null);
+const projectMenuEl = ref<HTMLElement | null>(null);
+const menuProject = computed(() => {
+  const id = projectMenu.value?.projectId;
+  return id ? (state.value.projects.find((p) => p.id === id) ?? null) : null;
+});
+async function openProjectMenu(projectId: string | null, hidden: boolean, e: MouseEvent) {
+  projectMenu.value = { projectId, hidden, x: e.clientX, y: e.clientY };
+  await nextTick();
+  const rect = projectMenuEl.value?.getBoundingClientRect();
+  if (!rect || !projectMenu.value) return;
+  // Embedded webviews can report a 0-sized viewport; only clamp with real numbers.
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const vh = document.documentElement.clientHeight || window.innerHeight;
+  if (!vw || !vh) return;
+  projectMenu.value = {
+    ...projectMenu.value,
+    x: Math.max(8, Math.min(e.clientX, vw - rect.width - 8)),
+    y: Math.max(8, Math.min(e.clientY, vh - rect.height - 8)),
+  };
+}
+function closeProjectMenu() {
+  projectMenu.value = null;
+}
+function menuToggleVisibility() {
+  const menu = projectMenu.value;
+  if (!menu) return;
+  const show = menu.hidden;
+  if (menu.projectId === null) unassignedVisible.value = show;
+  else commit(setProjectVisibility(state.value, menu.projectId, show));
+  closeProjectMenu();
+}
+function menuSetColor(color: string) {
+  const id = projectMenu.value?.projectId;
+  if (id) commit(setProjectColor(state.value, id, color));
+  closeProjectMenu();
+}
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape" && projectMenu.value) closeProjectMenu();
+}
+
+// ---- project reorder (drag a shown row) ----
+const projectDragId = ref<string | null>(null);
+/** Insertion point: project id = insert before it, null = list end, undefined = no target. */
+const projectDropBeforeId = ref<string | null | undefined>(undefined);
+const projectDropAtEnd = computed(
+  () => projectDragId.value !== null && projectDropBeforeId.value !== undefined && !shownProjects.value.some((p) => p.id === projectDropBeforeId.value),
+);
+// "End of the shown list" still means "before the first hidden project" in the
+// global order, so hidden projects keep trailing the shown ones.
+function endOfShownTarget(): string | null {
+  return hiddenProjects.value[0]?.id ?? null;
+}
+function onProjectDragStart(projectId: string, e: DragEvent) {
+  projectDragId.value = projectId;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", projectId);
+  }
+}
+function onProjectDragOver(targetId: string, e: DragEvent) {
+  if (!projectDragId.value) return;
+  e.preventDefault();
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  if (e.clientY < rect.top + rect.height / 2) {
+    projectDropBeforeId.value = targetId;
+  } else {
+    const shown = shownProjects.value;
+    const next = shown[shown.findIndex((p) => p.id === targetId) + 1];
+    projectDropBeforeId.value = next ? next.id : endOfShownTarget();
+  }
+}
+function onProjectDragOverEnd(e: DragEvent) {
+  if (!projectDragId.value) return;
+  e.preventDefault();
+  projectDropBeforeId.value = endOfShownTarget();
+}
+function onProjectDrop() {
+  if (projectDragId.value && projectDropBeforeId.value !== undefined) {
+    const next = moveProjectBefore(state.value, projectDragId.value, projectDropBeforeId.value);
+    if (next !== state.value) commit(next);
+  }
+  onProjectDragEnd();
+}
+function onProjectDragEnd() {
+  projectDragId.value = null;
+  projectDropBeforeId.value = undefined;
 }
 
 // ---- card creation ----
@@ -593,11 +688,13 @@ onMounted(() => {
   memoryTimer = setInterval(loadMemory, 10_000);
   unsubscribeBoard = pubsub.subscribe(BOARD_CHANNEL, () => void loadBoard());
   offReconnect = pubsub.onReconnect(() => void loadBoard());
+  window.addEventListener("keydown", onGlobalKeydown);
 });
 onUnmounted(() => {
   unsubscribeBoard?.();
   offReconnect?.();
   if (memoryTimer) clearInterval(memoryTimer);
+  window.removeEventListener("keydown", onGlobalKeydown);
 });
 </script>
 
@@ -624,7 +721,13 @@ onUnmounted(() => {
               <span class="material-symbols-outlined">create_new_folder</span>
             </button>
           </div>
-          <button v-if="unassignedVisible" type="button" class="project-row" @click="toggleProject(null)">
+          <button
+            v-if="unassignedVisible"
+            type="button"
+            class="project-row"
+            @click="toggleProject(null)"
+            @contextmenu.prevent="openProjectMenu(null, false, $event)"
+          >
             <span class="project-swatch" :style="{ background: NONE_COLOR }" />
             <span class="project-name">Projectなし</span>
             <span class="project-count">{{ projectCount(null) }}</span>
@@ -632,7 +735,21 @@ onUnmounted(() => {
               <span class="material-symbols-outlined">add</span>
             </span>
           </button>
-          <button v-for="project in shownProjects" :key="project.id" type="button" class="project-row" @click="toggleProject(project.id)">
+          <button
+            v-for="project in shownProjects"
+            :key="project.id"
+            type="button"
+            class="project-row is-draggable"
+            :class="{ 'is-dragging': projectDragId === project.id, 'drop-before': projectDropBeforeId === project.id }"
+            draggable="true"
+            @click="toggleProject(project.id)"
+            @contextmenu.prevent="openProjectMenu(project.id, false, $event)"
+            @dragstart="onProjectDragStart(project.id, $event)"
+            @dragend="onProjectDragEnd"
+            @dragover="onProjectDragOver(project.id, $event)"
+            @drop.prevent="onProjectDrop"
+          >
+            <span class="project-grip material-symbols-outlined" aria-hidden="true">drag_indicator</span>
             <span class="project-swatch" :style="{ background: project.color }" />
             <span class="project-name">{{ project.name }}</span>
             <span class="project-count">{{ projectCount(project.id) }}</span>
@@ -640,8 +757,9 @@ onUnmounted(() => {
               <span class="material-symbols-outlined">add</span>
             </span>
           </button>
+          <div v-if="projectDropAtEnd" class="project-drop-end" aria-hidden="true" />
 
-          <div class="projects-spacer" aria-hidden="true" />
+          <div class="projects-spacer" aria-hidden="true" @dragover="onProjectDragOverEnd" @drop.prevent="onProjectDrop" />
 
           <div v-if="hiddenCount >= 1" class="hidden-section" :class="{ open: hiddenExpanded }">
             <div class="hidden-divider" />
@@ -652,7 +770,13 @@ onUnmounted(() => {
             </button>
             <div class="hidden-panel">
               <div class="hidden-list">
-                <button v-if="!unassignedVisible" type="button" class="project-row is-hidden" @click="toggleProject(null)">
+                <button
+                  v-if="!unassignedVisible"
+                  type="button"
+                  class="project-row is-hidden"
+                  @click="toggleProject(null)"
+                  @contextmenu.prevent="openProjectMenu(null, true, $event)"
+                >
                   <span class="project-swatch" :style="{ background: NONE_COLOR }" />
                   <span class="project-name">Projectなし</span>
                   <span class="project-count">{{ projectCount(null) }}</span>
@@ -660,7 +784,14 @@ onUnmounted(() => {
                     <span class="material-symbols-outlined">visibility</span>
                   </span>
                 </button>
-                <button v-for="project in hiddenProjects" :key="project.id" type="button" class="project-row is-hidden" @click="toggleProject(project.id)">
+                <button
+                  v-for="project in hiddenProjects"
+                  :key="project.id"
+                  type="button"
+                  class="project-row is-hidden"
+                  @click="toggleProject(project.id)"
+                  @contextmenu.prevent="openProjectMenu(project.id, true, $event)"
+                >
                   <span class="project-swatch" :style="{ background: project.color }" />
                   <span class="project-name">{{ project.name }}</span>
                   <span class="project-count">{{ projectCount(project.id) }}</span>
@@ -935,6 +1066,39 @@ onUnmounted(() => {
     </div>
 
     <SettingsModal v-if="showSettings" :sound-file="soundFile" @update-sound="saveSound" @close="showSettings = false" />
+
+    <div v-if="projectMenu" class="ctx-backdrop" @pointerdown="closeProjectMenu" @contextmenu.prevent="closeProjectMenu" />
+    <div
+      v-if="projectMenu"
+      ref="projectMenuEl"
+      class="ctx-menu"
+      role="menu"
+      aria-label="Project menu"
+      :style="{ left: `${projectMenu.x}px`, top: `${projectMenu.y}px` }"
+    >
+      <button type="button" class="ctx-item" role="menuitem" @click="menuToggleVisibility">
+        <span class="material-symbols-outlined">{{ projectMenu.hidden ? "visibility" : "visibility_off" }}</span>
+        {{ projectMenu.hidden ? "表示に戻す" : "非表示にする" }}
+      </button>
+      <template v-if="menuProject">
+        <div class="ctx-divider" />
+        <div class="ctx-label">色を変更</div>
+        <div class="ctx-swatches">
+          <button
+            v-for="color in PROJECT_COLORS"
+            :key="color"
+            type="button"
+            class="ctx-swatch"
+            :class="{ current: menuProject.color === color }"
+            :style="{ background: color }"
+            :aria-label="`色 ${color}`"
+            @click="menuSetColor(color)"
+          >
+            <span v-if="menuProject.color === color" class="material-symbols-outlined">check</span>
+          </button>
+        </div>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -1027,6 +1191,7 @@ onUnmounted(() => {
   letter-spacing: 0.04em;
 }
 .project-row {
+  position: relative;
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr) auto 24px;
   align-items: center;
@@ -1043,6 +1208,36 @@ onUnmounted(() => {
 .project-row:hover {
   background: var(--bg-hover);
 }
+/* Drag affordance: the grip fades in over the color dot on hover. */
+.project-grip {
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  margin-top: -8px;
+  font-size: 16px;
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.project-row.is-draggable:hover .project-grip {
+  opacity: 0.9;
+}
+.project-row.is-draggable:hover .project-swatch {
+  opacity: 0;
+}
+.project-row.is-dragging {
+  opacity: 0.35;
+}
+.project-row.drop-before {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+.project-drop-end {
+  height: 2px;
+  margin: -1px 0;
+  border-radius: 1px;
+  background: var(--accent);
+}
 .project-row.off {
   opacity: 0.45;
 }
@@ -1050,6 +1245,7 @@ onUnmounted(() => {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  transition: opacity 0.12s ease;
 }
 .project-name {
   min-width: 0;
@@ -1143,6 +1339,85 @@ onUnmounted(() => {
   gap: 1px;
   padding-top: 2px;
 }
+.ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+.ctx-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  font-family: system-ui, sans-serif;
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-item:hover {
+  background: var(--bg-hover);
+}
+.ctx-item .material-symbols-outlined {
+  font-size: 16px;
+  color: var(--text-muted);
+}
+.ctx-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.ctx-label {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.ctx-swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 22px);
+  gap: 8px;
+  justify-content: start;
+  padding: 4px 10px 8px;
+}
+.ctx-swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.ctx-swatch:hover {
+  box-shadow:
+    0 0 0 2px var(--bg-elevated),
+    0 0 0 3px var(--text-dim);
+}
+.ctx-swatch.current {
+  box-shadow:
+    0 0 0 2px var(--bg-elevated),
+    0 0 0 3px var(--text);
+}
+.ctx-swatch .material-symbols-outlined {
+  font-size: 14px;
+  color: #fff;
+}
+
 .project-row.is-hidden {
   opacity: 0.45;
   transition:

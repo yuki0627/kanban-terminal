@@ -207,6 +207,29 @@ export function updateMemoPanel(state: KanbanState, cardId: string, memoPanel: M
   return updateCard(state, cardId, { memoPanel });
 }
 
+export function setProjectVisibility(state: KanbanState, projectId: string, visible: boolean): KanbanState {
+  return { ...state, projects: state.projects.map((p) => (p.id === projectId ? { ...p, sidebarVisible: visible } : p)) };
+}
+
+export function setProjectColor(state: KanbanState, projectId: string, color: string): KanbanState {
+  return { ...state, projects: state.projects.map((p) => (p.id === projectId ? { ...p, color } : p)) };
+}
+
+/** Reorder: place source immediately before `beforeId` (null = end), then renumber
+ *  every project's order 0..n-1 so hidden projects keep their relative slots. */
+export function moveProjectBefore(state: KanbanState, sourceId: string, beforeId: string | null): KanbanState {
+  if (sourceId === beforeId) return state;
+  const sorted = [...state.projects].sort((a, b) => a.order - b.order);
+  const source = sorted.find((p) => p.id === sourceId);
+  if (!source) return state;
+  const rest = sorted.filter((p) => p.id !== sourceId);
+  const at = beforeId === null ? rest.length : rest.findIndex((p) => p.id === beforeId);
+  if (at === -1) return state;
+  rest.splice(at, 0, source);
+  const orderById = new Map(rest.map((p, i) => [p.id, i]));
+  return { ...state, projects: state.projects.map((p) => ({ ...p, order: orderById.get(p.id) ?? p.order })) };
+}
+
 export function laneCards(state: KanbanState, lane: LaneId): KanbanCard[] {
   return state.cards.filter((c) => !c.archived && c.lane === lane);
 }
